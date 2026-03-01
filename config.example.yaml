@@ -1,0 +1,21 @@
+assistant_name: "Nano"
+database_path: "./data/nanobot.db"
+scheduler_db_path: "./data/scheduler.db"
+poll_interval_seconds: 20
+
+model:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  model: "gpt-oss:120b"
+  temperature: 0.2
+  max_tokens: 800
+
+channels:
+  - type: "telegram"
+    token: "${TELEGRAM_BOT_TOKEN}"
+
+mcp_servers:
+  - name: "scheduler"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.scheduler.server"]
+    env: {}

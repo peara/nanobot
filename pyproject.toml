@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanobot"
+version = "0.1.0"
+description = "Minimal personal assistant bot with Telegram + MCP extensibility"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.60.0",
+  "python-telegram-bot>=21.6",
+  "PyYAML>=6.0.2",
+  "mcp>=1.2.0",
+  "croniter>=3.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.8.6",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
