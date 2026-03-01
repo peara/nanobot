@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import sqlite3
 
 from croniter import croniter
 
@@ -79,7 +79,13 @@ class SchedulerStore:
                 (chat_id, prompt, cron_expr, iso(next_run)),
             )
             task_id = cur.lastrowid
-        return {"id": task_id, "chat_id": chat_id, "prompt": prompt, "cron_expr": cron_expr, "next_run_at": iso(next_run)}
+        return {
+            "id": task_id,
+            "chat_id": chat_id,
+            "prompt": prompt,
+            "cron_expr": cron_expr,
+            "next_run_at": iso(next_run),
+        }
 
     def list_tasks(self) -> list[dict]:
         with self._connect() as conn:

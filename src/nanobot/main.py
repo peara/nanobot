@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import signal
 
 from nanobot.channels.base import Channel
 from nanobot.channels.telegram import TelegramChannel

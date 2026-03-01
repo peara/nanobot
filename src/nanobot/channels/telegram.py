@@ -34,13 +34,16 @@ class TelegramChannel(Channel):
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
         await app.initialize()
         await app.start()
+        if app.updater is None:
+            raise RuntimeError("Telegram updater is not available.")
         await app.updater.start_polling()
         self.app = app
 
     async def stop(self) -> None:
         if self.app is None:
             return
-        await self.app.updater.stop()
+        if self.app.updater is not None:
+            await self.app.updater.stop()
         await self.app.stop()
         await self.app.shutdown()
         self.app = None

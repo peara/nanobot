@@ -15,9 +15,9 @@ class LlmClient:
     async def chat(self, messages: list[dict], tools: list[dict]) -> dict:
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=messages,
-            tools=tools or None,
+            messages=messages,  # type: ignore[arg-type]
+            tools=(tools or None),  # type: ignore[arg-type]
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return response.choices[0].message.model_dump()
+        return response.choices[0].message.model_dump()  # type: ignore[no-any-return]

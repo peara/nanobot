@@ -21,17 +21,16 @@ Minimal personal assistant bot with:
 
 ## Quick start
 
-1. Create and activate a virtual env:
+1. Install `uv` (if not already installed), then sync dependencies:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+uv sync --group dev
 ```
 
-2. Install dependencies:
+2. Activate the virtual env:
 
 ```bash
-pip install -e .
+source .venv/bin/activate
 ```
 
 3. Copy config and set env vars:
@@ -51,6 +50,24 @@ You can customize behavior in `config.yaml`:
 
 ```bash
 python -m nanobot.main --config config.yaml
+```
+
+## Code quality
+
+Run locally:
+
+```bash
+uv run ruff check .
+uv run ruff format .
+uv run mypy
+uv run pytest
+```
+
+Install git hooks:
+
+```bash
+uv run pre-commit install
+uv run pre-commit run --all-files
 ```
 
 ## Timer MCP server

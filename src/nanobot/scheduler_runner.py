@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 import logging
+from collections.abc import Awaitable, Callable
 
 from nanobot.scheduler_store import SchedulerStore
 
