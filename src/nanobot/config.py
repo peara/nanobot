@@ -38,6 +38,9 @@ class AppConfig:
     database_path: str
     scheduler_db_path: str
     poll_interval_seconds: int
+    system_prompt_template: str
+    history_message_limit: int
+    history_char_limit: int
     model: ModelConfig
     channels: list[ChannelConfig]
     mcp_servers: list[McpServerConfig]
@@ -67,6 +70,18 @@ def load_config(config_path: str) -> AppConfig:
         database_path=data.get("database_path", "./data/nanobot.db"),
         scheduler_db_path=data.get("scheduler_db_path", "./data/scheduler.db"),
         poll_interval_seconds=int(data.get("poll_interval_seconds", 20)),
+        system_prompt_template=data.get(
+            "system_prompt_template",
+            (
+                "You are {assistant_name}, a personal assistant. "
+                "When useful, call available tools. "
+                "For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id. "
+                "Format responses as plain text suitable for Telegram. "
+                "Do not use markdown tables, HTML tags, or raw markup."
+            ),
+        ),
+        history_message_limit=int(data.get("history_message_limit", 24)),
+        history_char_limit=int(data.get("history_char_limit", 12000)),
         model=model_cfg,
         channels=channel_cfg,
         mcp_servers=mcp_cfg,

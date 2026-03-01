@@ -24,6 +24,22 @@ def unscoped_chat_id(scoped: str) -> tuple[str, str]:
     return channel, chat
 
 
+def _trim_history_by_chars(messages: list[dict], char_limit: int) -> list[dict]:
+    if char_limit <= 0:
+        return messages
+    kept_reversed: list[dict] = []
+    total = 0
+    for msg in reversed(messages):
+        content = str(msg.get("content", ""))
+        msg_len = len(content)
+        if kept_reversed and total + msg_len > char_limit:
+            break
+        kept_reversed.append(msg)
+        total += msg_len
+    kept_reversed.reverse()
+    return kept_reversed
+
+
 class BotCore:
     def __init__(self, config: AppConfig, channels: dict[str, Any]) -> None:
         self.config = config
@@ -60,16 +76,11 @@ class BotCore:
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
         self.memory.add_message(scope, "user", user_text)
-        history = self.memory.get_recent_messages(scope, limit=24)
+        history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        history = _trim_history_by_chars(history, self.config.history_char_limit)
         system = {
             "role": "system",
-            "content": (
-                f"You are {self.config.assistant_name}, a personal assistant. "
-                "When useful, call available tools. "
-                "For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id. "
-                "Format responses as plain text suitable for Telegram. "
-                "Do not use markdown tables, HTML tags, or raw markup."
-            ),
+            "content": self.config.system_prompt_template.format(assistant_name=self.config.assistant_name),
         }
         messages = [system, *history]
         tools = self.mcp.list_openai_tools()

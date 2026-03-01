@@ -2,6 +2,16 @@ assistant_name: "Nano"
 database_path: "./data/nanobot.db"
 scheduler_db_path: "./data/scheduler.db"
 poll_interval_seconds: 20
+history_message_limit: 24
+history_char_limit: 12000
+
+system_prompt_template: |
+  You are {assistant_name}, a personal assistant.
+  Keep responses concise, practical, and friendly.
+  When useful, call available tools.
+  For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id.
+  Format responses as plain text suitable for Telegram.
+  Do not use markdown tables, HTML tags, or raw markup.
 
 model:
   base_url: "http://localhost:11434/v1"
@@ -15,6 +25,11 @@ channels:
     token: "${TELEGRAM_BOT_TOKEN}"
 
 mcp_servers:
+  - name: "timer"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.timer.server"]
+    env: {}
+
   - name: "scheduler"
     command: "python"
     args: ["-m", "nanobot.mcp_servers.scheduler.server"]
