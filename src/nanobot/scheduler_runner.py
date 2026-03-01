@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import logging
 
 from nanobot.scheduler_store import SchedulerStore
+
+logger = logging.getLogger(__name__)
 
 
 TaskHandler = Callable[[str, str], Awaitable[None]]
@@ -33,8 +36,17 @@ class SchedulerRunner:
 
     async def _loop(self) -> None:
         while self._running:
-            due = self.store.due_tasks()
+            try:
+                due = self.store.due_tasks()
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to fetch due tasks")
+                await asyncio.sleep(self.poll_interval_seconds)
+                continue
             for task in due:
-                await self.on_due_task(task["chat_id"], task["prompt"])
-                self.store.mark_ran(task["id"], task["cron_expr"])
+                try:
+                    logger.info("Executing scheduled task id=%s chat_id=%s", task["id"], task["chat_id"])
+                    await self.on_due_task(task["chat_id"], task["prompt"])
+                    self.store.mark_ran(task["id"], task["cron_expr"])
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception("Scheduled task failed id=%s", task.get("id"))
             await asyncio.sleep(self.poll_interval_seconds)

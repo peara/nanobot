@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from nanobot.channels.base import IncomingMessage
@@ -10,6 +11,8 @@ from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
+
+logger = logging.getLogger(__name__)
 
 
 def scoped_chat_id(channel: str, chat_id: str) -> str:
@@ -55,6 +58,7 @@ class BotCore:
         await self._process(scoped_id, f"[scheduled task]\n{prompt}")
 
     async def _process(self, scope: str, user_text: str) -> None:
+        logger.info("Processing message for scope=%s", scope)
         self.memory.add_message(scope, "user", user_text)
         history = self.memory.get_recent_messages(scope, limit=24)
         system = {
@@ -84,11 +88,17 @@ class BotCore:
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
-                if fn_name.endswith("__schedule_task") and "chat_id" not in args:
-                    args["chat_id"] = scope
+                if fn_name.endswith("__schedule_task"):
+                    chat_id = str(args.get("chat_id", "")).strip()
+                    # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
+                    if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
+                        args["chat_id"] = scope
                 try:
+                    logger.info("Calling tool=%s args=%s", fn_name, args)
                     result = await self.mcp.call_tool(fn_name, args)
+                    logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
+                    logger.exception("Tool failed tool=%s", fn_name)
                     result = f"Tool call failed: {exc}"
                 messages.append(
                     {
@@ -108,5 +118,7 @@ class BotCore:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
         channel = self.channels.get(channel_name)
         if channel is None:
+            logger.error("No channel configured for scope=%s channel=%s", scope, channel_name)
             raise KeyError(f"No channel configured for '{channel_name}'")
+        logger.info("Sending message via channel=%s chat_id=%s", channel_name, raw_chat_id)
         await channel.send(raw_chat_id, text)

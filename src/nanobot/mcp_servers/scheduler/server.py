@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
@@ -114,6 +115,20 @@ def cron_remove(match: str) -> dict[str, Any]:
 def cron_export_json() -> str:
     """Export current crontab as JSON string for easier LLM parsing."""
     return json.dumps(_get_current_crontab_lines(), ensure_ascii=True)
+
+
+@mcp.tool()
+def scheduler_health() -> dict[str, Any]:
+    """Return scheduler health information and pending task overview."""
+    store = _scheduler_store()
+    tasks = store.list_tasks()
+    due = store.due_tasks()
+    return {
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "task_count": len(tasks),
+        "due_count": len(due),
+        "next_five_tasks": tasks[:5],
+    }
 
 
 if __name__ == "__main__":
