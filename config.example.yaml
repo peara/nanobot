@@ -34,3 +34,18 @@ mcp_servers:
     command: "python"
     args: ["-m", "nanobot.mcp_servers.scheduler.server"]
     env: {}
+
+  - name: "playwright"
+    command: "npx"
+    args:
+      - "-y"
+      - "@playwright/mcp@latest"
+      - "--browser"
+      - "chrome"
+      - "--headless"
+      - "--user-data-dir"
+      - "./data/playwright/profile"
+      - "--output-dir"
+      - "./data/playwright/output"
+      - "--save-session"
+    env: {}

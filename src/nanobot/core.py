@@ -40,6 +40,13 @@ def _trim_history_by_chars(messages: list[dict], char_limit: int) -> list[dict]:
     return kept_reversed
 
 
+def _tool_result_preview(text: str, limit: int = 1200) -> str:
+    compact = text.replace("\n", "\\n")
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}...(truncated)"
+
+
 class BotCore:
     def __init__(self, config: AppConfig, channels: dict[str, Any]) -> None:
         self.config = config
@@ -111,6 +118,12 @@ class BotCore:
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
                     result = f"Tool call failed: {exc}"
+                logger.info(
+                    "Tool result tool=%s chars=%d preview=%s",
+                    fn_name,
+                    len(result),
+                    _tool_result_preview(result),
+                )
                 messages.append(
                     {
                         "role": "tool",

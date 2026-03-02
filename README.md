@@ -108,6 +108,40 @@ Tools exposed:
 - `cron_add`
 - `cron_remove`
 
+## Playwright MCP server (web browsing + interaction)
+
+Playwright MCP enables website interaction (navigate, click, fill forms, extract page content), so the bot can do tasks like searching products directly on sites such as Amazon.
+
+Requirements:
+
+- Node.js 18+ (for `npx`)
+- Chrome installed locally (current config uses `--browser chrome`)
+
+Configured server entry:
+
+```yaml
+mcp_servers:
+  - name: "playwright"
+    command: "npx"
+    args:
+      - "-y"
+      - "@playwright/mcp@latest"
+      - "--browser"
+      - "chrome"
+      - "--headless"
+      - "--user-data-dir"
+      - "./data/playwright/profile"
+      - "--output-dir"
+      - "./data/playwright/output"
+      - "--save-session"
+```
+
+Persistence notes:
+
+- Browser profile, cookies, login state, and history are kept in `./data/playwright/profile`.
+- Session artifacts are saved in `./data/playwright/output`.
+- Do not use `--isolated` if you want profile/history to persist between runs.
+
 ## Notes
 
 - This repo is intentionally minimal and designed for extension through MCP servers.
