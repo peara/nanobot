@@ -6,6 +6,7 @@ Minimal personal assistant bot with:
 - OpenAI-compatible local model backend (Ollama/vLLM)
 - MCP tool extensibility
 - Timer MCP for read-only time queries
+- Memory MCP (mem0 OSS) for long-term semantic memory
 - SQLite conversation history
 - Scheduler via MCP (SQLite-backed tasks + Linux cron bridge)
 
@@ -15,6 +16,7 @@ Minimal personal assistant bot with:
 - `nanobot.channels` - Channel abstraction (`Channel`) + Telegram implementation
 - `nanobot.mcp_hub` - Connects to configured MCP servers and routes tool calls
 - `nanobot.mcp_servers.timer.server` - MCP timer server (read-only time tools)
+- `nanobot.mcp_servers.memory.server` - MCP memory server backed by mem0
 - `nanobot.memory` - Conversation history store (SQLite)
 - `nanobot.scheduler_runner` - Executes due scheduled tasks from scheduler DB
 - `nanobot.mcp_servers.scheduler.server` - MCP scheduler server
@@ -141,6 +143,37 @@ Persistence notes:
 - Browser profile, cookies, login state, and history are kept in `./data/playwright/profile`.
 - Session artifacts are saved in `./data/playwright/output`.
 - Do not use `--isolated` if you want profile/history to persist between runs.
+
+## Memory MCP server (mem0 OSS)
+
+This server exposes long-term memory tools through MCP:
+
+- `memory_health`
+- `memory_search`
+- `memory_save`
+- `memory_save_turn`
+
+Configure it in `config.yaml`:
+
+```yaml
+mcp_servers:
+  - name: "memory"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.memory.server"]
+    env:
+      MEM0_CONFIG_PATH: "./config.mem0.yaml"
+```
+
+Then create your local mem0 config from template:
+
+```bash
+cp config.mem0.example.yaml config.mem0.yaml
+```
+
+Recommended local embedding model:
+
+- `mxbai-embed-large` (best quality)
+- `nomic-embed-text` (lighter/faster fallback)
 
 ## Notes
 

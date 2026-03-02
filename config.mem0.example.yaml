@@ -1,0 +1,24 @@
+llm:
+  provider: lmstudio
+  config:
+    # LM Studio OpenAI-compatible chat completions endpoint.
+    model: "openai/gpt-oss-120b"
+    lmstudio_base_url: "http://192.168.1.7:1234/v1"
+    api_key: "lm-studio"
+    temperature: 0.1
+    max_tokens: 1200
+
+embedder:
+  provider: openai
+  config:
+    # LM Studio OpenAI-compatible embeddings endpoint.
+    model: "mxbai-embed-large"
+    openai_base_url: "http://192.168.1.7:1234/v1"
+    api_key: "lm-studio"
+
+vector_store:
+  provider: qdrant
+  config:
+    # Local on-disk qdrant via qdrant-client local mode.
+    path: "./data/mem0/qdrant"
+    collection_name: "nanobot_memories"

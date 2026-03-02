@@ -9,6 +9,8 @@ system_prompt_template: |
   You are {assistant_name}, a personal assistant.
   Keep responses concise, practical, and friendly.
   When useful, call available tools.
+  For questions about user preferences or past interactions, call memory_search before answering.
+  Use memory_save or memory_save_turn when the user asks to remember something important.
   For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id.
   Format responses as plain text suitable for Telegram.
   Do not use markdown tables, HTML tags, or raw markup.
@@ -34,6 +36,12 @@ mcp_servers:
     command: "python"
     args: ["-m", "nanobot.mcp_servers.scheduler.server"]
     env: {}
+
+  - name: "memory"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.memory.server"]
+    env:
+      MEM0_CONFIG_PATH: "./config.mem0.yaml"
 
   - name: "playwright"
     command: "npx"
