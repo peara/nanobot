@@ -47,6 +47,40 @@ def _tool_result_preview(text: str, limit: int = 1200) -> str:
     return f"{compact[:limit]}...(truncated)"
 
 
+def _clip(text: str, limit: int = 100) -> str:
+    stripped = text.strip().replace("\n", " ")
+    if len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit]}..."
+
+
+def _clip_long(text: str, limit: int = 3500) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n...(truncated)"
+
+
+def _help_text() -> str:
+    return "\n".join(
+        [
+            "Available commands",
+            "/help - show this help",
+            "/ctx - compact context diagnostics for this chat",
+            "/ctxfull - full pre-LLM payload JSON (truncated)",
+            "/reset - clear local conversation history for this chat scope",
+        ]
+    )
+
+
+def _command_name(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    token = stripped.split()[0]
+    token = token.split("@", 1)[0]
+    return token.lower()
+
+
 class BotCore:
     def __init__(self, config: AppConfig, channels: dict[str, Any]) -> None:
         self.config = config
@@ -75,6 +109,23 @@ class BotCore:
 
     async def on_incoming(self, message: IncomingMessage) -> None:
         scope = scoped_chat_id(message.channel, message.chat_id)
+        cmd = _command_name(message.text)
+        if cmd in {"/help", "/commands", "/start"}:
+            await self._send(scope, _help_text())
+            return
+        if cmd == "/ctx":
+            await self._send(scope, self._build_context_report(scope))
+            return
+        if cmd == "/ctxfull":
+            await self._send(scope, self._build_full_context_report(scope))
+            return
+        if cmd == "/reset":
+            deleted = self.memory.clear_chat(scope)
+            await self._send(
+                scope,
+                f"Context reset complete.\nscope: {scope}\ndeleted_messages: {deleted}",
+            )
+            return
         await self._process(scope, message.text)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
@@ -146,3 +197,47 @@ class BotCore:
             raise KeyError(f"No channel configured for '{channel_name}'")
         logger.info("Sending message via channel=%s chat_id=%s", channel_name, raw_chat_id)
         await channel.send(raw_chat_id, text)
+
+    def _build_context_report(self, scope: str) -> str:
+        total = self.memory.count_messages(scope)
+        recent = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        trimmed = _trim_history_by_chars(recent, self.config.history_char_limit)
+        recent_chars = sum(len(str(m.get("content", ""))) for m in recent)
+        trimmed_chars = sum(len(str(m.get("content", ""))) for m in trimmed)
+        lines = [
+            "Context report",
+            f"scope: {scope}",
+            f"total_messages_in_db: {total}",
+            f"recent_window_limit: {self.config.history_message_limit}",
+            f"char_limit: {self.config.history_char_limit}",
+            f"messages_after_limit: {len(recent)} ({recent_chars} chars)",
+            f"messages_after_trim: {len(trimmed)} ({trimmed_chars} chars)",
+            "included_tail:",
+        ]
+        tail = trimmed[-8:]
+        if not tail:
+            lines.append("- (empty)")
+        else:
+            for msg in tail:
+                role = str(msg.get("role", "unknown"))
+                content = _clip(str(msg.get("content", "")))
+                lines.append(f"- {role}: {content}")
+        return "\n".join(lines)
+
+    def _build_full_context_report(self, scope: str) -> str:
+        history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        trimmed = _trim_history_by_chars(history, self.config.history_char_limit)
+        system = {
+            "role": "system",
+            "content": self.config.system_prompt_template.format(assistant_name=self.config.assistant_name),
+        }
+        messages = [system, *trimmed]
+        payload = {
+            "model": self.config.model.model,
+            "temperature": self.config.model.temperature,
+            "max_tokens": self.config.model.max_tokens,
+            "tools_count": len(self.mcp.list_openai_tools()),
+            "messages": messages,
+        }
+        body = json.dumps(payload, ensure_ascii=True, indent=2)
+        return _clip_long(body)

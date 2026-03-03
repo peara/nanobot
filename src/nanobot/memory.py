@@ -48,3 +48,19 @@ class ConversationStore:
             ).fetchall()
         rows.reverse()
         return [{"role": role, "content": content} for role, content in rows]
+
+    def count_messages(self, chat_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def clear_chat(self, chat_id: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            )
+            return int(cur.rowcount)

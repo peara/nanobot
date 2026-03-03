@@ -31,7 +31,9 @@ class TelegramChannel(Channel):
 
     async def start(self) -> None:
         app = ApplicationBuilder().token(self.token).build()
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
+        # Accept both regular text and slash commands so bot-side commands
+        # (/ctx, /ctxfull, /reset, /help) can be handled in core logic.
+        app.add_handler(MessageHandler(filters.TEXT, self._on_message))
         await app.initialize()
         await app.start()
         if app.updater is None:
