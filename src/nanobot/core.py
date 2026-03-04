@@ -13,6 +13,9 @@ from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 
 logger = logging.getLogger(__name__)
+SCHEDULED_SYSTEM_MARKER = (
+    "This is an automated scheduler trigger, not a user message. Do not assume a human is currently chatting."
+)
 
 
 def scoped_chat_id(channel: str, chat_id: str) -> str:
@@ -129,18 +132,32 @@ class BotCore:
         await self._process(scope, message.text)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
-        await self._process(scoped_id, f"[scheduled task]\n{prompt}")
+        await self._process_scheduled(scoped_id, prompt)
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
         self.memory.add_message(scope, "user", user_text)
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
         history = _trim_history_by_chars(history, self.config.history_char_limit)
-        system = {
+        messages = [self._base_system_message(), *history]
+        await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
+
+    async def _process_scheduled(self, scope: str, prompt: str) -> None:
+        logger.info("Processing scheduled task for scope=%s prompt=%s", scope, _clip(prompt, limit=200))
+        messages = [
+            self._base_system_message(),
+            {"role": "system", "content": SCHEDULED_SYSTEM_MARKER},
+            {"role": "user", "content": prompt},
+        ]
+        await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
+
+    def _base_system_message(self) -> dict[str, str]:
+        return {
             "role": "system",
             "content": self.config.system_prompt_template.format(assistant_name=self.config.assistant_name),
         }
-        messages = [system, *history]
+
+    async def _run_agent_turn(self, scope: str, messages: list[dict], persist_assistant: bool) -> None:
         tools = self.mcp.list_openai_tools()
 
         assistant_message = await self.llm.chat(messages=messages, tools=tools)
@@ -186,7 +203,8 @@ class BotCore:
             assistant_message = await self.llm.chat(messages=messages, tools=tools)
 
         reply = assistant_message.get("content") or "I could not generate a response."
-        self.memory.add_message(scope, "assistant", reply)
+        if persist_assistant:
+            self.memory.add_message(scope, "assistant", reply)
         await self._send(scope, reply)
 
     async def _send(self, scope: str, text: str) -> None:
@@ -227,11 +245,7 @@ class BotCore:
     def _build_full_context_report(self, scope: str) -> str:
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
         trimmed = _trim_history_by_chars(history, self.config.history_char_limit)
-        system = {
-            "role": "system",
-            "content": self.config.system_prompt_template.format(assistant_name=self.config.assistant_name),
-        }
-        messages = [system, *trimmed]
+        messages = [self._base_system_message(), *trimmed]
         payload = {
             "model": self.config.model.model,
             "temperature": self.config.model.temperature,
