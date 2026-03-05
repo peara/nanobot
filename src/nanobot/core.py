@@ -6,6 +6,7 @@ from typing import Any
 
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig
+from nanobot.context_store import ContextStore
 from nanobot.llm import LlmClient
 from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
@@ -90,6 +91,7 @@ class BotCore:
         self.channels = channels
         self.llm = LlmClient(config.model)
         self.memory = ConversationStore(config.database_path)
+        self.contexts = ContextStore(config.database_path)
         for server in config.mcp_servers:
             if server.name == "scheduler":
                 server.env = dict(server.env)
@@ -137,6 +139,7 @@ class BotCore:
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
         self.memory.add_message(scope, "user", user_text)
+        self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
         history = _trim_history_by_chars(history, self.config.history_char_limit)
         messages = [self._base_system_message(), *history]
@@ -205,6 +208,7 @@ class BotCore:
         reply = assistant_message.get("content") or "I could not generate a response."
         if persist_assistant:
             self.memory.add_message(scope, "assistant", reply)
+        self.contexts.put("chat", scope, "last_assistant_message", {"text": reply})
         await self._send(scope, reply)
 
     async def _send(self, scope: str, text: str) -> None:
