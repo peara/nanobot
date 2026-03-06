@@ -231,6 +231,7 @@ class BotCore:
             {"role": "user", "content": request_text},
         ]
         intake_reply, _ = await self._run_agent_loop(scope_for_tools=chat_scope, messages=intake_messages, tools=[])
+        self.contexts.put("plan_run", run_id, "intake_raw", {"text": intake_reply})
         plan_brief = _extract_json_object(intake_reply) or {
             "goal": request_text,
             "constraints": [],
@@ -266,6 +267,7 @@ class BotCore:
                 messages=run_messages,
                 tools=self.mcp.list_openai_tools(),
             )
+            self.contexts.put("plan_run", run_id, "execution_raw", {"text": final_reply})
             if _looks_garbled_text(final_reply):
                 logger.warning("Detected garbled /plan output run_id=%s, attempting recovery pass", run_id)
                 recovery_payload = {
@@ -290,6 +292,7 @@ class BotCore:
                     messages=recovery_messages,
                     tools=[],
                 )
+                self.contexts.put("plan_run", run_id, "recovery_raw", {"text": recovered_reply})
                 if _looks_garbled_text(recovered_reply):
                     final_reply = (
                         "I could not produce a readable plan result for this request. "

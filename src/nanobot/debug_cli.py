@@ -30,6 +30,134 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return sqlite3.connect(db_path)
 
 
+def _clip_text(text: str, limit: int = 180) -> str:
+    compact = text.strip().replace("\n", " ")
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
+
+
+def _q_stats(text: str) -> tuple[int, int, float]:
+    total = len(text)
+    if total == 0:
+        return 0, 0, 0.0
+    q_count = text.count("?")
+    return q_count, total, (q_count / total)
+
+
+def _latest_plan_run_id(db_path: str) -> str | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT scope_id
+            FROM contexts
+            WHERE scope_type = 'plan_run' AND key = 'status'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _plan_list(config: AppConfig, limit: int) -> None:
+    with _connect(config.database_path) as conn:
+        run_rows = conn.execute(
+            """
+            SELECT scope_id, value_json, updated_at
+            FROM contexts
+            WHERE scope_type = 'plan_run' AND key = 'status'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        if not run_rows:
+            print("No plan runs found.")
+            return
+        for run_id, status_json, status_at in run_rows:
+            status_val = json.loads(str(status_json)).get("value", "unknown")
+            req_row = conn.execute(
+                """
+                SELECT value_json
+                FROM contexts
+                WHERE scope_type = 'plan_run' AND scope_id = ? AND key = 'request_text'
+                """,
+                (run_id,),
+            ).fetchone()
+            res_row = conn.execute(
+                """
+                SELECT value_json
+                FROM contexts
+                WHERE scope_type = 'plan_run' AND scope_id = ? AND key = 'result'
+                """,
+                (run_id,),
+            ).fetchone()
+            request_text = ""
+            if req_row:
+                request_text = str(json.loads(str(req_row[0])).get("text", ""))
+            result_text = ""
+            if res_row:
+                result_text = str(json.loads(str(res_row[0])).get("text", ""))
+            q_count, total, ratio = _q_stats(result_text)
+            print(f"run_id={run_id}\tstatus={status_val}\tupdated_at={status_at}")
+            print(f"  request={_clip_text(request_text, limit=120)}")
+            if total > 0:
+                print(f"  result_q_ratio={ratio:.3f} ({q_count}/{total})")
+
+
+def _plan_show(config: AppConfig, run_id: str) -> None:
+    with _connect(config.database_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT key, value_json, updated_at
+            FROM contexts
+            WHERE scope_type = 'plan_run' AND scope_id = ?
+            ORDER BY id ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    if not rows:
+        print(f"No plan_run found for run_id: {run_id}")
+        return
+    print(f"plan_run: {run_id}")
+    wanted_keys = [
+        "status",
+        "request_text",
+        "plan_brief",
+        "intake_raw",
+        "execution_raw",
+        "recovery_raw",
+        "result",
+        "error",
+    ]
+    by_key: dict[str, tuple[Any, str]] = {}
+    for key, value_json, updated_at in rows:
+        try:
+            parsed = json.loads(str(value_json))
+        except json.JSONDecodeError:
+            parsed = str(value_json)
+        by_key[str(key)] = (parsed, str(updated_at))
+
+    for key in wanted_keys:
+        if key not in by_key:
+            continue
+        value, updated_at = by_key[key]
+        print(f"\n[{key}] updated_at={updated_at}")
+        if key in {"intake_raw", "execution_raw", "recovery_raw", "result"} and isinstance(value, dict):
+            text = str(value.get("text", ""))
+            q_count, total, ratio = _q_stats(text)
+            print(f"q_ratio={ratio:.3f} ({q_count}/{total})")
+            print(f"preview={_clip_text(text, limit=240)}")
+            continue
+        if key == "request_text" and isinstance(value, dict):
+            print(f"text={_clip_text(str(value.get('text', '')), limit=240)}")
+            continue
+        if isinstance(value, (dict, list)):
+            print(json.dumps(value, ensure_ascii=True, indent=2))
+        else:
+            print(str(value))
+
+
 def _latest_scope(db_path: str) -> str | None:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT chat_id FROM messages ORDER BY id DESC LIMIT 1").fetchone()
@@ -193,6 +321,14 @@ def main() -> None:
         help="Also delete conversation messages stored under invalid scopes",
     )
 
+    plan = sub.add_parser("plan", help="Inspect plan_run context traces")
+    plan_sub = plan.add_subparsers(dest="plan_cmd", required=True)
+    plan_list = plan_sub.add_parser("list", help="List recent plan runs")
+    plan_list.add_argument("--limit", type=int, default=10, help="Number of recent runs to show")
+    plan_show = plan_sub.add_parser("show", help="Show detailed plan run fields")
+    plan_show.add_argument("--run-id", help="Run id, e.g. run-abc123")
+    plan_show.add_argument("--latest", action="store_true", help="Use latest plan run by status update")
+
     args = parser.parse_args()
     config = load_config(args.config)
 
@@ -221,6 +357,19 @@ def main() -> None:
             return
         if args.scheduler_cmd == "clear-invalid":
             _scheduler_clear_invalid(config, bool(args.purge_messages))
+            return
+
+    if args.cmd == "plan":
+        if args.plan_cmd == "list":
+            _plan_list(config, int(args.limit))
+            return
+        if args.plan_cmd == "show":
+            run_id = args.run_id
+            if args.latest:
+                run_id = _latest_plan_run_id(config.database_path)
+            if not run_id:
+                raise SystemExit("Run id is required. Pass --run-id or --latest.")
+            _plan_show(config, run_id)
             return
 
 
