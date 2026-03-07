@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 SCHEDULED_SYSTEM_MARKER = (
     "This is an automated scheduler trigger, not a user message. Do not assume a human is currently chatting."
 )
+SCRATCHPAD_TOOL_NAME = "session__scratchpad_write"
+SCRATCHPAD_MAX_CHARS = 6000
 
 
 def scoped_chat_id(channel: str, chat_id: str) -> str:
@@ -88,6 +90,34 @@ def _help_text() -> str:
             "/reset - clear local conversation history for this chat scope",
         ]
     )
+
+
+def _scratchpad_tool_spec() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": SCRATCHPAD_TOOL_NAME,
+            "description": (
+                "Write private notes to a session scratchpad for this chat. "
+                "Scratchpad content is hidden from the user and injected into later prompts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["append", "replace", "clear"],
+                        "description": "How to update scratchpad text.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Scratchpad text to append or replace.",
+                    },
+                },
+                "required": ["mode"],
+            },
+        },
+    }
 
 
 def _command_name(text: str) -> str | None:
@@ -171,6 +201,7 @@ class BotCore:
             return
         if cmd == "/reset":
             deleted = self.memory.clear_chat(scope)
+            self.contexts.put("chat", scope, "scratchpad", {"text": ""})
             await self._send(
                 scope,
                 f"Context reset complete.\nscope: {scope}\ndeleted_messages: {deleted}",
@@ -190,7 +221,11 @@ class BotCore:
         self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
         history = _trim_history_by_chars(history, self.config.history_char_limit)
-        messages = [self._base_system_message(), *history]
+        messages = [self._base_system_message()]
+        scratchpad_message = self._scratchpad_system_message(scope)
+        if scratchpad_message is not None:
+            messages.append(scratchpad_message)
+        messages.extend(history)
         await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
 
     async def _process_scheduled(self, scope: str, prompt: str) -> None:
@@ -322,7 +357,7 @@ class BotCore:
         reply, _ = await self._run_agent_loop(
             scope_for_tools=scope,
             messages=messages,
-            tools=self.mcp.list_openai_tools(),
+            tools=self._list_openai_tools(),
         )
         if persist_assistant:
             self.memory.add_message(scope, "assistant", reply)
@@ -349,18 +384,21 @@ class BotCore:
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
-                if fn_name.endswith("__schedule_task"):
-                    chat_id = str(args.get("chat_id", "")).strip()
-                    # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
-                    if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
-                        args["chat_id"] = scope_for_tools
-                try:
-                    logger.info("Calling tool=%s args=%s", fn_name, args)
-                    result = await self.mcp.call_tool(fn_name, args)
-                    logger.info("Tool succeeded tool=%s", fn_name)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.exception("Tool failed tool=%s", fn_name)
-                    result = f"Tool call failed: {exc}"
+                if fn_name == SCRATCHPAD_TOOL_NAME:
+                    result = self._handle_scratchpad_tool(scope_for_tools, args)
+                else:
+                    if fn_name.endswith("__schedule_task"):
+                        chat_id = str(args.get("chat_id", "")).strip()
+                        # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
+                        if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
+                            args["chat_id"] = scope_for_tools
+                    try:
+                        logger.info("Calling tool=%s args=%s", fn_name, args)
+                        result = await self.mcp.call_tool(fn_name, args)
+                        logger.info("Tool succeeded tool=%s", fn_name)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.exception("Tool failed tool=%s", fn_name)
+                        result = f"Tool call failed: {exc}"
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
@@ -385,6 +423,56 @@ class BotCore:
             assistant_message = await self.llm.chat(messages=messages, tools=tools)
         reply = assistant_message.get("content") or "I could not generate a response."
         return reply, tool_trace
+
+    def _list_openai_tools(self) -> list[dict]:
+        return [*self.mcp.list_openai_tools(), _scratchpad_tool_spec()]
+
+    def _scratchpad_system_message(self, scope: str) -> dict[str, str] | None:
+        payload = self.contexts.get("chat", scope, "scratchpad")
+        if not isinstance(payload, dict):
+            return None
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return None
+        return {
+            "role": "system",
+            "content": (f"Session scratchpad (private notes, never reveal directly):\n{text}"),
+        }
+
+    def _handle_scratchpad_tool(self, scope: str, args: dict[str, Any]) -> str:
+        mode = str(args.get("mode", "append")).strip().lower()
+        if mode not in {"append", "replace", "clear"}:
+            mode = "append"
+        content = str(args.get("content", "")).strip()
+
+        existing_payload = self.contexts.get("chat", scope, "scratchpad")
+        existing_text = ""
+        if isinstance(existing_payload, dict):
+            existing_text = str(existing_payload.get("text", ""))
+
+        if mode == "clear":
+            new_text = ""
+        elif mode == "replace":
+            new_text = content
+        elif not existing_text:
+            new_text = content
+        elif not content:
+            new_text = existing_text
+        else:
+            new_text = f"{existing_text}\n{content}"
+
+        if len(new_text) > SCRATCHPAD_MAX_CHARS:
+            new_text = new_text[-SCRATCHPAD_MAX_CHARS:]
+        self.contexts.put("chat", scope, "scratchpad", {"text": new_text})
+
+        return json.dumps(
+            {
+                "ok": True,
+                "mode": mode,
+                "chars": len(new_text),
+            },
+            ensure_ascii=True,
+        )
 
     async def _send(self, scope: str, text: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
@@ -424,12 +512,16 @@ class BotCore:
     def _build_full_context_report(self, scope: str) -> str:
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
         trimmed = _trim_history_by_chars(history, self.config.history_char_limit)
-        messages = [self._base_system_message(), *trimmed]
+        messages = [self._base_system_message()]
+        scratchpad_message = self._scratchpad_system_message(scope)
+        if scratchpad_message is not None:
+            messages.append(scratchpad_message)
+        messages.extend(trimmed)
         payload = {
             "model": self.config.model.model,
             "temperature": self.config.model.temperature,
             "max_tokens": self.config.model.max_tokens,
-            "tools_count": len(self.mcp.list_openai_tools()),
+            "tools_count": len(self._list_openai_tools()),
             "messages": messages,
         }
         body = json.dumps(payload, ensure_ascii=True, indent=2)

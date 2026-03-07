@@ -126,3 +126,45 @@ def test_plan_command_recovers_from_garbled_output(tmp_path) -> None:
     result = bot.contexts.get("plan_run", run_id, "result")
     assert isinstance(result, dict)
     assert "Recovered:" in str(result["text"])
+
+
+def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "session__scratchpad_write",
+                                "arguments": '{"mode":"replace","content":"User wants links for ebay X-500 search"}',
+                            },
+                        }
+                    ],
+                },
+                {"content": "Noted. I will keep track carefully.", "tool_calls": None},
+            ]
+        ),
+    )
+    bot.mcp = cast(Any, _FakeMcp())
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="remember this context")
+    asyncio.run(bot.on_incoming(message))
+    assert len(channel.sent) == 1
+    assert "Noted." in channel.sent[0][1]
+
+    scratchpad = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    assert isinstance(scratchpad, dict)
+    assert "ebay X-500 search" in str(scratchpad.get("text", ""))
+
+    ctx_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/ctxfull")
+    asyncio.run(bot.on_incoming(ctx_msg))
+    assert len(channel.sent) == 2
+    assert "Session scratchpad (private notes" in channel.sent[1][1]
