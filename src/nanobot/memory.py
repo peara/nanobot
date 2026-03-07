@@ -38,7 +38,7 @@ class ConversationStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT role, content
+                SELECT role, content, created_at
                 FROM messages
                 WHERE chat_id = ?
                 ORDER BY id DESC
@@ -47,7 +47,7 @@ class ConversationStore:
                 (chat_id, limit),
             ).fetchall()
         rows.reverse()
-        return [{"role": role, "content": content} for role, content in rows]
+        return [{"role": role, "content": content, "created_at": created_at} for role, content, created_at in rows]
 
     def count_messages(self, chat_id: str) -> int:
         with self._connect() as conn:

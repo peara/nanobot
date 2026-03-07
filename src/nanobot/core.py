@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from nanobot.channels.base import IncomingMessage
@@ -67,6 +70,40 @@ def _clip_long(text: str, limit: int = 3500) -> str:
     return f"{text[:limit]}\n...(truncated)"
 
 
+def _format_timestamp_for_prompt(raw_value: str) -> str | None:
+    try:
+        parsed = datetime.strptime(raw_value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return parsed.strftime("%A, %d %B %Y, %I:%M %p")
+
+
+def _attach_human_timestamps(messages: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        content = str(message.get("content", ""))
+        created_at = message.get("created_at")
+        if isinstance(created_at, str):
+            formatted = _format_timestamp_for_prompt(created_at)
+            if formatted:
+                content = f"[{formatted}]\n{content}"
+        result.append({"role": role, "content": content})
+    return result
+
+
+def _extract_playwright_field(result_text: str, field: str) -> str | None:
+    prefix = f"- {field}: "
+    for line in result_text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return None
+
+
+def _human_now() -> str:
+    return datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
+
+
 def _looks_garbled_text(text: str) -> bool:
     if not text:
         return False
@@ -88,6 +125,7 @@ def _help_text() -> str:
             "/ctx - compact context diagnostics for this chat",
             "/ctxfull - full pre-LLM payload JSON (truncated)",
             "/reset - clear local conversation history for this chat scope",
+            "/scratchpad [show|set|append|clear] - inspect or force scratchpad updates",
         ]
     )
 
@@ -180,6 +218,12 @@ class BotCore:
         )
 
     async def start(self) -> None:
+        logger.info(
+            "Runtime paths cwd=%s database=%s scheduler_db=%s",
+            os.getcwd(),
+            str(Path(self.config.database_path).resolve()),
+            str(Path(self.config.scheduler_db_path).resolve()),
+        )
         await self.mcp.start()
         await self.scheduler.start()
 
@@ -210,6 +254,9 @@ class BotCore:
         if cmd == "/plan":
             await self._process_plan(scope, message.text)
             return
+        if cmd == "/scratchpad":
+            await self._scratchpad_command(scope, message.text)
+            return
         await self._process(scope, message.text)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
@@ -220,6 +267,7 @@ class BotCore:
         self.memory.add_message(scope, "user", user_text)
         self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        history = _attach_human_timestamps(history)
         history = _trim_history_by_chars(history, self.config.history_char_limit)
         messages = [self._base_system_message()]
         scratchpad_message = self._scratchpad_system_message(scope)
@@ -405,6 +453,8 @@ class BotCore:
                     len(result),
                     _tool_result_preview(result),
                 )
+                if fn_name.startswith("playwright__"):
+                    self._record_browse_event(scope_for_tools, fn_name, args, result)
                 tool_trace.append(
                     {
                         "name": fn_name,
@@ -426,6 +476,71 @@ class BotCore:
 
     def _list_openai_tools(self) -> list[dict]:
         return [*self.mcp.list_openai_tools(), _scratchpad_tool_spec()]
+
+    async def _scratchpad_command(self, scope: str, raw_text: str) -> None:
+        body = _command_body(raw_text)
+        if not body:
+            payload = self.contexts.get("chat", scope, "scratchpad")
+            text = str(payload.get("text", "")) if isinstance(payload, dict) else ""
+            await self._send(scope, f"Scratchpad ({len(text)} chars):\n{text}")
+            return
+
+        parts = body.split(maxsplit=1)
+        action = parts[0].strip().lower()
+        content = parts[1].strip() if len(parts) > 1 else ""
+
+        if action == "show":
+            payload = self.contexts.get("chat", scope, "scratchpad")
+            text = str(payload.get("text", "")) if isinstance(payload, dict) else ""
+            await self._send(scope, f"Scratchpad ({len(text)} chars):\n{text}")
+            return
+        if action == "clear":
+            self.contexts.put("chat", scope, "scratchpad", {"text": ""})
+            await self._send(scope, "Scratchpad cleared.")
+            return
+        if action == "set":
+            self.contexts.put("chat", scope, "scratchpad", {"text": content[:SCRATCHPAD_MAX_CHARS]})
+            await self._send(scope, f"Scratchpad set ({min(len(content), SCRATCHPAD_MAX_CHARS)} chars).")
+            return
+        if action == "append":
+            result = json.loads(self._handle_scratchpad_tool(scope, {"mode": "append", "content": content}))
+            await self._send(scope, f"Scratchpad appended ({int(result.get('chars', 0))} total chars).")
+            return
+
+        await self._send(scope, "Usage: /scratchpad [show|set <text>|append <text>|clear]")
+
+    def _record_browse_event(self, scope: str, tool_name: str, args: dict[str, Any], result: str) -> None:
+        page_url = _extract_playwright_field(result, "Page URL")
+        page_title = _extract_playwright_field(result, "Page Title")
+        blocked = False
+        if page_title and "pardon our interruption" in page_title.lower():
+            blocked = True
+        if page_url and "/splashui/challenge" in page_url:
+            blocked = True
+
+        existing = self.contexts.get("chat", scope, "browse_history")
+        events: list[dict[str, Any]]
+        if isinstance(existing, dict):
+            payload_events = existing.get("events")
+            events = payload_events if isinstance(payload_events, list) else []
+        elif isinstance(existing, list):
+            events = existing
+        else:
+            events = []
+
+        events.append(
+            {
+                "at": _human_now(),
+                "tool": tool_name,
+                "args": args,
+                "page_url": page_url or "",
+                "page_title": page_title or "",
+                "blocked": blocked,
+                "result_preview": _tool_result_preview(result, limit=400),
+            }
+        )
+        events = events[-40:]
+        self.contexts.put("chat", scope, "browse_history", {"events": events})
 
     def _scratchpad_system_message(self, scope: str) -> dict[str, str] | None:
         payload = self.contexts.get("chat", scope, "scratchpad")
@@ -486,6 +601,7 @@ class BotCore:
     def _build_context_report(self, scope: str) -> str:
         total = self.memory.count_messages(scope)
         recent = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        recent = _attach_human_timestamps(recent)
         trimmed = _trim_history_by_chars(recent, self.config.history_char_limit)
         recent_chars = sum(len(str(m.get("content", ""))) for m in recent)
         trimmed_chars = sum(len(str(m.get("content", ""))) for m in trimmed)
@@ -511,6 +627,7 @@ class BotCore:
 
     def _build_full_context_report(self, scope: str) -> str:
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+        history = _attach_human_timestamps(history)
         trimmed = _trim_history_by_chars(history, self.config.history_char_limit)
         messages = [self._base_system_message()]
         scratchpad_message = self._scratchpad_system_message(scope)

@@ -193,4 +193,6 @@ uv run python -m nanobot.debug_cli --config config.yaml reset --scope telegram:5
 uv run python -m nanobot.debug_cli --config config.yaml scheduler list
 uv run python -m nanobot.debug_cli --config config.yaml scheduler clear
 uv run python -m nanobot.debug_cli --config config.yaml scheduler clear-invalid --purge-messages
+uv run python -m nanobot.debug_cli --config config.yaml browse --scope telegram:500506690 --limit 15
+uv run python -m nanobot.debug_cli --config config.yaml browse --latest --full
 ```

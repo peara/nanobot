@@ -168,3 +168,24 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     asyncio.run(bot.on_incoming(ctx_msg))
     assert len(channel.sent) == 2
     assert "Session scratchpad (private notes" in channel.sent[1][1]
+
+
+def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(Any, _FakeLlm(replies=[{"content": "ok", "tool_calls": None}]))
+    bot.mcp = cast(Any, _FakeMcp())
+
+    set_msg = IncomingMessage(
+        channel="telegram",
+        chat_id="42",
+        user_id="u1",
+        text="/scratchpad set debug note: ebay search pending",
+    )
+    asyncio.run(bot.on_incoming(set_msg))
+    assert "Scratchpad set" in channel.sent[-1][1]
+
+    show_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/scratchpad show")
+    asyncio.run(bot.on_incoming(show_msg))
+    assert "ebay search pending" in channel.sent[-1][1]

@@ -164,6 +164,41 @@ def _latest_scope(db_path: str) -> str | None:
     return str(row[0]) if row else None
 
 
+def _browse_history(config: AppConfig, scope: str, limit: int, full: bool) -> None:
+    with _connect(config.database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT value_json
+            FROM contexts
+            WHERE scope_type = 'chat' AND scope_id = ? AND key = 'browse_history'
+            LIMIT 1
+            """,
+            (scope,),
+        ).fetchone()
+    if not row:
+        print(f"No browse history found for scope: {scope}")
+        return
+    payload = json.loads(str(row[0]))
+    events = payload.get("events", []) if isinstance(payload, dict) else []
+    if not isinstance(events, list) or not events:
+        print(f"No browse events found for scope: {scope}")
+        return
+    selected = events[-max(1, int(limit)) :]
+    print(f"Browse history for {scope} (showing {len(selected)} of {len(events)} events)")
+    for idx, event in enumerate(selected, start=1):
+        if not isinstance(event, dict):
+            continue
+        print(f"\n[{idx}] {event.get('at', '')}")
+        print(f"tool={event.get('tool', '')}")
+        print(f"blocked={event.get('blocked', False)}")
+        print(f"url={event.get('page_url', '')}")
+        print(f"title={event.get('page_title', '')}")
+        if full:
+            print("args:")
+            print(json.dumps(event.get("args", {}), ensure_ascii=True, indent=2))
+            print(f"preview={event.get('result_preview', '')}")
+
+
 def _list_scopes(config: AppConfig) -> None:
     with _connect(config.database_path) as conn:
         rows = conn.execute(
@@ -329,6 +364,12 @@ def main() -> None:
     plan_show.add_argument("--run-id", help="Run id, e.g. run-abc123")
     plan_show.add_argument("--latest", action="store_true", help="Use latest plan run by status update")
 
+    browse = sub.add_parser("browse", help="Inspect stored Playwright browse history")
+    browse.add_argument("--scope", help="Scoped chat id, e.g. telegram:500506690")
+    browse.add_argument("--latest", action="store_true", help="Use latest scope from DB")
+    browse.add_argument("--limit", type=int, default=12, help="Number of latest browse events to show")
+    browse.add_argument("--full", action="store_true", help="Show args and result preview")
+
     args = parser.parse_args()
     config = load_config(args.config)
 
@@ -371,6 +412,15 @@ def main() -> None:
                 raise SystemExit("Run id is required. Pass --run-id or --latest.")
             _plan_show(config, run_id)
             return
+
+    if args.cmd == "browse":
+        scope = args.scope
+        if args.latest:
+            scope = _latest_scope(config.database_path)
+        if not scope:
+            raise SystemExit("Scope is required. Pass --scope or --latest.")
+        _browse_history(config, scope, int(args.limit), bool(args.full))
+        return
 
 
 if __name__ == "__main__":
