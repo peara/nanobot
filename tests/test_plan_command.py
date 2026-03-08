@@ -21,8 +21,13 @@ class _FakeLlm:
         self._replies = replies
         self._idx = 0
 
-    async def chat(self, messages: list[dict], tools: list[dict]) -> dict:
-        del messages, tools
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict[str, Any] | None = None,
+    ) -> dict:
+        del messages, tools, response_format
         if self._idx >= len(self._replies):
             raise RuntimeError("No fake LLM reply left")
         reply = self._replies[self._idx]
@@ -137,19 +142,9 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
         _FakeLlm(
             replies=[
                 {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "session__scratchpad_write",
-                                "arguments": '{"mode":"replace","content":"User wants links for ebay X-500 search"}',
-                            },
-                        }
-                    ],
+                    "content": "Noted. I will keep track carefully.",
+                    "tool_calls": None,
                 },
-                {"content": "Noted. I will keep track carefully.", "tool_calls": None},
             ]
         ),
     )
@@ -160,14 +155,69 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     assert len(channel.sent) == 1
     assert "Noted." in channel.sent[0][1]
 
-    scratchpad = bot.contexts.get("chat", "telegram:42", "scratchpad")
-    assert isinstance(scratchpad, dict)
-    assert "ebay X-500 search" in str(scratchpad.get("text", ""))
-
     ctx_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/ctxfull")
     asyncio.run(bot.on_incoming(ctx_msg))
     assert len(channel.sent) == 2
-    assert "Session scratchpad (private notes" in channel.sent[1][1]
+    assert "Execution scratchpad (private state" in channel.sent[1][1]
+
+
+def test_tool_results_are_persisted_in_context(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "timer__time_now",
+                                "arguments": '{"timezone_name":"UTC"}',
+                            },
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": None},
+            ]
+        ),
+    )
+
+    class _ToolMcp(_FakeMcp):
+        def list_openai_tools(self) -> list[dict]:
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "timer__time_now",
+                        "description": "Get current date-time in ISO format for a timezone.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"timezone_name": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+
+        async def call_tool(self, fn_name: str, args: dict) -> str:
+            del fn_name, args
+            return "tool output: 2026-03-08T10:00:00Z"
+
+    bot.mcp = cast(Any, _ToolMcp())
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    stored = bot.contexts.get("chat", "telegram:42", "tool_results")
+    assert isinstance(stored, dict)
+    events = stored.get("events")
+    assert isinstance(events, list)
+    assert len(events) == 1
+    assert events[0]["tool"] == "timer__time_now"
+    assert "tool output" in str(events[0]["result_preview"])
 
 
 def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
@@ -181,11 +231,11 @@ def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
         channel="telegram",
         chat_id="42",
         user_id="u1",
-        text="/scratchpad set debug note: ebay search pending",
+        text="/scratchpad clear",
     )
     asyncio.run(bot.on_incoming(set_msg))
-    assert "Scratchpad set" in channel.sent[-1][1]
+    assert "Scratchpad cleared" in channel.sent[-1][1]
 
     show_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/scratchpad show")
     asyncio.run(bot.on_incoming(show_msg))
-    assert "ebay search pending" in channel.sent[-1][1]
+    assert "Structured scratchpad" in channel.sent[-1][1]

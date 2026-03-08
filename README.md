@@ -181,6 +181,24 @@ Recommended local embedding model:
 - Add more capabilities by adding more `mcp_servers` entries in `config.yaml`.
 - Conversation history is persisted in SQLite; only a bounded recent window is sent to the model each turn.
 
+## Quick full reset
+
+If you need to frequently clear scheduler + local history/context + mem0 memory, use:
+
+```bash
+uv run python reset_state.py
+```
+
+Useful options:
+
+```bash
+# Preview counts only (no deletion)
+uv run python reset_state.py --dry-run
+
+# Clear local SQLite state only, keep mem0
+uv run python reset_state.py --skip-mem0
+```
+
 ## Debug CLI
 
 Use the built-in debug CLI for reliable context and scheduler inspection:

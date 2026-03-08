@@ -11,10 +11,13 @@ from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
-from nanobot.core_scratchpad import handle_scratchpad_tool, scratchpad_command, scratchpad_system_message
+from nanobot.core_scratchpad import (
+    clear_scratchpad,
+    scratchpad_command,
+    scratchpad_system_message,
+)
 from nanobot.core_utils import (
     SCHEDULED_SYSTEM_MARKER,
-    SCRATCHPAD_TOOL_NAME,
     attach_human_timestamps,
     clip,
     command_name,
@@ -22,7 +25,6 @@ from nanobot.core_utils import (
     help_text,
     human_now,
     scoped_chat_id,
-    scratchpad_tool_spec,
     tool_result_preview,
     trim_history_by_chars,
     unscoped_chat_id,
@@ -83,7 +85,7 @@ class BotCore:
             return
         if cmd == "/reset":
             deleted = self.memory.clear_chat(scope)
-            self.contexts.put("chat", scope, "scratchpad", {"text": ""})
+            clear_scratchpad(self, scope)
             await self._send(
                 scope,
                 f"Context reset complete.\nscope: {scope}\ndeleted_messages: {deleted}",
@@ -138,18 +140,25 @@ class BotCore:
             messages=messages,
             tools=self._list_openai_tools(),
         )
+        final_reply = reply
         if persist_assistant:
-            self.memory.add_message(scope, "assistant", reply)
-        self.contexts.put("chat", scope, "last_assistant_message", {"text": reply})
-        await self._send(scope, reply)
+            self.memory.add_message(scope, "assistant", final_reply)
+        self.contexts.put("chat", scope, "last_assistant_message", {"text": final_reply})
+        await self._send(scope, final_reply)
 
     async def _run_agent_loop(
         self,
         scope_for_tools: str,
         messages: list[dict],
         tools: list[dict],
+        response_format: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        assistant_message = await self.llm.chat(messages=messages, tools=tools)
+        prepared_messages = self._prepare_messages_for_chat(messages)
+        assistant_message = await self.llm.chat(
+            messages=prepared_messages,
+            tools=tools,
+            response_format=response_format,
+        )
         tool_trace: list[dict[str, Any]] = []
         while assistant_message.get("tool_calls"):
             messages.append(
@@ -163,27 +172,25 @@ class BotCore:
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
-                if fn_name == SCRATCHPAD_TOOL_NAME:
-                    result = self._handle_scratchpad_tool(scope_for_tools, args)
-                else:
-                    if fn_name.endswith("__schedule_task"):
-                        chat_id = str(args.get("chat_id", "")).strip()
-                        # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
-                        if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
-                            args["chat_id"] = scope_for_tools
-                    try:
-                        logger.info("Calling tool=%s args=%s", fn_name, args)
-                        result = await self.mcp.call_tool(fn_name, args)
-                        logger.info("Tool succeeded tool=%s", fn_name)
-                    except Exception as exc:  # pylint: disable=broad-except
-                        logger.exception("Tool failed tool=%s", fn_name)
-                        result = f"Tool call failed: {exc}"
+                if fn_name.endswith("__schedule_task"):
+                    chat_id = str(args.get("chat_id", "")).strip()
+                    # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
+                    if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
+                        args["chat_id"] = scope_for_tools
+                try:
+                    logger.info("Calling tool=%s args=%s", fn_name, args)
+                    result = await self.mcp.call_tool(fn_name, args)
+                    logger.info("Tool succeeded tool=%s", fn_name)
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.exception("Tool failed tool=%s", fn_name)
+                    result = f"Tool call failed: {exc}"
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
                     len(result),
                     tool_result_preview(result),
                 )
+                self._record_tool_result(scope_for_tools, fn_name, args, result)
                 if fn_name.startswith("playwright__"):
                     self._record_browse_event(scope_for_tools, fn_name, args, result)
                 tool_trace.append(
@@ -201,12 +208,17 @@ class BotCore:
                         "content": result,
                     }
                 )
-            assistant_message = await self.llm.chat(messages=messages, tools=tools)
+            prepared_messages = self._prepare_messages_for_chat(messages)
+            assistant_message = await self.llm.chat(
+                messages=prepared_messages,
+                tools=tools,
+                response_format=response_format,
+            )
         reply = assistant_message.get("content") or "I could not generate a response."
         return reply, tool_trace
 
     def _list_openai_tools(self) -> list[dict]:
-        return [*self.mcp.list_openai_tools(), scratchpad_tool_spec()]
+        return self.mcp.list_openai_tools()
 
     async def _scratchpad_command(self, scope: str, raw_text: str) -> None:
         await scratchpad_command(self, scope, raw_text)
@@ -247,8 +259,45 @@ class BotCore:
     def _scratchpad_system_message(self, scope: str) -> dict[str, str] | None:
         return scratchpad_system_message(self, scope)
 
-    def _handle_scratchpad_tool(self, scope: str, args: dict[str, Any]) -> str:
-        return handle_scratchpad_tool(self, scope, args)
+    @staticmethod
+    def _prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
+        system_contents: list[str] = []
+        non_system: list[dict] = []
+        for message in messages:
+            role = str(message.get("role", ""))
+            if role == "system":
+                content = message.get("content")
+                if content is None:
+                    continue
+                text = str(content).strip()
+                if text:
+                    system_contents.append(text)
+                continue
+            non_system.append(message)
+        if not system_contents:
+            return non_system
+        merged_system = {"role": "system", "content": "\n\n".join(system_contents)}
+        return [merged_system, *non_system]
+
+    def _record_tool_result(self, scope: str, tool_name: str, args: dict[str, Any], result: str) -> None:
+        existing = self.contexts.get("chat", scope, "tool_results")
+        events: list[dict[str, Any]]
+        if isinstance(existing, dict):
+            payload_events = existing.get("events")
+            events = payload_events if isinstance(payload_events, list) else []
+        elif isinstance(existing, list):
+            events = existing
+        else:
+            events = []
+        events.append(
+            {
+                "at": human_now(),
+                "tool": tool_name,
+                "args": args,
+                "result_preview": tool_result_preview(result, limit=1200),
+            }
+        )
+        self.contexts.put("chat", scope, "tool_results", {"events": events[-60:]})
 
     async def _send(self, scope: str, text: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
