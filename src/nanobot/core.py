@@ -21,7 +21,6 @@ from nanobot.core_utils import (
     attach_human_timestamps,
     clip,
     command_name,
-    extract_playwright_field,
     help_text,
     human_now,
     scoped_chat_id,
@@ -29,6 +28,7 @@ from nanobot.core_utils import (
     trim_history_by_chars,
     unscoped_chat_id,
 )
+from nanobot.hooks import BrowseEventRecorderHook, ToolCallEvent, ToolHook, ToolResultRecorderHook
 from nanobot.llm import LlmClient
 from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
@@ -51,6 +51,10 @@ class BotCore:
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
         self.mcp = McpHub(config.mcp_servers)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path)
+        self.tool_hooks: list[ToolHook] = [
+            ToolResultRecorderHook(),
+            BrowseEventRecorderHook(),
+        ]
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,
             on_due_task=self._handle_scheduled_task,
@@ -177,12 +181,16 @@ class BotCore:
                     # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
                     if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
                         args["chat_id"] = scope_for_tools
+                ok = True
+                error: str | None = None
                 try:
                     logger.info("Calling tool=%s args=%s", fn_name, args)
                     result = await self.mcp.call_tool(fn_name, args)
                     logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
+                    ok = False
+                    error = str(exc)
                     result = f"Tool call failed: {exc}"
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
@@ -190,9 +198,19 @@ class BotCore:
                     len(result),
                     tool_result_preview(result),
                 )
-                self._record_tool_result(scope_for_tools, fn_name, args, result)
-                if fn_name.startswith("playwright__"):
-                    self._record_browse_event(scope_for_tools, fn_name, args, result)
+                await self._dispatch_after_tool_call(
+                    ToolCallEvent(
+                        scope=scope_for_tools,
+                        call_id=str(tool_call.get("id", "")),
+                        tool_name=fn_name,
+                        args=args,
+                        result=result,
+                        result_preview=tool_result_preview(result, limit=1200),
+                        ok=ok,
+                        error=error,
+                        at=human_now(),
+                    )
+                )
                 tool_trace.append(
                     {
                         "name": fn_name,
@@ -223,41 +241,17 @@ class BotCore:
     async def _scratchpad_command(self, scope: str, raw_text: str) -> None:
         await scratchpad_command(self, scope, raw_text)
 
-    def _record_browse_event(self, scope: str, tool_name: str, args: dict[str, Any], result: str) -> None:
-        page_url = extract_playwright_field(result, "Page URL")
-        page_title = extract_playwright_field(result, "Page Title")
-        blocked = False
-        if page_title and "pardon our interruption" in page_title.lower():
-            blocked = True
-        if page_url and "/splashui/challenge" in page_url:
-            blocked = True
-
-        existing = self.contexts.get("chat", scope, "browse_history")
-        events: list[dict[str, Any]]
-        if isinstance(existing, dict):
-            payload_events = existing.get("events")
-            events = payload_events if isinstance(payload_events, list) else []
-        elif isinstance(existing, list):
-            events = existing
-        else:
-            events = []
-
-        events.append(
-            {
-                "at": human_now(),
-                "tool": tool_name,
-                "args": args,
-                "page_url": page_url or "",
-                "page_title": page_title or "",
-                "blocked": blocked,
-                "result_preview": tool_result_preview(result, limit=400),
-            }
-        )
-        events = events[-40:]
-        self.contexts.put("chat", scope, "browse_history", {"events": events})
-
     def _scratchpad_system_message(self, scope: str) -> dict[str, str] | None:
         return scratchpad_system_message(self, scope)
+
+    async def _dispatch_after_tool_call(self, event: ToolCallEvent) -> None:
+        for hook in self.tool_hooks:
+            try:
+                await hook.after_tool_call(event, self)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception(
+                    "after_tool_call hook failed hook=%s tool=%s", hook.__class__.__name__, event.tool_name
+                )
 
     @staticmethod
     def _prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
@@ -278,26 +272,6 @@ class BotCore:
             return non_system
         merged_system = {"role": "system", "content": "\n\n".join(system_contents)}
         return [merged_system, *non_system]
-
-    def _record_tool_result(self, scope: str, tool_name: str, args: dict[str, Any], result: str) -> None:
-        existing = self.contexts.get("chat", scope, "tool_results")
-        events: list[dict[str, Any]]
-        if isinstance(existing, dict):
-            payload_events = existing.get("events")
-            events = payload_events if isinstance(payload_events, list) else []
-        elif isinstance(existing, list):
-            events = existing
-        else:
-            events = []
-        events.append(
-            {
-                "at": human_now(),
-                "tool": tool_name,
-                "args": args,
-                "result_preview": tool_result_preview(result, limit=1200),
-            }
-        )
-        self.contexts.put("chat", scope, "tool_results", {"events": events[-60:]})
 
     async def _send(self, scope: str, text: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)

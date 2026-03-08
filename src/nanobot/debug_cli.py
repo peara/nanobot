@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from nanobot.config import AppConfig, load_config
+from nanobot.hooks import TOOL_RESULTS_CONTEXT_KEY, load_tool_result_events
 
 PLACEHOLDER_SCOPES = {"12345", "123456789", "1234567890", "<current_chat_id>", "current_chat_id", "default"}
 
@@ -199,6 +200,48 @@ def _browse_history(config: AppConfig, scope: str, limit: int, full: bool) -> No
             print(f"preview={event.get('result_preview', '')}")
 
 
+def _tool_results(config: AppConfig, scope: str, limit: int, full: bool) -> None:
+    with _connect(config.database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT value_json
+            FROM contexts
+            WHERE scope_type = 'chat' AND scope_id = ? AND key = ?
+            LIMIT 1
+            """,
+            (scope, TOOL_RESULTS_CONTEXT_KEY),
+        ).fetchone()
+    if not row:
+        print(f"No tool result history found for scope: {scope}")
+        return
+    payload = json.loads(str(row[0]))
+    events = load_tool_result_events(payload)
+    if not events:
+        print(f"No tool result events found for scope: {scope}")
+        return
+    selected = events[-max(1, int(limit)) :]
+    print(f"Tool results for {scope} (showing {len(selected)} of {len(events)} events)")
+    for idx, event in enumerate(selected, start=1):
+        print(f"\n[{idx}] {event.get('at', '')}")
+        print(f"tool={event.get('tool', '')}")
+        print(f"ok={event.get('ok', True)}")
+        result_chars_raw = event.get("result_chars")
+        result_chars: int | None = None
+        if isinstance(result_chars_raw, int):
+            result_chars = result_chars_raw
+        elif isinstance(result_chars_raw, str) and result_chars_raw.isdigit():
+            result_chars = int(result_chars_raw)
+        if result_chars is not None:
+            print(f"result_chars={result_chars}")
+        error = str(event.get("error", "")).strip()
+        if error:
+            print(f"error={error}")
+        if full:
+            print("args:")
+            print(json.dumps(event.get("args", {}), ensure_ascii=True, indent=2))
+        print(f"preview={event.get('result_preview', '')}")
+
+
 def _list_scopes(config: AppConfig) -> None:
     with _connect(config.database_path) as conn:
         rows = conn.execute(
@@ -370,6 +413,12 @@ def main() -> None:
     browse.add_argument("--limit", type=int, default=12, help="Number of latest browse events to show")
     browse.add_argument("--full", action="store_true", help="Show args and result preview")
 
+    tools = sub.add_parser("tools", help="Inspect stored tool result history")
+    tools.add_argument("--scope", help="Scoped chat id, e.g. telegram:500506690")
+    tools.add_argument("--latest", action="store_true", help="Use latest scope from DB")
+    tools.add_argument("--limit", type=int, default=20, help="Number of latest tool events to show")
+    tools.add_argument("--full", action="store_true", help="Show args and result preview")
+
     args = parser.parse_args()
     config = load_config(args.config)
 
@@ -420,6 +469,15 @@ def main() -> None:
         if not scope:
             raise SystemExit("Scope is required. Pass --scope or --latest.")
         _browse_history(config, scope, int(args.limit), bool(args.full))
+        return
+
+    if args.cmd == "tools":
+        scope = args.scope
+        if args.latest:
+            scope = _latest_scope(config.database_path)
+        if not scope:
+            raise SystemExit("Scope is required. Pass --scope or --latest.")
+        _tool_results(config, scope, int(args.limit), bool(args.full))
         return
 
 

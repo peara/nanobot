@@ -180,6 +180,7 @@ Recommended local embedding model:
 - This repo is intentionally minimal and designed for extension through MCP servers.
 - Add more capabilities by adding more `mcp_servers` entries in `config.yaml`.
 - Conversation history is persisted in SQLite; only a bounded recent window is sent to the model each turn.
+- Runtime architecture and current hook points are documented in `ARCHITECTURE.md`.
 
 ## Quick full reset
 
@@ -213,4 +214,6 @@ uv run python -m nanobot.debug_cli --config config.yaml scheduler clear
 uv run python -m nanobot.debug_cli --config config.yaml scheduler clear-invalid --purge-messages
 uv run python -m nanobot.debug_cli --config config.yaml browse --scope telegram:500506690 --limit 15
 uv run python -m nanobot.debug_cli --config config.yaml browse --latest --full
+uv run python -m nanobot.debug_cli --config config.yaml tools --latest --limit 20
+uv run python -m nanobot.debug_cli --config config.yaml tools --scope telegram:500506690 --full
 ```
