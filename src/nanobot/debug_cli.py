@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from nanobot.config import AppConfig, load_config
-from nanobot.hooks import TOOL_RESULTS_CONTEXT_KEY, load_tool_result_events
+from nanobot.hooks import HookDebugCommand, build_default_tool_hooks
 
 PLACEHOLDER_SCOPES = {"12345", "123456789", "1234567890", "<current_chat_id>", "current_chat_id", "default"}
 
@@ -165,83 +165,6 @@ def _latest_scope(db_path: str) -> str | None:
     return str(row[0]) if row else None
 
 
-def _browse_history(config: AppConfig, scope: str, limit: int, full: bool) -> None:
-    with _connect(config.database_path) as conn:
-        row = conn.execute(
-            """
-            SELECT value_json
-            FROM contexts
-            WHERE scope_type = 'chat' AND scope_id = ? AND key = 'browse_history'
-            LIMIT 1
-            """,
-            (scope,),
-        ).fetchone()
-    if not row:
-        print(f"No browse history found for scope: {scope}")
-        return
-    payload = json.loads(str(row[0]))
-    events = payload.get("events", []) if isinstance(payload, dict) else []
-    if not isinstance(events, list) or not events:
-        print(f"No browse events found for scope: {scope}")
-        return
-    selected = events[-max(1, int(limit)) :]
-    print(f"Browse history for {scope} (showing {len(selected)} of {len(events)} events)")
-    for idx, event in enumerate(selected, start=1):
-        if not isinstance(event, dict):
-            continue
-        print(f"\n[{idx}] {event.get('at', '')}")
-        print(f"tool={event.get('tool', '')}")
-        print(f"blocked={event.get('blocked', False)}")
-        print(f"url={event.get('page_url', '')}")
-        print(f"title={event.get('page_title', '')}")
-        if full:
-            print("args:")
-            print(json.dumps(event.get("args", {}), ensure_ascii=True, indent=2))
-            print(f"preview={event.get('result_preview', '')}")
-
-
-def _tool_results(config: AppConfig, scope: str, limit: int, full: bool) -> None:
-    with _connect(config.database_path) as conn:
-        row = conn.execute(
-            """
-            SELECT value_json
-            FROM contexts
-            WHERE scope_type = 'chat' AND scope_id = ? AND key = ?
-            LIMIT 1
-            """,
-            (scope, TOOL_RESULTS_CONTEXT_KEY),
-        ).fetchone()
-    if not row:
-        print(f"No tool result history found for scope: {scope}")
-        return
-    payload = json.loads(str(row[0]))
-    events = load_tool_result_events(payload)
-    if not events:
-        print(f"No tool result events found for scope: {scope}")
-        return
-    selected = events[-max(1, int(limit)) :]
-    print(f"Tool results for {scope} (showing {len(selected)} of {len(events)} events)")
-    for idx, event in enumerate(selected, start=1):
-        print(f"\n[{idx}] {event.get('at', '')}")
-        print(f"tool={event.get('tool', '')}")
-        print(f"ok={event.get('ok', True)}")
-        result_chars_raw = event.get("result_chars")
-        result_chars: int | None = None
-        if isinstance(result_chars_raw, int):
-            result_chars = result_chars_raw
-        elif isinstance(result_chars_raw, str) and result_chars_raw.isdigit():
-            result_chars = int(result_chars_raw)
-        if result_chars is not None:
-            print(f"result_chars={result_chars}")
-        error = str(event.get("error", "")).strip()
-        if error:
-            print(f"error={error}")
-        if full:
-            print("args:")
-            print(json.dumps(event.get("args", {}), ensure_ascii=True, indent=2))
-        print(f"preview={event.get('result_preview', '')}")
-
-
 def _list_scopes(config: AppConfig) -> None:
     with _connect(config.database_path) as conn:
         rows = conn.execute(
@@ -372,6 +295,7 @@ def _scheduler_clear_invalid(config: AppConfig, purge_messages: bool) -> None:
 
 
 def main() -> None:
+    hook_commands: dict[str, HookDebugCommand] = {}
     parser = argparse.ArgumentParser(description="nanobot debug CLI")
     parser.add_argument("--config", default="config.yaml", help="Path to app config file")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -407,17 +331,14 @@ def main() -> None:
     plan_show.add_argument("--run-id", help="Run id, e.g. run-abc123")
     plan_show.add_argument("--latest", action="store_true", help="Use latest plan run by status update")
 
-    browse = sub.add_parser("browse", help="Inspect stored Playwright browse history")
-    browse.add_argument("--scope", help="Scoped chat id, e.g. telegram:500506690")
-    browse.add_argument("--latest", action="store_true", help="Use latest scope from DB")
-    browse.add_argument("--limit", type=int, default=12, help="Number of latest browse events to show")
-    browse.add_argument("--full", action="store_true", help="Show args and result preview")
-
-    tools = sub.add_parser("tools", help="Inspect stored tool result history")
-    tools.add_argument("--scope", help="Scoped chat id, e.g. telegram:500506690")
-    tools.add_argument("--latest", action="store_true", help="Use latest scope from DB")
-    tools.add_argument("--limit", type=int, default=20, help="Number of latest tool events to show")
-    tools.add_argument("--full", action="store_true", help="Show args and result preview")
+    for hook in build_default_tool_hooks():
+        debug_commands = getattr(hook, "debug_commands", None)
+        if not callable(debug_commands):
+            continue
+        for cmd in debug_commands():
+            cmd_parser = sub.add_parser(cmd.name, help=cmd.help)
+            cmd.add_arguments(cmd_parser)
+            hook_commands[cmd.name] = cmd
 
     args = parser.parse_args()
     config = load_config(args.config)
@@ -462,22 +383,8 @@ def main() -> None:
             _plan_show(config, run_id)
             return
 
-    if args.cmd == "browse":
-        scope = args.scope
-        if args.latest:
-            scope = _latest_scope(config.database_path)
-        if not scope:
-            raise SystemExit("Scope is required. Pass --scope or --latest.")
-        _browse_history(config, scope, int(args.limit), bool(args.full))
-        return
-
-    if args.cmd == "tools":
-        scope = args.scope
-        if args.latest:
-            scope = _latest_scope(config.database_path)
-        if not scope:
-            raise SystemExit("Scope is required. Pass --scope or --latest.")
-        _tool_results(config, scope, int(args.limit), bool(args.full))
+    if args.cmd in hook_commands:
+        hook_commands[args.cmd].run(args, config.database_path)
         return
 
 

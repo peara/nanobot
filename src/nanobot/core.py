@@ -28,7 +28,7 @@ from nanobot.core_utils import (
     trim_history_by_chars,
     unscoped_chat_id,
 )
-from nanobot.hooks import BrowseEventRecorderHook, ToolCallEvent, ToolHook, ToolResultRecorderHook
+from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
@@ -51,10 +51,7 @@ class BotCore:
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
         self.mcp = McpHub(config.mcp_servers)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path)
-        self.tool_hooks: list[ToolHook] = [
-            ToolResultRecorderHook(),
-            BrowseEventRecorderHook(),
-        ]
+        self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,
             on_due_task=self._handle_scheduled_task,
