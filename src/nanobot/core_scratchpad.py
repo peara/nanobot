@@ -3,42 +3,54 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from nanobot.core_utils import command_body, extract_json_object, human_now
+from nanobot.core_utils import command_body, human_now
 
-MAX_TEXT_CHARS = 600
-MAX_STEP_RESULTS = 20
-VALID_ACTIONS = {"set_goal", "set_plan", "add_step_result", "reset"}
+SCRATCHPAD_TOOL_NAME = "session__scratchpad_write"
+MAX_FIELD_CHARS = 600
+MAX_CONTEXT_CHARS = 1200
+MAX_KNOWN_FACTS = 30
+MAX_TOOL_JOURNAL = 30
+VALID_MODES = {"init", "append", "finalize"}
 
 
 def empty_scratchpad_state() -> dict[str, Any]:
     return {
         "goal": "",
-        "plan": "",
-        "step_results": [],
+        "context": "",
+        "known_facts": [],
+        "current_step": "",
+        "next_step": "",
+        "tool_journal": [],
         "updated_at": human_now(),
     }
 
 
+def _clip_text(value: Any, *, limit: int = MAX_FIELD_CHARS) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _to_text_list(value: Any, *, limit_items: int, limit_chars: int = MAX_FIELD_CHARS) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        text = _clip_text(item, limit=limit_chars)
+        if text:
+            cleaned.append(text)
+    return cleaned[-limit_items:]
+
+
 def _coerce_state(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return empty_scratchpad_state()
     state = empty_scratchpad_state()
-    state["goal"] = str(payload.get("goal", "")).strip()[:MAX_TEXT_CHARS]
-    state["plan"] = str(payload.get("plan", "")).strip()[:MAX_TEXT_CHARS]
-    raw_steps = payload.get("step_results")
-    if isinstance(raw_steps, list):
-        cleaned: list[dict[str, str]] = []
-        for item in raw_steps[-MAX_STEP_RESULTS:]:
-            if not isinstance(item, dict):
-                continue
-            cleaned.append(
-                {
-                    "at": str(item.get("at", "")).strip() or human_now(),
-                    "summary": str(item.get("summary", "")).strip()[:MAX_TEXT_CHARS],
-                }
-            )
-        state["step_results"] = cleaned
-    state["updated_at"] = str(payload.get("updated_at", "")).strip() or human_now()
+    if not isinstance(payload, dict):
+        return state
+    state["goal"] = _clip_text(payload.get("goal"))
+    state["context"] = _clip_text(payload.get("context"), limit=MAX_CONTEXT_CHARS)
+    state["known_facts"] = _to_text_list(payload.get("known_facts"), limit_items=MAX_KNOWN_FACTS)
+    state["current_step"] = _clip_text(payload.get("current_step"))
+    state["next_step"] = _clip_text(payload.get("next_step"))
+    state["tool_journal"] = _to_text_list(payload.get("tool_journal"), limit_items=MAX_TOOL_JOURNAL)
+    state["updated_at"] = _clip_text(payload.get("updated_at")) or human_now()
     return state
 
 
@@ -51,45 +63,84 @@ def clear_scratchpad(bot: Any, scope: str) -> None:
     bot.contexts.put("chat", scope, "scratchpad", empty_scratchpad_state())
 
 
-def apply_structured_update(bot: Any, scope: str, update: dict[str, Any]) -> dict[str, Any]:
-    state = get_scratchpad_state(bot, scope)
-    action = str(update.get("action", "")).strip().lower()
-    content = str(update.get("content", "")).strip()[:MAX_TEXT_CHARS]
+def scratchpad_tool_spec() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": SCRATCHPAD_TOOL_NAME,
+            "description": (
+                "Update private execution scratchpad state. "
+                "Use mode init at start of work, append after each tool result, finalize before final answer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["init", "append", "finalize"],
+                    },
+                    "goal": {"type": "string"},
+                    "context": {"type": "string"},
+                    "known_facts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "current_step": {"type": "string"},
+                    "next_step": {"type": "string"},
+                    "tool_journal": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["mode"],
+                "additionalProperties": False,
+            },
+        },
+    }
 
-    if action == "reset":
+
+def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> dict[str, Any]:
+    mode = _clip_text(args.get("mode")).lower()
+    if mode not in VALID_MODES:
+        raise ValueError(f"Invalid mode '{mode}'. Expected one of: {', '.join(sorted(VALID_MODES))}")
+
+    state = get_scratchpad_state(bot, scope)
+    if mode == "init":
         state = empty_scratchpad_state()
-    elif action == "set_goal":
-        state["goal"] = content
-    elif action == "set_plan":
-        state["plan"] = content
-    elif action == "add_step_result":
-        if content:
-            step_results = state.get("step_results")
-            if not isinstance(step_results, list):
-                step_results = []
-            step_results.append({"at": human_now(), "summary": content})
-            state["step_results"] = step_results[-MAX_STEP_RESULTS:]
+
+    goal = _clip_text(args.get("goal"))
+    if goal:
+        state["goal"] = goal
+    context = _clip_text(args.get("context"), limit=MAX_CONTEXT_CHARS)
+    if context:
+        state["context"] = context
+    current_step = _clip_text(args.get("current_step"))
+    if current_step:
+        state["current_step"] = current_step
+    next_step = _clip_text(args.get("next_step"))
+    if next_step:
+        state["next_step"] = next_step
+
+    known_facts = _to_text_list(args.get("known_facts"), limit_items=MAX_KNOWN_FACTS)
+    if known_facts:
+        if mode == "init":
+            state["known_facts"] = known_facts
+        else:
+            combined = [*state.get("known_facts", []), *known_facts]
+            state["known_facts"] = _to_text_list(combined, limit_items=MAX_KNOWN_FACTS)
+
+    tool_journal = _to_text_list(args.get("tool_journal"), limit_items=MAX_TOOL_JOURNAL)
+    if tool_journal:
+        if mode == "init":
+            state["tool_journal"] = tool_journal
+        else:
+            combined = [*state.get("tool_journal", []), *tool_journal]
+            state["tool_journal"] = _to_text_list(combined, limit_items=MAX_TOOL_JOURNAL)
 
     state["updated_at"] = human_now()
-    bot.contexts.put("chat", scope, "scratchpad", state)
-    return state
-
-
-def parse_structured_turn(raw_text: str) -> tuple[dict[str, str], str] | None:
-    payload = extract_json_object(raw_text)
-    if not isinstance(payload, dict):
-        return None
-    update = payload.get("scratchpad_update")
-    assistant_reply = payload.get("assistant_reply")
-    if not isinstance(update, dict) or not isinstance(assistant_reply, str):
-        return None
-    action = str(update.get("action", "")).strip().lower()
-    content = str(update.get("content", "")).strip()
-    if action not in VALID_ACTIONS:
-        return None
-    if action != "reset" and not content:
-        return None
-    return {"action": action, "content": content}, assistant_reply.strip()
+    normalized = _coerce_state(state)
+    bot.contexts.put("chat", scope, "scratchpad", normalized)
+    return normalized
 
 
 async def scratchpad_command(bot: Any, scope: str, raw_text: str) -> None:

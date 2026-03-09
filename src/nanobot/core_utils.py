@@ -7,8 +7,6 @@ from typing import Any
 SCHEDULED_SYSTEM_MARKER = (
     "This is an automated scheduler trigger, not a user message. Do not assume a human is currently chatting."
 )
-SCRATCHPAD_TOOL_NAME = "session__scratchpad_write"
-SCRATCHPAD_MAX_CHARS = 6000
 
 
 def scoped_chat_id(channel: str, chat_id: str) -> str:
@@ -111,37 +109,9 @@ def help_text() -> str:
             "/ctx - compact context diagnostics for this chat",
             "/ctxfull - full pre-LLM payload JSON (truncated)",
             "/reset - clear local conversation history for this chat scope",
-            "/scratchpad [show|set|append|clear] - inspect or force scratchpad updates",
+            "/scratchpad [show|clear] - inspect or clear structured scratchpad",
         ]
     )
-
-
-def scratchpad_tool_spec() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": SCRATCHPAD_TOOL_NAME,
-            "description": (
-                "Write private notes to a session scratchpad for this chat. "
-                "Scratchpad content is hidden from the user and injected into later prompts."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["append", "replace", "clear"],
-                        "description": "How to update scratchpad text.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Scratchpad text to append or replace.",
-                    },
-                },
-                "required": ["mode"],
-            },
-        },
-    }
 
 
 def command_name(text: str) -> str | None:

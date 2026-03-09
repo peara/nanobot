@@ -12,9 +12,12 @@ from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
 from nanobot.core_scratchpad import (
+    SCRATCHPAD_TOOL_NAME,
+    apply_scratchpad_tool_call,
     clear_scratchpad,
     scratchpad_command,
     scratchpad_system_message,
+    scratchpad_tool_spec,
 )
 from nanobot.core_utils import (
     SCHEDULED_SYSTEM_MARKER,
@@ -36,6 +39,14 @@ from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 
 logger = logging.getLogger(__name__)
+
+SCRATCHPAD_PROTOCOL_CORRECTION = (
+    "Protocol violation: after any external tool result, call session__scratchpad_write first "
+    "(mode='append' or mode='finalize') before requesting another external tool."
+)
+MAX_SCRATCHPAD_PROTOCOL_RETRIES = 2
+SCRATCHPAD_PROTOCOL_ABORT_REPLY = "I got stuck enforcing scratchpad updates in this turn. Please try again."
+EMPTY_REPLY_FALLBACK = "I'm sorry, I hit an empty model response. Please try again."
 
 
 class BotCore:
@@ -141,7 +152,14 @@ class BotCore:
             messages=messages,
             tools=self._list_openai_tools(),
         )
-        final_reply = reply
+        final_reply = str(reply or "")
+        if not final_reply.strip():
+            logger.warning(
+                "Assistant produced empty/whitespace reply scope=%s chars=%d; using fallback",
+                scope,
+                len(final_reply),
+            )
+            final_reply = EMPTY_REPLY_FALLBACK
         if persist_assistant:
             self.memory.add_message(scope, "assistant", final_reply)
         self.contexts.put("chat", scope, "last_assistant_message", {"text": final_reply})
@@ -161,15 +179,62 @@ class BotCore:
             response_format=response_format,
         )
         tool_trace: list[dict[str, Any]] = []
+        needs_scratchpad_update = False
+        protocol_retry_count = 0
         while assistant_message.get("tool_calls"):
+            requested_calls = assistant_message["tool_calls"]
+            if needs_scratchpad_update:
+                scratchpad_seen = False
+                protocol_violation = False
+                for tool_call in requested_calls:
+                    name = str(tool_call.get("function", {}).get("name", ""))
+                    if name == SCRATCHPAD_TOOL_NAME:
+                        scratchpad_seen = True
+                        continue
+                    if not scratchpad_seen:
+                        protocol_violation = True
+                        break
+                if protocol_violation:
+                    protocol_retry_count += 1
+                    proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
+                    logger.warning(
+                        "Scratchpad protocol violation scope=%s retry=%d/%d proposed_tools=%s",
+                        scope_for_tools,
+                        protocol_retry_count,
+                        MAX_SCRATCHPAD_PROTOCOL_RETRIES,
+                        proposed_tools,
+                    )
+                    if protocol_retry_count > MAX_SCRATCHPAD_PROTOCOL_RETRIES:
+                        logger.error(
+                            "Scratchpad protocol retries exceeded scope=%s; aborting turn",
+                            scope_for_tools,
+                        )
+                        return SCRATCHPAD_PROTOCOL_ABORT_REPLY, tool_trace
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                f"{SCRATCHPAD_PROTOCOL_CORRECTION} "
+                                f"Retry {protocol_retry_count}/{MAX_SCRATCHPAD_PROTOCOL_RETRIES}."
+                            ),
+                        }
+                    )
+                    prepared_messages = self._prepare_messages_for_chat(messages)
+                    assistant_message = await self.llm.chat(
+                        messages=prepared_messages,
+                        tools=tools,
+                        response_format=response_format,
+                    )
+                    continue
+            protocol_retry_count = 0
             messages.append(
                 {
                     "role": "assistant",
                     "content": assistant_message.get("content") or "",
-                    "tool_calls": assistant_message["tool_calls"],
+                    "tool_calls": requested_calls,
                 }
             )
-            for tool_call in assistant_message["tool_calls"]:
+            for tool_call in requested_calls:
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
@@ -182,37 +247,47 @@ class BotCore:
                 error: str | None = None
                 try:
                     logger.info("Calling tool=%s args=%s", fn_name, args)
-                    result = await self.mcp.call_tool(fn_name, args)
+                    if fn_name == SCRATCHPAD_TOOL_NAME:
+                        scratchpad = apply_scratchpad_tool_call(self, scope_for_tools, args)
+                        result = json.dumps({"ok": True, "scratchpad": scratchpad}, ensure_ascii=True)
+                        needs_scratchpad_update = False
+                    else:
+                        result = await self.mcp.call_tool(fn_name, args)
+                        needs_scratchpad_update = True
                     logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
                     ok = False
                     error = str(exc)
                     result = f"Tool call failed: {exc}"
+                    if fn_name != SCRATCHPAD_TOOL_NAME:
+                        needs_scratchpad_update = True
+                result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
-                    len(result),
-                    tool_result_preview(result),
+                    len(result_text),
+                    tool_result_preview(result_text),
                 )
-                await self._dispatch_after_tool_call(
-                    ToolCallEvent(
-                        scope=scope_for_tools,
-                        call_id=str(tool_call.get("id", "")),
-                        tool_name=fn_name,
-                        args=args,
-                        result=result,
-                        result_preview=tool_result_preview(result, limit=1200),
-                        ok=ok,
-                        error=error,
-                        at=human_now(),
+                if fn_name != SCRATCHPAD_TOOL_NAME:
+                    await self._dispatch_after_tool_call(
+                        ToolCallEvent(
+                            scope=scope_for_tools,
+                            call_id=str(tool_call.get("id", "")),
+                            tool_name=fn_name,
+                            args=args,
+                            result=result_text,
+                            result_preview=tool_result_preview(result_text, limit=1200),
+                            ok=ok,
+                            error=error,
+                            at=human_now(),
+                        )
                     )
-                )
                 tool_trace.append(
                     {
                         "name": fn_name,
                         "args": args,
-                        "result_preview": tool_result_preview(result, limit=300),
+                        "result_preview": tool_result_preview(result_text, limit=300),
                     }
                 )
                 messages.append(
@@ -220,7 +295,7 @@ class BotCore:
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
                         "name": fn_name,
-                        "content": result,
+                        "content": result_text,
                     }
                 )
             prepared_messages = self._prepare_messages_for_chat(messages)
@@ -233,7 +308,7 @@ class BotCore:
         return reply, tool_trace
 
     def _list_openai_tools(self) -> list[dict]:
-        return self.mcp.list_openai_tools()
+        return [scratchpad_tool_spec(), *self.mcp.list_openai_tools()]
 
     async def _scratchpad_command(self, scope: str, raw_text: str) -> None:
         await scratchpad_command(self, scope, raw_text)

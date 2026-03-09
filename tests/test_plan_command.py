@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, cast
 
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
-from nanobot.core import BotCore
+from nanobot.core import (
+    EMPTY_REPLY_FALLBACK,
+    SCRATCHPAD_PROTOCOL_ABORT_REPLY,
+    BotCore,
+)
+from nanobot.core_scratchpad import (
+    MAX_CONTEXT_CHARS,
+    MAX_FIELD_CHARS,
+    MAX_KNOWN_FACTS,
+    MAX_TOOL_JOURNAL,
+    SCRATCHPAD_TOOL_NAME,
+)
 
 
 class _FakeChannel:
@@ -33,6 +45,21 @@ class _FakeLlm:
         reply = self._replies[self._idx]
         self._idx += 1
         return reply
+
+
+class _RecordingFakeLlm(_FakeLlm):
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        super().__init__(replies)
+        self.calls_messages: list[list[dict[str, Any]]] = []
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict[str, Any] | None = None,
+    ) -> dict:
+        self.calls_messages.append(messages)
+        return await super().chat(messages, tools, response_format)
 
 
 class _FakeMcp:
@@ -239,3 +266,324 @@ def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
     show_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/scratchpad show")
     asyncio.run(bot.on_incoming(show_msg))
     assert "Structured scratchpad" in channel.sent[-1][1]
+
+
+def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_sp_1",
+                            "type": "function",
+                            "function": {
+                                "name": SCRATCHPAD_TOOL_NAME,
+                                "arguments": json.dumps(
+                                    {
+                                        "mode": "init",
+                                        "goal": "Find best laptop",
+                                        "context": "Budget under 1500 USD",
+                                        "known_facts": ["User prefers 14 inch", "Needs 16GB RAM"],
+                                        "current_step": "Collect candidate models",
+                                        "next_step": "Compare prices",
+                                        "tool_journal": ["Initialized scratchpad"],
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Working on it.", "tool_calls": None},
+            ]
+        ),
+    )
+    bot.mcp = cast(Any, _FakeMcp())
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="help me buy laptop")
+    asyncio.run(bot.on_incoming(message))
+
+    assert "Working on it." in channel.sent[-1][1]
+    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    assert isinstance(state, dict)
+    assert state["goal"] == "Find best laptop"
+    assert state["context"] == "Budget under 1500 USD"
+    assert state["current_step"] == "Collect candidate models"
+    assert state["next_step"] == "Compare prices"
+    assert state["known_facts"] == ["User prefers 14 inch", "Needs 16GB RAM"]
+    assert state["tool_journal"] == ["Initialized scratchpad"]
+    assert isinstance(state["updated_at"], str) and state["updated_at"]
+
+
+def test_session_scratchpad_write_clips_long_fields(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    long_field = "g" * (MAX_FIELD_CHARS + 50)
+    long_context = "c" * (MAX_CONTEXT_CHARS + 80)
+    known_facts = [f"fact-{idx}-" + ("k" * (MAX_FIELD_CHARS + 10)) for idx in range(MAX_KNOWN_FACTS + 5)]
+    tool_journal = [f"journal-{idx}-" + ("j" * (MAX_FIELD_CHARS + 10)) for idx in range(MAX_TOOL_JOURNAL + 7)]
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_sp_2",
+                            "type": "function",
+                            "function": {
+                                "name": SCRATCHPAD_TOOL_NAME,
+                                "arguments": json.dumps(
+                                    {
+                                        "mode": "init",
+                                        "goal": long_field,
+                                        "context": long_context,
+                                        "known_facts": known_facts,
+                                        "current_step": long_field,
+                                        "next_step": long_field,
+                                        "tool_journal": tool_journal,
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": None},
+            ]
+        ),
+    )
+    bot.mcp = cast(Any, _FakeMcp())
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="start")
+    asyncio.run(bot.on_incoming(message))
+
+    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    assert isinstance(state, dict)
+    assert len(state["goal"]) == MAX_FIELD_CHARS
+    assert len(state["context"]) == MAX_CONTEXT_CHARS
+    assert len(state["current_step"]) == MAX_FIELD_CHARS
+    assert len(state["next_step"]) == MAX_FIELD_CHARS
+    assert len(state["known_facts"]) == MAX_KNOWN_FACTS
+    assert len(state["tool_journal"]) == MAX_TOOL_JOURNAL
+    assert all(len(item) <= MAX_FIELD_CHARS for item in state["known_facts"])
+    assert all(len(item) <= MAX_FIELD_CHARS for item in state["tool_journal"])
+
+
+def test_phase2_blocks_external_tool_when_scratchpad_update_missing(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    llm = _RecordingFakeLlm(
+        replies=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_1",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_2",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+            {"content": "Stopped for protocol correction.", "tool_calls": None},
+        ]
+    )
+    bot.llm = cast(Any, llm)
+
+    class _CountingMcp(_FakeMcp):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, fn_name: str, args: dict) -> str:
+            del args
+            self.calls.append(fn_name)
+            return "tool output"
+
+    mcp = _CountingMcp()
+    bot.mcp = cast(Any, mcp)
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    assert len(mcp.calls) == 1
+    assert mcp.calls == ["timer__time_now"]
+    assert "Stopped for protocol correction." in channel.sent[-1][1]
+    merged_prompt_text = "\n".join(str(msg.get("content", "")) for msg in llm.calls_messages[-1])
+    assert "Protocol violation:" in merged_prompt_text
+    assert SCRATCHPAD_TOOL_NAME in merged_prompt_text
+
+
+def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_1",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_sp_append",
+                            "type": "function",
+                            "function": {
+                                "name": SCRATCHPAD_TOOL_NAME,
+                                "arguments": json.dumps(
+                                    {
+                                        "mode": "append",
+                                        "current_step": "Captured current time",
+                                        "next_step": "Check again",
+                                        "tool_journal": ["timer__time_now returned UTC time"],
+                                    }
+                                ),
+                            },
+                        },
+                        {
+                            "id": "call_ext_2",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        },
+                    ],
+                },
+                {"content": "Done.", "tool_calls": None},
+            ]
+        ),
+    )
+
+    class _CountingMcp(_FakeMcp):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, fn_name: str, args: dict) -> str:
+            del args
+            self.calls.append(fn_name)
+            return "tool output"
+
+    mcp = _CountingMcp()
+    bot.mcp = cast(Any, mcp)
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    assert channel.sent[-1][1] == "Done."
+    assert mcp.calls == ["timer__time_now", "timer__time_now"]
+    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    assert isinstance(state, dict)
+    assert state["current_step"] == "Captured current time"
+    assert state["next_step"] == "Check again"
+    assert "timer__time_now returned UTC time" in state["tool_journal"]
+
+
+def test_phase2_aborts_after_two_protocol_retries(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    llm = _RecordingFakeLlm(
+        replies=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_1",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_2",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_3",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ext_4",
+                        "type": "function",
+                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                    }
+                ],
+            },
+        ]
+    )
+    bot.llm = cast(Any, llm)
+
+    class _CountingMcp(_FakeMcp):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, fn_name: str, args: dict) -> str:
+            del args
+            self.calls.append(fn_name)
+            return "tool output"
+
+    mcp = _CountingMcp()
+    bot.mcp = cast(Any, mcp)
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    assert mcp.calls == ["timer__time_now"]
+    assert channel.sent[-1][1] == SCRATCHPAD_PROTOCOL_ABORT_REPLY
+    last_messages = llm.calls_messages[-1]
+    assistant_tool_messages = [
+        msg for msg in last_messages if str(msg.get("role")) == "assistant" and msg.get("tool_calls")
+    ]
+    assert len(assistant_tool_messages) == 1
+
+
+def test_empty_final_reply_uses_fallback(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(Any, _FakeLlm(replies=[{"content": "\n\n\n", "tool_calls": None}]))
+    bot.mcp = cast(Any, _FakeMcp())
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    assert channel.sent[-1][1] == EMPTY_REPLY_FALLBACK
