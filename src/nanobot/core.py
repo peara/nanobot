@@ -13,6 +13,7 @@ from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
+    apply_scratchpad_append_from_content,
     apply_scratchpad_tool_call,
     clear_scratchpad,
     scratchpad_assistant_message,
@@ -179,7 +180,6 @@ class BotCore:
         )
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
-        protocol_retry_count = 0
         while assistant_message.get("tool_calls"):
             requested_calls = assistant_message["tool_calls"]
             if needs_scratchpad_update:
@@ -194,41 +194,22 @@ class BotCore:
                         protocol_violation = True
                         break
                 if protocol_violation:
-                    protocol_retry_count += 1
                     proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
                     logger.warning(
-                        "Scratchpad protocol violation scope=%s retry=%d/%d proposed_tools=%s",
+                        "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
                         scope_for_tools,
-                        protocol_retry_count,
-                        MAX_SCRATCHPAD_PROTOCOL_RETRIES,
                         proposed_tools,
                     )
-                    if protocol_retry_count > MAX_SCRATCHPAD_PROTOCOL_RETRIES:
-                        logger.error(
-                            "Scratchpad protocol retries exceeded scope=%s; aborting turn",
-                            scope_for_tools,
-                        )
-                        return SCRATCHPAD_PROTOCOL_ABORT_REPLY, tool_trace
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                f"{SCRATCHPAD_PROTOCOL_CORRECTION} "
-                                f"Retry {protocol_retry_count}/{MAX_SCRATCHPAD_PROTOCOL_RETRIES}."
-                            ),
-                        }
-                    )
-                    trimmed = self._trim_to_last_tool_round(messages)
-                    scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
-                    to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
-                    prepared_messages = self._prepare_messages_for_chat(to_send)
-                    assistant_message = await self.llm.chat(
-                        messages=prepared_messages,
-                        tools=tools,
-                        response_format=response_format,
-                    )
-                    continue
-            protocol_retry_count = 0
+                    raw_content = assistant_message.get("content") or ""
+                    if raw_content.strip():
+                        try:
+                            apply_scratchpad_append_from_content(self, scope_for_tools, raw_content)
+                            needs_scratchpad_update = False
+                        except Exception:  # pylint: disable=broad-except
+                            logger.exception(
+                                "Failed to apply synthetic scratchpad from content scope=%s",
+                                scope_for_tools,
+                            )
             messages.append(
                 {
                     "role": "assistant",

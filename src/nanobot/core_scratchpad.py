@@ -29,6 +29,34 @@ def _clip_text(value: Any, *, limit: int = MAX_FIELD_CHARS) -> str:
     return str(value or "").strip()[:limit]
 
 
+def strip_thinking(content: str) -> str:
+    """Extract meaningful text around think tags across common model variants."""
+    raw = str(content or "").strip()
+    if not raw:
+        return ""
+
+    open_tag = "<think>"
+    close_tag = "</think>"
+
+    if open_tag in raw and close_tag in raw:
+        start = raw.find(open_tag)
+        end = raw.find(close_tag, start + len(open_tag))
+        if end != -1:
+            before = raw[:start].strip()
+            after = raw[end + len(close_tag) :].strip()
+            return " ".join(part for part in [before, after] if part).strip()
+
+    # Some models only emit a closing tag; useful content is often before it.
+    if close_tag in raw:
+        return raw.split(close_tag, 1)[0].strip()
+
+    # Some models only emit an opening tag; keep the trailing text.
+    if open_tag in raw:
+        return raw.split(open_tag, 1)[-1].strip()
+
+    return raw
+
+
 def _to_text_list(value: Any, *, limit_items: int, limit_chars: int = MAX_FIELD_CHARS) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -141,6 +169,18 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
     normalized = _coerce_state(state)
     bot.contexts.put("chat", scope, "scratchpad", normalized)
     return normalized
+
+
+def apply_scratchpad_append_from_content(bot: Any, scope: str, content: str) -> None:
+    """Append a scratchpad entry from the model's content (e.g. thinking), stripping think tags."""
+    stripped = strip_thinking(content)
+    if not stripped:
+        return
+    apply_scratchpad_tool_call(
+        bot,
+        scope,
+        {"mode": "append", "tool_journal": [stripped[:MAX_FIELD_CHARS]]},
+    )
 
 
 async def scratchpad_command(bot: Any, scope: str, raw_text: str) -> None:

@@ -6,11 +6,7 @@ from typing import Any, cast
 
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
-from nanobot.core import (
-    EMPTY_REPLY_FALLBACK,
-    SCRATCHPAD_PROTOCOL_ABORT_REPLY,
-    BotCore,
-)
+from nanobot.core import EMPTY_REPLY_FALLBACK, BotCore
 from nanobot.core_scratchpad import (
     MAX_CONTEXT_CHARS,
     MAX_FIELD_CHARS,
@@ -376,36 +372,39 @@ def test_session_scratchpad_write_clips_long_fields(tmp_path) -> None:
     assert all(len(item) <= MAX_FIELD_CHARS for item in state["tool_journal"])
 
 
-def test_phase2_blocks_external_tool_when_scratchpad_update_missing(tmp_path) -> None:
+def test_phase2_logs_violation_but_does_not_block(tmp_path) -> None:
+    """With relaxed protocol we only log violation and continue executing tools."""
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
-    llm = _RecordingFakeLlm(
-        replies=[
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_1",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_2",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-            {"content": "Stopped for protocol correction.", "tool_calls": None},
-        ]
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_1",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_2",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {"content": "Stopped for protocol correction.", "tool_calls": None},
+            ]
+        ),
     )
-    bot.llm = cast(Any, llm)
 
     class _CountingMcp(_FakeMcp):
         def __init__(self) -> None:
@@ -422,12 +421,8 @@ def test_phase2_blocks_external_tool_when_scratchpad_update_missing(tmp_path) ->
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     asyncio.run(bot.on_incoming(message))
 
-    assert len(mcp.calls) == 1
-    assert mcp.calls == ["timer__time_now"]
+    assert mcp.calls == ["timer__time_now", "timer__time_now"]
     assert "Stopped for protocol correction." in channel.sent[-1][1]
-    merged_prompt_text = "\n".join(str(msg.get("content", "")) for msg in llm.calls_messages[-1])
-    assert "Protocol violation:" in merged_prompt_text
-    assert SCRATCHPAD_TOOL_NAME in merged_prompt_text
 
 
 def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) -> None:
@@ -502,55 +497,59 @@ def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) ->
     assert "timer__time_now returned UTC time" in state["tool_journal"]
 
 
-def test_phase2_aborts_after_two_protocol_retries(tmp_path) -> None:
+def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
+    """With relaxed protocol we never abort; all requested tools run."""
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
-    llm = _RecordingFakeLlm(
-        replies=[
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_1",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_2",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_3",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_ext_4",
-                        "type": "function",
-                        "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
-                    }
-                ],
-            },
-        ]
+    bot.llm = cast(
+        Any,
+        _FakeLlm(
+            replies=[
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_1",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_2",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_3",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ext_4",
+                            "type": "function",
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                        }
+                    ],
+                },
+                {"content": "Done after four calls.", "tool_calls": None},
+            ]
+        ),
     )
-    bot.llm = cast(Any, llm)
 
     class _CountingMcp(_FakeMcp):
         def __init__(self) -> None:
@@ -567,13 +566,8 @@ def test_phase2_aborts_after_two_protocol_retries(tmp_path) -> None:
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     asyncio.run(bot.on_incoming(message))
 
-    assert mcp.calls == ["timer__time_now"]
-    assert channel.sent[-1][1] == SCRATCHPAD_PROTOCOL_ABORT_REPLY
-    last_messages = llm.calls_messages[-1]
-    assistant_tool_messages = [
-        msg for msg in last_messages if str(msg.get("role")) == "assistant" and msg.get("tool_calls")
-    ]
-    assert len(assistant_tool_messages) == 1
+    assert mcp.calls == ["timer__time_now", "timer__time_now", "timer__time_now", "timer__time_now"]
+    assert channel.sent[-1][1] == "Done after four calls."
 
 
 def test_empty_final_reply_uses_fallback(tmp_path) -> None:
