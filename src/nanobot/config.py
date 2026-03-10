@@ -39,6 +39,7 @@ class AppConfig:
     scheduler_db_path: str
     poll_interval_seconds: int
     system_prompt_template: str
+    working_timezone: str
     history_message_limit: int
     history_char_limit: int
     model: ModelConfig
@@ -80,6 +81,7 @@ def load_config(config_path: str) -> AppConfig:
                 "Do not use markdown tables, HTML tags, or raw markup."
             ),
         ),
+        working_timezone=data.get("working_timezone", "UTC"),
         history_message_limit=int(data.get("history_message_limit", 24)),
         history_char_limit=int(data.get("history_char_limit", 12000)),
         model=model_cfg,

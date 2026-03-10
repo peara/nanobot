@@ -120,7 +120,7 @@ class BotCore:
         self.memory.add_message(scope, "user", user_text)
         self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
         history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
-        history = attach_human_timestamps(history)
+        history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
         history = trim_history_by_chars(history, self.config.history_char_limit)
         messages = [self._base_system_message()]
         messages.extend(history)
@@ -141,7 +141,11 @@ class BotCore:
     def _base_system_message(self) -> dict[str, str]:
         return {
             "role": "system",
-            "content": self.config.system_prompt_template.format(assistant_name=self.config.assistant_name),
+            "content": self.config.system_prompt_template.format(
+                assistant_name=self.config.assistant_name,
+                working_timezone=self.config.working_timezone,
+                current_time=human_now(self.config.working_timezone),
+            ),
         }
 
     async def _run_agent_turn(self, scope: str, messages: list[dict], persist_assistant: bool) -> None:
@@ -263,7 +267,7 @@ class BotCore:
                             result_preview=tool_result_preview(result_text, limit=1200),
                             ok=ok,
                             error=error,
-                            at=human_now(),
+                            at=human_now(self.config.working_timezone),
                         )
                     )
                 tool_trace.append(

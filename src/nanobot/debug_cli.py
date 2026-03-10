@@ -202,7 +202,11 @@ def _show_context(config: AppConfig, scope: str, full: bool, tail: int) -> None:
             "messages": [
                 {
                     "role": "system",
-                    "content": config.system_prompt_template.format(assistant_name=config.assistant_name),
+                    "content": config.system_prompt_template.format(
+                        assistant_name=config.assistant_name,
+                        working_timezone=config.working_timezone,
+                        current_time="(debug context time unavailable)",
+                    ),
                 },
                 *trimmed,
             ],

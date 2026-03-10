@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SCHEDULED_SYSTEM_MARKER = (
     "This is an automated scheduler trigger, not a user message. Do not assume a human is currently chatting."
@@ -54,22 +55,30 @@ def clip_long(text: str, limit: int = 3500) -> str:
     return f"{text[:limit]}\n...(truncated)"
 
 
-def format_timestamp_for_prompt(raw_value: str) -> str | None:
+def _resolve_zoneinfo(timezone_name: str) -> ZoneInfo:
     try:
-        parsed = datetime.strptime(raw_value, "%Y-%m-%d %H:%M:%S")
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def format_timestamp_for_prompt(raw_value: str, timezone_name: str = "UTC") -> str | None:
+    try:
+        parsed = datetime.strptime(raw_value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
     except ValueError:
         return None
-    return parsed.strftime("%A, %d %B %Y, %I:%M %p")
+    local = parsed.astimezone(_resolve_zoneinfo(timezone_name))
+    return local.strftime("%A, %d %B %Y, %I:%M %p")
 
 
-def attach_human_timestamps(messages: list[dict]) -> list[dict]:
+def attach_human_timestamps(messages: list[dict], timezone_name: str = "UTC") -> list[dict]:
     result: list[dict] = []
     for message in messages:
         role = str(message.get("role", "user"))
         content = str(message.get("content", ""))
         created_at = message.get("created_at")
         if isinstance(created_at, str):
-            formatted = format_timestamp_for_prompt(created_at)
+            formatted = format_timestamp_for_prompt(created_at, timezone_name)
             if formatted:
                 content = f"[{formatted}]\n{content}"
         result.append({"role": role, "content": content})
@@ -84,8 +93,8 @@ def extract_playwright_field(result_text: str, field: str) -> str | None:
     return None
 
 
-def human_now() -> str:
-    return datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
+def human_now(timezone_name: str = "UTC") -> str:
+    return datetime.now(_resolve_zoneinfo(timezone_name)).strftime("%A, %d %B %Y, %I:%M %p")
 
 
 def looks_garbled_text(text: str) -> bool:

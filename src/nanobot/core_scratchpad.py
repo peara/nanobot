@@ -13,6 +13,12 @@ MAX_TOOL_JOURNAL = 30
 VALID_MODES = {"init", "append", "finalize"}
 
 
+def _bot_timezone(bot: Any) -> str:
+    config = getattr(bot, "config", None)
+    timezone_name = getattr(config, "working_timezone", "UTC")
+    return str(timezone_name or "UTC")
+
+
 def empty_scratchpad_state() -> dict[str, Any]:
     return {
         "goal": "",
@@ -68,7 +74,7 @@ def _to_text_list(value: Any, *, limit_items: int, limit_chars: int = MAX_FIELD_
     return cleaned[-limit_items:]
 
 
-def _coerce_state(payload: Any) -> dict[str, Any]:
+def _coerce_state(payload: Any, timezone_name: str = "UTC") -> dict[str, Any]:
     state = empty_scratchpad_state()
     if not isinstance(payload, dict):
         return state
@@ -78,17 +84,19 @@ def _coerce_state(payload: Any) -> dict[str, Any]:
     state["current_step"] = _clip_text(payload.get("current_step"))
     state["next_step"] = _clip_text(payload.get("next_step"))
     state["tool_journal"] = _to_text_list(payload.get("tool_journal"), limit_items=MAX_TOOL_JOURNAL)
-    state["updated_at"] = _clip_text(payload.get("updated_at")) or human_now()
+    state["updated_at"] = _clip_text(payload.get("updated_at")) or human_now(timezone_name)
     return state
 
 
 def get_scratchpad_state(bot: Any, scope: str) -> dict[str, Any]:
     payload = bot.contexts.get("chat", scope, "scratchpad")
-    return _coerce_state(payload)
+    return _coerce_state(payload, timezone_name=_bot_timezone(bot))
 
 
 def clear_scratchpad(bot: Any, scope: str) -> None:
-    bot.contexts.put("chat", scope, "scratchpad", empty_scratchpad_state())
+    state = empty_scratchpad_state()
+    state["updated_at"] = human_now(_bot_timezone(bot))
+    bot.contexts.put("chat", scope, "scratchpad", state)
 
 
 def scratchpad_tool_spec() -> dict[str, Any]:
@@ -165,8 +173,9 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
             combined = [*state.get("tool_journal", []), *tool_journal]
             state["tool_journal"] = _to_text_list(combined, limit_items=MAX_TOOL_JOURNAL)
 
-    state["updated_at"] = human_now()
-    normalized = _coerce_state(state)
+    timezone_name = _bot_timezone(bot)
+    state["updated_at"] = human_now(timezone_name)
+    normalized = _coerce_state(state, timezone_name=timezone_name)
     bot.contexts.put("chat", scope, "scratchpad", normalized)
     return normalized
 

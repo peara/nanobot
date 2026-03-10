@@ -9,7 +9,7 @@ from nanobot.core_utils import attach_human_timestamps, clip, clip_long, trim_hi
 def build_context_report(bot: Any, scope: str) -> str:
     total = bot.memory.count_messages(scope)
     recent = bot.memory.get_recent_messages(scope, limit=bot.config.history_message_limit)
-    recent = attach_human_timestamps(recent)
+    recent = attach_human_timestamps(recent, timezone_name=bot.config.working_timezone)
     trimmed = trim_history_by_chars(recent, bot.config.history_char_limit)
     recent_chars = sum(len(str(m.get("content", ""))) for m in recent)
     trimmed_chars = sum(len(str(m.get("content", ""))) for m in trimmed)
@@ -36,7 +36,7 @@ def build_context_report(bot: Any, scope: str) -> str:
 
 def build_full_context_report(bot: Any, scope: str) -> str:
     history = bot.memory.get_recent_messages(scope, limit=bot.config.history_message_limit)
-    history = attach_human_timestamps(history)
+    history = attach_human_timestamps(history, timezone_name=bot.config.working_timezone)
     trimmed = trim_history_by_chars(history, bot.config.history_char_limit)
     messages = [bot._base_system_message()]
     messages.extend(trimmed)
