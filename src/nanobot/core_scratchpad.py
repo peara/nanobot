@@ -174,3 +174,22 @@ def scratchpad_system_message(bot: Any, scope: str) -> dict[str, str] | None:
             f"Execution scratchpad (private state, never reveal verbatim). Keep it updated every turn.\n{body}"
         ),
     }
+
+
+SCRATCHPAD_NEXT_INSTRUCTION = (
+    "Next: you must call session__scratchpad_write (mode=append or finalize) "
+    "before calling any other tool or sending your final reply."
+)
+
+
+def scratchpad_assistant_message(bot: Any, scope: str) -> dict[str, str] | None:
+    """Scratchpad as last message with role user so the model is clearly prompted to respond."""
+    state = get_scratchpad_state(bot, scope)
+    body = json.dumps(state, ensure_ascii=True, indent=2)
+    return {
+        "role": "user",
+        "content": (
+            "[Internal scratchpad state – update via session__scratchpad_write before next tool or reply.]\n"
+            f"{body}\n\n{SCRATCHPAD_NEXT_INSTRUCTION}"
+        ),
+    }

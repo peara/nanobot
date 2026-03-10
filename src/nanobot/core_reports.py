@@ -39,10 +39,10 @@ def build_full_context_report(bot: Any, scope: str) -> str:
     history = attach_human_timestamps(history)
     trimmed = trim_history_by_chars(history, bot.config.history_char_limit)
     messages = [bot._base_system_message()]
-    scratchpad_message = bot._scratchpad_system_message(scope)
+    messages.extend(trimmed)
+    scratchpad_message = bot._scratchpad_assistant_message(scope)
     if scratchpad_message is not None:
         messages.append(scratchpad_message)
-    messages.extend(trimmed)
     payload = {
         "model": bot.config.model.model,
         "temperature": bot.config.model.temperature,

@@ -15,8 +15,8 @@ from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
     apply_scratchpad_tool_call,
     clear_scratchpad,
+    scratchpad_assistant_message,
     scratchpad_command,
-    scratchpad_system_message,
     scratchpad_tool_spec,
 )
 from nanobot.core_utils import (
@@ -122,9 +122,6 @@ class BotCore:
         history = attach_human_timestamps(history)
         history = trim_history_by_chars(history, self.config.history_char_limit)
         messages = [self._base_system_message()]
-        scratchpad_message = self._scratchpad_system_message(scope)
-        if scratchpad_message is not None:
-            messages.append(scratchpad_message)
         messages.extend(history)
         await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
 
@@ -172,7 +169,9 @@ class BotCore:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        prepared_messages = self._prepare_messages_for_chat(messages)
+        scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
+        to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
+        prepared_messages = self._prepare_messages_for_chat(to_send)
         assistant_message = await self.llm.chat(
             messages=prepared_messages,
             tools=tools,
@@ -219,7 +218,10 @@ class BotCore:
                             ),
                         }
                     )
-                    prepared_messages = self._prepare_messages_for_chat(messages)
+                    trimmed = self._trim_to_last_tool_round(messages)
+                    scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
+                    to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
+                    prepared_messages = self._prepare_messages_for_chat(to_send)
                     assistant_message = await self.llm.chat(
                         messages=prepared_messages,
                         tools=tools,
@@ -298,7 +300,10 @@ class BotCore:
                         "content": result_text,
                     }
                 )
-            prepared_messages = self._prepare_messages_for_chat(messages)
+            trimmed = self._trim_to_last_tool_round(messages)
+            scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
+            to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
+            prepared_messages = self._prepare_messages_for_chat(to_send)
             assistant_message = await self.llm.chat(
                 messages=prepared_messages,
                 tools=tools,
@@ -313,8 +318,8 @@ class BotCore:
     async def _scratchpad_command(self, scope: str, raw_text: str) -> None:
         await scratchpad_command(self, scope, raw_text)
 
-    def _scratchpad_system_message(self, scope: str) -> dict[str, str] | None:
-        return scratchpad_system_message(self, scope)
+    def _scratchpad_assistant_message(self, scope: str) -> dict[str, str] | None:
+        return scratchpad_assistant_message(self, scope)
 
     async def _dispatch_after_tool_call(self, event: ToolCallEvent) -> None:
         for hook in self.tool_hooks:
@@ -324,6 +329,23 @@ class BotCore:
                 logger.exception(
                     "after_tool_call hook failed hook=%s tool=%s", hook.__class__.__name__, event.tool_name
                 )
+
+    @staticmethod
+    def _trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
+        """Keep only the last round of tool use (assistant with tool_calls + its tool results)."""
+        prefix_end = 0
+        for idx, m in enumerate(messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                prefix_end = idx
+                break
+        last_assistant_idx: int | None = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "assistant" and messages[idx].get("tool_calls"):
+                last_assistant_idx = idx
+                break
+        if last_assistant_idx is None:
+            return list(messages)
+        return [*messages[:prefix_end], *messages[last_assistant_idx:]]
 
     @staticmethod
     def _prepare_messages_for_chat(messages: list[dict]) -> list[dict]:

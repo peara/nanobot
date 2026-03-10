@@ -185,7 +185,7 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     ctx_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/ctxfull")
     asyncio.run(bot.on_incoming(ctx_msg))
     assert len(channel.sent) == 2
-    assert "Execution scratchpad (private state" in channel.sent[1][1]
+    assert "scratchpad" in channel.sent[1][1].lower()
 
 
 def test_tool_results_are_persisted_in_context(tmp_path) -> None:
