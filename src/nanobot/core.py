@@ -110,6 +110,9 @@ class BotCore:
         if cmd == "/scratchpad":
             await self._scratchpad_command(scope, message.text)
             return
+        if cmd == "/reload" and self.config.owner_chat_id != 0:
+            await self._handle_reload(message.chat_id, scope, message.text)
+            return
         await self._process(scope, message.text)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
@@ -366,3 +369,168 @@ class BotCore:
 
     def _build_full_context_report(self, scope: str) -> str:
         return build_full_context_report(self, scope)
+
+    async def _handle_reload(self, chat_id: str, scope: str, raw_text: str) -> None:
+        if self.config.owner_chat_id != 0 and int(chat_id) != self.config.owner_chat_id:
+            await self._send(scope, "Reload command restricted to owner only.")
+            return
+        parts = raw_text.strip().split()
+        reload_type = parts[1] if len(parts) > 1 else "all"
+        dry_run = "--dry-run" in raw_text or "-d" in raw_text
+        await self._send(scope, f"Initiating reload (type={reload_type}, dry_run={dry_run})...")
+        try:
+            if reload_type == "config":
+                result = await self.reload_config(dry_run=dry_run)
+            elif reload_type == "mcp":
+                result = await self.reload_mcp_servers()
+            else:
+                result = await self.reload_all(dry_run=dry_run)
+            if isinstance(result, str):
+                msg = result
+            else:
+                msg = result.get("message", "Reload completed.")
+            await self._send(scope, msg)
+        except Exception as e:
+            logger.exception("Reload failed")
+            await self._send(scope, f"Reload failed: {e}")
+
+    async def reload_config(self, dry_run: bool = False) -> dict[str, Any] | str:
+        if dry_run:
+            try:
+                from nanobot.config import load_config
+
+                new_config = load_config("config.yaml")
+                message = (
+                    f"Config validation passed (dry-run).\n"
+                    f"Changes: assistant_name={new_config.assistant_name}, "
+                    f"poll_interval={new_config.poll_interval_seconds}"
+                )
+                return {
+                    "message": message,
+                    "success": True,
+                }
+            except Exception as e:
+                logger.exception("Config dry-run failed")
+                return {"message": f"Config validation failed: {e}", "success": False, "dry_run": True}
+        try:
+            from nanobot.config import load_config
+
+            new_config = load_config("config.yaml")
+            await self.stop()
+            self.config = new_config
+            self.llm = LlmClient(new_config.model)
+            for server in new_config.mcp_servers:
+                if server.name == "scheduler":
+                    server.env = dict(server.env)
+                    server.env.setdefault("SCHEDULER_DB_PATH", new_config.scheduler_db_path)
+            self.mcp = McpHub(new_config.mcp_servers)
+            self.scheduler_store = SchedulerStore(new_config.scheduler_db_path)
+            self.scheduler = SchedulerRunner(
+                store=self.scheduler_store,
+                on_due_task=self._handle_scheduled_task,
+                poll_interval_seconds=new_config.poll_interval_seconds,
+            )
+            await self.start()
+            return {"message": "Config reloaded successfully.", "success": True}
+        except Exception as e:
+            logger.exception("Config reload failed")
+            return {"message": f"Failed to reload config: {e}", "success": False}
+
+    async def reload_mcp_servers(self) -> dict[str, Any] | str:
+        await self._send_scope_message("mcp", "Stopping MCP servers...")
+        try:
+            await self.mcp.stop()
+            for server in self.config.mcp_servers:
+                if server.name == "scheduler":
+                    server.env = dict(server.env)
+                    server.env.setdefault("SCHEDULER_DB_PATH", self.config.scheduler_db_path)
+            self.mcp = McpHub(self.config.mcp_servers)
+            await self.start()
+            return {"message": "MCP servers restarted successfully.", "success": True}
+        except Exception as e:
+            logger.exception("MCP reload failed")
+            return {"message": f"Failed to restart MCP servers: {e}", "success": False}
+
+    async def reload_all(self, dry_run: bool = False) -> dict[str, Any] | str:
+        if dry_run:
+            try:
+                from nanobot.config import load_config
+
+                new_config = load_config("config.yaml")
+                message = (
+                    f"Full reload validation passed (dry-run).\n"
+                    f"Config: assistant_name={new_config.assistant_name}\n"
+                    f"MCP servers: {[s.name for s in new_config.mcp_servers]}"
+                )
+                return {
+                    "message": message,
+                    "success": True,
+                    "dry_run": True,
+                }
+            except Exception as e:
+                logger.exception("Full reload dry-run failed")
+                return {"message": f"Validation failed: {e}", "success": False, "dry_run": True}
+        await self._send_scope_message("mcp", "Saving state and initiating full reload...")
+        try:
+            self.contexts.put(
+                "system",
+                "reload",
+                "phase",
+                {"timestamp": human_now(self.config.working_timezone), "phase": "pre_reload"},
+            )
+            await self.stop()
+            for server in self.config.mcp_servers:
+                if server.name == "scheduler":
+                    server.env = dict(server.env)
+                    server.env.setdefault("SCHEDULER_DB_PATH", self.config.scheduler_db_path)
+            self.llm = LlmClient(self.config.model)
+            self.mcp = McpHub(self.config.mcp_servers)
+            self.scheduler_store = SchedulerStore(self.config.scheduler_db_path)
+            self.scheduler = SchedulerRunner(
+                store=self.scheduler_store,
+                on_due_task=self._handle_scheduled_task,
+                poll_interval_seconds=self.config.poll_interval_seconds,
+            )
+            await self.start()
+            self.contexts.put(
+                "system",
+                "reload",
+                "phase",
+                {"timestamp": human_now(self.config.working_timezone), "phase": "post_reload", "success": True},
+            )
+            return {"message": "Full reload completed successfully.", "success": True}
+        except Exception as e:
+            logger.exception("Full reload failed")
+            self.contexts.put(
+                "system",
+                "reload",
+                "phase",
+                {"timestamp": human_now(self.config.working_timezone), "phase": "failed", "error": str(e)},
+            )
+            await self.stop()
+            for server in self.config.mcp_servers:
+                if server.name == "scheduler":
+                    server.env = dict(server.env)
+                    server.env.setdefault("SCHEDULER_DB_PATH", self.config.scheduler_db_path)
+            self.llm = LlmClient(self.config.model)
+            self.mcp = McpHub(self.config.mcp_servers)
+            self.scheduler_store = SchedulerStore(self.config.scheduler_db_path)
+            self.scheduler = SchedulerRunner(
+                store=self.scheduler_store,
+                on_due_task=self._handle_scheduled_task,
+                poll_interval_seconds=self.config.poll_interval_seconds,
+            )
+            await self.start()
+            self.contexts.put(
+                "system",
+                "reload",
+                "phase",
+                {"timestamp": human_now(self.config.working_timezone), "phase": "post_reload", "success": True},
+            )
+            return {"message": "Full reload completed successfully.", "success": True}
+
+    async def _send_scope_message(self, scope: str | None, text: str) -> None:
+        if scope is None or scope == "mcp":
+            await self._send("telegram:owner", text)
+        else:
+            await self._send(scope, text)
