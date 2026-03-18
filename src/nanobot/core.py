@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,14 @@ from nanobot.scheduler_store import SchedulerStore
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class ActiveRequest:
+    chat_id: str
+    started_at: datetime
+    current_step: str
+
+
 SCRATCHPAD_PROTOCOL_CORRECTION = (
     "Protocol violation: after any external tool result, call session__scratchpad_write first "
     "(mode='append' or mode='finalize') before requesting another external tool."
@@ -69,6 +79,7 @@ class BotCore:
         from nanobot.core_commands.command_manager import CommandManager
 
         self.command_manager = CommandManager(self)
+        self.active_requests: dict[str, ActiveRequest] = {}
 
     async def start(self) -> None:
         logger.info(
@@ -97,14 +108,22 @@ class BotCore:
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
-        self.memory.add_message(scope, "user", user_text)
-        self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
-        history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
-        history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
-        history = trim_history_by_chars(history, self.config.history_char_limit)
-        messages = [self._base_system_message()]
-        messages.extend(history)
-        await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
+        self.active_requests[scope] = ActiveRequest(
+            chat_id=scope,
+            started_at=datetime.now(),
+            current_step="processing user message",
+        )
+        try:
+            self.memory.add_message(scope, "user", user_text)
+            self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
+            history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+            history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
+            history = trim_history_by_chars(history, self.config.history_char_limit)
+            messages = [self._base_system_message()]
+            messages.extend(history)
+            await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
+        finally:
+            self.active_requests.pop(scope, None)
 
     async def _process_scheduled(self, scope: str, prompt: str) -> None:
         logger.info("Processing scheduled task for scope=%s prompt=%s", scope, clip(prompt, limit=200))
@@ -129,6 +148,8 @@ class BotCore:
         }
 
     async def _run_agent_turn(self, scope: str, messages: list[dict], persist_assistant: bool) -> None:
+        if scope in self.active_requests:
+            self.active_requests[scope].current_step = "calling tools"
         reply, _ = await self._run_agent_loop(
             scope_for_tools=scope,
             messages=messages,
@@ -213,6 +234,8 @@ class BotCore:
                 ok = True
                 error: str | None = None
                 try:
+                    if scope_for_tools in self.active_requests:
+                        self.active_requests[scope_for_tools].current_step = f"calling {fn_name}"
                     logger.info("Calling tool=%s args=%s", fn_name, args)
                     if fn_name == SCRATCHPAD_TOOL_NAME:
                         scratchpad = apply_scratchpad_tool_call(self, scope_for_tools, args)

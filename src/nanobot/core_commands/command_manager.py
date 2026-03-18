@@ -14,6 +14,7 @@ from nanobot.core_commands.commands.plan import PlanCommand  # noqa: F401
 from nanobot.core_commands.commands.reload import ReloadCommand  # noqa: F401
 from nanobot.core_commands.commands.reset import ResetCommand  # noqa: F401
 from nanobot.core_commands.commands.scratchpad import ScratchpadCommand  # noqa: F401
+from nanobot.core_commands.commands.status import StatusCommand  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class CommandManager:
         self._register(PlanCommand)
         self._register(ScratchpadCommand)
         self._register(ReloadCommand)
+        self._register(StatusCommand)
 
     def _register(self, command_class: type[BaseCommand]) -> None:
         for name in command_class.names():
