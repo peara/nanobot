@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -8,27 +7,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from nanobot.agent_run import AgentRun
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
-from nanobot.core_scratchpad import (
-    SCRATCHPAD_TOOL_NAME,
-    apply_scratchpad_append_from_content,
-    apply_scratchpad_tool_call,
-    scratchpad_assistant_message,
-    scratchpad_tool_spec,
-)
+from nanobot.core_router import MessageRouter
+from nanobot.core_scratchpad import scratchpad_tool_spec
 from nanobot.core_utils import (
     SCHEDULED_SYSTEM_MARKER,
-    attach_human_timestamps,
     clip,
     command_name,
     human_now,
     scoped_chat_id,
-    tool_result_preview,
-    trim_history_by_chars,
     unscoped_chat_id,
 )
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
@@ -80,6 +72,8 @@ class BotCore:
 
         self.command_manager = CommandManager(self)
         self.active_requests: dict[str, ActiveRequest] = {}
+        self.agent_run = AgentRun(self)
+        self.router = MessageRouter(self)
 
     async def start(self) -> None:
         logger.info(
@@ -116,12 +110,7 @@ class BotCore:
         try:
             self.memory.add_message(scope, "user", user_text)
             self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
-            history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
-            history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
-            history = trim_history_by_chars(history, self.config.history_char_limit)
-            messages = [self._base_system_message()]
-            messages.extend(history)
-            await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
+            await self.router.route_user_message(scope)
         finally:
             self.active_requests.pop(scope, None)
 
@@ -150,7 +139,7 @@ class BotCore:
     async def _run_agent_turn(self, scope: str, messages: list[dict], persist_assistant: bool) -> None:
         if scope in self.active_requests:
             self.active_requests[scope].current_step = "calling tools"
-        reply, _ = await self._run_agent_loop(
+        reply, _ = await self.agent_run.run(
             scope_for_tools=scope,
             messages=messages,
             tools=self._list_openai_tools(),
@@ -175,130 +164,12 @@ class BotCore:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
-        to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
-        prepared_messages = self._prepare_messages_for_chat(to_send)
-        assistant_message = await self.llm.chat(
-            messages=prepared_messages,
+        return await self.agent_run.run(
+            scope_for_tools=scope_for_tools,
+            messages=messages,
             tools=tools,
             response_format=response_format,
         )
-        tool_trace: list[dict[str, Any]] = []
-        needs_scratchpad_update = False
-        while assistant_message.get("tool_calls"):
-            requested_calls = assistant_message["tool_calls"]
-            if needs_scratchpad_update:
-                scratchpad_seen = False
-                protocol_violation = False
-                for tool_call in requested_calls:
-                    name = str(tool_call.get("function", {}).get("name", ""))
-                    if name == SCRATCHPAD_TOOL_NAME:
-                        scratchpad_seen = True
-                        continue
-                    if not scratchpad_seen:
-                        protocol_violation = True
-                        break
-                if protocol_violation:
-                    proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
-                    logger.warning(
-                        "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
-                        scope_for_tools,
-                        proposed_tools,
-                    )
-                    raw_content = assistant_message.get("content") or ""
-                    if raw_content.strip():
-                        try:
-                            apply_scratchpad_append_from_content(self, scope_for_tools, raw_content)
-                            needs_scratchpad_update = False
-                        except Exception:  # pylint: disable=broad-except
-                            logger.exception(
-                                "Failed to apply synthetic scratchpad from content scope=%s",
-                                scope_for_tools,
-                            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": assistant_message.get("content") or "",
-                    "tool_calls": requested_calls,
-                }
-            )
-            for tool_call in requested_calls:
-                fn_name = tool_call["function"]["name"]
-                raw_args = tool_call["function"].get("arguments") or "{}"
-                args = json.loads(raw_args)
-                if fn_name.endswith("__schedule_task"):
-                    chat_id = str(args.get("chat_id", "")).strip()
-                    # LLMs often pass placeholders like "current_chat"; map to the real scoped chat id.
-                    if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
-                        args["chat_id"] = scope_for_tools
-                ok = True
-                error: str | None = None
-                try:
-                    if scope_for_tools in self.active_requests:
-                        self.active_requests[scope_for_tools].current_step = f"calling {fn_name}"
-                    logger.info("Calling tool=%s args=%s", fn_name, args)
-                    if fn_name == SCRATCHPAD_TOOL_NAME:
-                        scratchpad = apply_scratchpad_tool_call(self, scope_for_tools, args)
-                        result = json.dumps({"ok": True, "scratchpad": scratchpad}, ensure_ascii=True)
-                        needs_scratchpad_update = False
-                    else:
-                        result = await self.mcp.call_tool(fn_name, args)
-                        needs_scratchpad_update = True
-                    logger.info("Tool succeeded tool=%s", fn_name)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.exception("Tool failed tool=%s", fn_name)
-                    ok = False
-                    error = str(exc)
-                    result = f"Tool call failed: {exc}"
-                    if fn_name != SCRATCHPAD_TOOL_NAME:
-                        needs_scratchpad_update = True
-                result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
-                logger.info(
-                    "Tool result tool=%s chars=%d preview=%s",
-                    fn_name,
-                    len(result_text),
-                    tool_result_preview(result_text),
-                )
-                if fn_name != SCRATCHPAD_TOOL_NAME:
-                    await self._dispatch_after_tool_call(
-                        ToolCallEvent(
-                            scope=scope_for_tools,
-                            call_id=str(tool_call.get("id", "")),
-                            tool_name=fn_name,
-                            args=args,
-                            result=result_text,
-                            result_preview=tool_result_preview(result_text, limit=1200),
-                            ok=ok,
-                            error=error,
-                            at=human_now(self.config.working_timezone),
-                        )
-                    )
-                tool_trace.append(
-                    {
-                        "name": fn_name,
-                        "args": args,
-                        "result_preview": tool_result_preview(result_text, limit=300),
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": fn_name,
-                        "content": result_text,
-                    }
-                )
-            trimmed = self._trim_to_last_tool_round(messages)
-            scratchpad_msg = scratchpad_assistant_message(self, scope_for_tools)
-            to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
-            prepared_messages = self._prepare_messages_for_chat(to_send)
-            assistant_message = await self.llm.chat(
-                messages=prepared_messages,
-                tools=tools,
-                response_format=response_format,
-            )
-        reply = assistant_message.get("content") or "I could not generate a response."
-        return reply, tool_trace
 
     def _list_openai_tools(self) -> list[dict]:
         return [scratchpad_tool_spec(), *self.mcp.list_openai_tools()]
@@ -317,43 +188,6 @@ class BotCore:
                 logger.exception(
                     "after_tool_call hook failed hook=%s tool=%s", hook.__class__.__name__, event.tool_name
                 )
-
-    @staticmethod
-    def _trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
-        """Keep only the last round of tool use (assistant with tool_calls + its tool results)."""
-        prefix_end = 0
-        for idx, m in enumerate(messages):
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                prefix_end = idx
-                break
-        last_assistant_idx: int | None = None
-        for idx in range(len(messages) - 1, -1, -1):
-            if messages[idx].get("role") == "assistant" and messages[idx].get("tool_calls"):
-                last_assistant_idx = idx
-                break
-        if last_assistant_idx is None:
-            return list(messages)
-        return [*messages[:prefix_end], *messages[last_assistant_idx:]]
-
-    @staticmethod
-    def _prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
-        system_contents: list[str] = []
-        non_system: list[dict] = []
-        for message in messages:
-            role = str(message.get("role", ""))
-            if role == "system":
-                content = message.get("content")
-                if content is None:
-                    continue
-                text = str(content).strip()
-                if text:
-                    system_contents.append(text)
-                continue
-            non_system.append(message)
-        if not system_contents:
-            return non_system
-        merged_system = {"role": "system", "content": "\n\n".join(system_contents)}
-        return [merged_system, *non_system]
 
     async def _send(self, scope: str, text: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
