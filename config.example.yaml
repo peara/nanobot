@@ -39,6 +39,20 @@ channels:
   - type: "telegram"
     token: "${TELEGRAM_BOT_TOKEN}"
 
+  # GitHub channel for issue-based work assignments
+  # - type: "github"
+  #   token: "${GITHUB_TOKEN}"  # Personal Access Token for bot account
+  #   options:
+  #     bot_username: "nanobot"  # Bot's GitHub username
+  #     repo_owner: "your-username"
+  #     repo_name: "nanobot"
+  #     poll_interval_seconds: 30
+  #     trigger: "assignment"  # or "label"
+  #     label_name: "nanobot"
+  #     opencode_server_url: "http://localhost:4096"
+  #     opencode_username: "opencode"
+  #     opencode_password: "${OPENCODE_SERVER_PASSWORD}"
+
 mcp_servers:
   - name: "timer"
     command: "python"

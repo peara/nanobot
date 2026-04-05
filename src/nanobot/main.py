@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from nanobot.channels.base import Channel
+from nanobot.channels.github import GithubChannel
 from nanobot.channels.telegram import TelegramChannel
 from nanobot.config import load_config
 from nanobot.core import BotCore
@@ -39,6 +40,23 @@ def build_channels(config) -> dict[str, Channel]:
             if not cfg.token:
                 raise ValueError("Telegram channel requires token")
             channels["telegram"] = TelegramChannel(cfg.token)
+            continue
+        if cfg.type == "github":
+            if not cfg.token:
+                raise ValueError("GitHub channel requires token")
+            opts = cfg.options or {}
+            channels["github"] = GithubChannel(
+                token=cfg.token,
+                bot_username=opts.get("bot_username", "nanobot"),
+                repo_owner=opts.get("repo_owner", ""),
+                repo_name=opts.get("repo_name", ""),
+                poll_interval=opts.get("poll_interval_seconds", 30),
+                trigger=opts.get("trigger", "assignment"),
+                label_name=opts.get("label_name", "nanobot"),
+                opencode_url=opts.get("opencode_server_url", "http://localhost:4096"),
+                opencode_username=opts.get("opencode_username", "opencode"),
+                opencode_password=opts.get("opencode_password"),
+            )
             continue
         raise ValueError(f"Unsupported channel type: {cfg.type}")
     return channels
