@@ -56,6 +56,8 @@ def build_channels(config) -> dict[str, Channel]:
                 opencode_url=opts.get("opencode_server_url", "http://localhost:4096"),
                 opencode_username=opts.get("opencode_username", "opencode"),
                 opencode_password=opts.get("opencode_password"),
+                notification_chat_id=opts.get("notification_chat_id", config.owner_chat_id),
+                telegram_channel=channels.get("telegram"),
             )
             continue
         raise ValueError(f"Unsupported channel type: {cfg.type}")

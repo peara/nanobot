@@ -26,6 +26,8 @@ class GithubChannel(Channel):
         opencode_url: str = "http://localhost:4096",
         opencode_username: str = "opencode",
         opencode_password: str | None = None,
+        notification_chat_id: int | None = None,
+        telegram_channel: Any = None,
     ) -> None:
         super().__init__()
         self.token = token
@@ -38,6 +40,8 @@ class GithubChannel(Channel):
         self.opencode_url = opencode_url
         self.opencode_username = opencode_username
         self.opencode_password = opencode_password
+        self.notification_chat_id = notification_chat_id
+        self.telegram_channel = telegram_channel
 
         self._github: Any = None
         self._stop_event = asyncio.Event()
@@ -90,6 +94,17 @@ class GithubChannel(Channel):
             logger.info("Posted comment to issue #%d", issue_num)
         except Exception:
             logger.exception("Failed to post comment to %s", chat_id)
+
+    async def _send_telegram_notification(self, text: str) -> None:
+        if self.notification_chat_id is None or self.telegram_channel is None:
+            logger.debug("Telegram notifications not configured, skipping notification")
+            return
+
+        try:
+            await self.telegram_channel.send(str(self.notification_chat_id), text)
+            logger.info("Sent Telegram notification to chat_id=%s", self.notification_chat_id)
+        except Exception:
+            logger.exception("Failed to send Telegram notification (continuing workflow)")
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -156,13 +171,25 @@ class GithubChannel(Channel):
 
         self._active_session_id = session_id
 
+        notification_msg = (
+            f'🔧 Started: {self.repo_owner}/{self.repo_name}#{issue.number} - "{issue.title}"\nSession: {session_id}'
+        )
+        await self._send_telegram_notification(notification_msg)
+
+        await asyncio.sleep(1)
+
+        description = issue.body or "No description provided."
+        initial_task = (
+            f"Please analyze and work on this issue:\n\n**Title:** {issue.title}\n\n**Description:**\n{description}"
+        )
+        logger.info("Sending initial task to session %s for issue #%d", session_id, issue.number)
+        response = await self._call_opencode(session_id, initial_task)
+
         intro = (
             f"Starting work on this issue. Created Opencode session `{session_id}`.\n\n"
-            f"Initial task: {issue.body or 'No description provided.'}"
+            f"Initial task sent. Response:\n{response or '(no response yet)'[:500]}"
         )
         issue.create_comment(intro)
-
-        await self._notify_handler(issue, f"Started work: {intro}")
 
     async def _process_active_issue(self, repo: Any) -> None:
         if self._active_issue is None or self._active_session_id is None:
@@ -196,7 +223,10 @@ class GithubChannel(Channel):
             reply = f"{response}\n\n--SessionID:{self._active_session_id}--"
             issue.create_comment(reply)
 
-            await self._notify_handler(issue, response)
+            comment_preview = response[:200] if len(response) > 200 else response
+            await self._send_telegram_notification(
+                f"💬 New comment on {self.repo_owner}/{self.repo_name}#{issue.number}:\n{comment_preview}"
+            )
 
     async def _create_opencode_session(self, title: str) -> str | None:
         try:
@@ -229,17 +259,18 @@ class GithubChannel(Channel):
 
         try:
             async with httpx.AsyncClient() as client:
+                payload = {"parts": [{"type": "text", "text": message}]}
                 if self.opencode_password:
                     response = await client.post(
                         f"{self.opencode_url}/session/{session_id}/message",
-                        json={"message": message},
+                        json=payload,
                         auth=httpx.BasicAuth(self.opencode_username, self.opencode_password),
                         timeout=120.0,
                     )
                 else:
                     response = await client.post(
                         f"{self.opencode_url}/session/{session_id}/message",
-                        json={"message": message},
+                        json=payload,
                         timeout=120.0,
                     )
                 response.raise_for_status()
@@ -249,6 +280,9 @@ class GithubChannel(Channel):
                 text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
                 return "\n".join(text_parts) if text_parts else None
 
+        except httpx.HTTPStatusError as exc:
+            logger.exception("Failed to call Opencode: %s", exc.response.text)
+            return "Sorry, I encountered an error processing your request."
         except Exception:
             logger.exception("Failed to call Opencode")
             return "Sorry, I encountered an error processing your request."

@@ -52,6 +52,7 @@ channels:
   #     opencode_server_url: "http://localhost:4096"
   #     opencode_username: "opencode"
   #     opencode_password: "${OPENCODE_SERVER_PASSWORD}"
+  #     notification_chat_id: 123456789  # Telegram chat ID for notifications (defaults to owner_chat_id)
 
 mcp_servers:
   - name: "timer"
