@@ -28,6 +28,12 @@ system_prompt_template: |
   Format responses as plain text suitable for Telegram.
   Do not use markdown tables, HTML tags, or raw markup.
 
+subagent_system_prompt: |
+  You are an autonomous agent executing a scheduled task.
+  Use available tools to complete the task efficiently.
+  Provide a concise summary of what you did.
+  If nothing noteworthy happened or no action was needed, reply with exactly: NO_ACTION_NEEDED
+
 model:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"

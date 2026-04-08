@@ -42,6 +42,7 @@ class AppConfig:
     scheduler_db_path: str
     poll_interval_seconds: int
     system_prompt_template: str
+    subagent_system_prompt: str
     working_timezone: str
     history_message_limit: int
     history_char_limit: int
@@ -83,6 +84,15 @@ def load_config(config_path: str) -> AppConfig:
                 "For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id. "
                 "Format responses as plain text suitable for Telegram. "
                 "Do not use markdown tables, HTML tags, or raw markup."
+            ),
+        ),
+        subagent_system_prompt=data.get(
+            "subagent_system_prompt",
+            (
+                "You are an autonomous agent executing a scheduled task. "
+                "Use available tools to complete the task efficiently. "
+                "Provide a concise summary of what you did. "
+                "If nothing noteworthy happened or no action was needed, reply with exactly: NO_ACTION_NEEDED"
             ),
         ),
         working_timezone=data.get("working_timezone", "UTC"),

@@ -52,6 +52,7 @@ def _build_config(tmp_path) -> AppConfig:
         scheduler_db_path=scheduler_db_path,
         poll_interval_seconds=20,
         system_prompt_template="You are {assistant_name}.",
+        subagent_system_prompt="You are an autonomous agent.",
         working_timezone="UTC",
         history_message_limit=24,
         history_char_limit=12000,

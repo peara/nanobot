@@ -17,8 +17,6 @@ from nanobot.core_reports import build_context_report, build_full_context_report
 from nanobot.core_router import MessageRouter
 from nanobot.core_scratchpad import clear_scratchpad, scratchpad_tool_spec
 from nanobot.core_utils import (
-    SCHEDULED_SYSTEM_MARKER,
-    clip,
     command_name,
     human_now,
     unscoped_chat_id,
@@ -30,6 +28,7 @@ from nanobot.memory import ConversationStore
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
+from nanobot.subagent import SubagentRunner
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +186,14 @@ class BotCore:
         return True
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
-        await self._process_scheduled(scoped_id, prompt)
+        logger.info("Scheduled task triggered scope=%s", scoped_id)
+        runner = SubagentRunner(self)
+        result = await runner.run(
+            goal=prompt,
+            parent_scope=scoped_id,
+            system_prompt=self.config.subagent_system_prompt,
+        )
+        await self.on_subagent_result(result)
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
@@ -203,16 +209,6 @@ class BotCore:
             await self.router.route_user_message(scope)
         finally:
             self.active_requests.pop(scope, None)
-
-    async def _process_scheduled(self, scope: str, prompt: str) -> None:
-        logger.info("Processing scheduled task for scope=%s prompt=%s", scope, clip(prompt, limit=200))
-        clear_scratchpad(self, scope)
-        messages = [
-            self._base_system_message(),
-            {"role": "system", "content": SCHEDULED_SYSTEM_MARKER},
-            {"role": "user", "content": prompt},
-        ]
-        await self._run_agent_turn(scope=scope, messages=messages, persist_assistant=True)
 
     async def _process_plan(self, chat_scope: str, raw_text: str) -> None:
         await process_plan(self, chat_scope, raw_text)
