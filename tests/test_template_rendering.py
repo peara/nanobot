@@ -13,6 +13,11 @@ from nanobot.core import BotCore
 jinja2 = pytest.importorskip("jinja2")
 
 
+def _await_process(bot: BotCore, message: IncomingMessage) -> None:
+    asyncio.run(bot.on_incoming(message))
+    asyncio.run(bot._process_one_message())
+
+
 def _render_template(*, template_path: Path, messages: list[dict], tools: list[dict]) -> str:
     raw = template_path.read_text(encoding="utf-8")
     env = jinja2.Environment()
@@ -91,7 +96,7 @@ def test_template_accepts_real_system_prompt_tool_and_user_hello(tmp_path: Path)
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][1] == "hi"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -20,13 +21,13 @@ from nanobot.core_utils import (
     clip,
     command_name,
     human_now,
-    scoped_chat_id,
     unscoped_chat_id,
 )
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
+from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 
@@ -74,6 +75,8 @@ class BotCore:
         self.active_requests: dict[str, ActiveRequest] = {}
         self.agent_run = AgentRun(self)
         self.router = MessageRouter(self)
+        self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
+        self._queue_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         logger.info(
@@ -84,18 +87,103 @@ class BotCore:
         )
         await self.mcp.start()
         await self.scheduler.start()
+        self._queue_task = asyncio.create_task(self._process_queue_loop())
 
     async def stop(self) -> None:
+        if self._queue_task is not None:
+            self._queue_task.cancel()
+            try:
+                await self._queue_task
+            except asyncio.CancelledError:
+                pass
         await self.scheduler.stop()
         await self.mcp.stop()
 
     async def on_incoming(self, message: IncomingMessage) -> None:
-        scope = scoped_chat_id(message.channel, message.chat_id)
-        cmd = command_name(message.text)
+        user_msg = UserMessage(
+            channel=message.channel,
+            chat_id=message.chat_id,
+            text=message.text,
+            user_id=message.user_id,
+        )
+        await self._message_queue.put(user_msg)
+
+    async def on_subagent_result(self, result: SubagentResultMessage) -> None:
+        await self._message_queue.put(result)
+
+    async def _process_queue_loop(self) -> None:
+        while True:
+            msg = await self._message_queue.get()
+            try:
+                if isinstance(msg, UserMessage):
+                    await self._handle_user_message(msg)
+                elif isinstance(msg, SubagentResultMessage):
+                    await self._handle_subagent_result(msg)
+            except Exception:
+                logger.exception("Error processing message type=%s", type(msg).__name__)
+
+    async def _process_one_message(self) -> bool:
+        try:
+            msg = self._message_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return False
+
+        try:
+            if isinstance(msg, UserMessage):
+                await self._handle_user_message(msg)
+            elif isinstance(msg, SubagentResultMessage):
+                await self._handle_subagent_result(msg)
+        except Exception:
+            logger.exception("Error processing message type=%s", type(msg).__name__)
+        return True
+
+    async def _handle_user_message(self, msg: UserMessage) -> None:
+        scope = msg.scope
+        cmd = command_name(msg.text)
         if cmd is not None:
-            await self.command_manager.handle(cmd, message, scope)
+            incoming = IncomingMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                text=msg.text,
+            )
+            await self.command_manager.handle(cmd, incoming, scope)
         else:
-            await self._process(scope, message.text)
+            await self._process(scope, msg.text)
+
+    async def _handle_subagent_result(self, msg: SubagentResultMessage) -> None:
+        logger.info(
+            "Subagent result run_id=%s scope=%s success=%s tools=%d",
+            msg.run_id,
+            msg.parent_scope,
+            msg.success,
+            len(msg.tool_trace),
+        )
+        self.contexts.put(
+            "subagent_run",
+            msg.run_id,
+            "result",
+            {
+                "summary": msg.summary,
+                "tool_trace": msg.tool_trace,
+                "success": msg.success,
+            },
+        )
+
+        if self._should_notify_user(msg):
+            self.memory.add_message(msg.parent_scope, "assistant", msg.summary)
+            await self._send(msg.parent_scope, msg.summary)
+
+    def _should_notify_user(self, msg: SubagentResultMessage) -> bool:
+        if not msg.success:
+            return False
+        if not msg.summary.strip():
+            return False
+        if "NO_ACTION_NEEDED" in msg.summary.upper():
+            return False
+        if len(msg.tool_trace) == 0:
+            return len(msg.summary) > 50
+        return True
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         await self._process_scheduled(scoped_id, prompt)

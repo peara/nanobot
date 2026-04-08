@@ -10,6 +10,11 @@ from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfi
 from nanobot.core import BotCore
 
 
+def _await_process(bot: BotCore, message: IncomingMessage) -> None:
+    asyncio.run(bot.on_incoming(message))
+    asyncio.run(bot._process_one_message())
+
+
 class _FakeChannel:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
@@ -64,7 +69,7 @@ def test_status_command_shows_free_when_no_active_requests(tmp_path) -> None:
     bot.mcp = _FakeMcp()  # type: ignore
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -85,7 +90,7 @@ def test_status_command_shows_busy_with_elapsed_time(tmp_path) -> None:
     bot.active_requests[scope] = ActiveRequest(chat_id="42", started_at=now, current_step="processing")
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -107,7 +112,7 @@ def test_status_command_shows_minutes_in_elapsed_time(tmp_path) -> None:
     bot.active_requests[scope] = ActiveRequest(chat_id="42", started_at=now, current_step="heavy computation")
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -128,7 +133,7 @@ def test_status_command_shows_last_activity_when_free(tmp_path) -> None:
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
     with patch.object(bot.contexts, "get", return_value={"text": "hello", "timestamp": last_activity.isoformat()}):
-        asyncio.run(bot.on_incoming(message))
+        _await_process(bot, message)
 
         assert len(channel.sent) == 1
         assert channel.sent[0][0] == "42"
@@ -147,7 +152,7 @@ def test_status_command_shows_free_without_time_when_no_activity(tmp_path) -> No
     bot.contexts.put("chat", scope, "last_assistant_message", None)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -168,7 +173,7 @@ def test_status_command_with_seconds_only_elapsed(tmp_path) -> None:
     bot.active_requests[scope] = ActiveRequest(chat_id="42", started_at=now, current_step="quick task")
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/status")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"

@@ -16,6 +16,11 @@ from nanobot.core_scratchpad import (
 )
 
 
+def _await_process(bot: BotCore, message: IncomingMessage) -> None:
+    asyncio.run(bot.on_incoming(message))
+    asyncio.run(bot._process_one_message())
+
+
 class _FakeChannel:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
@@ -107,7 +112,7 @@ def test_plan_command_creates_plan_run_scope_and_reports_result(tmp_path) -> Non
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/plan book me a flight")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -142,7 +147,7 @@ def test_plan_command_recovers_from_garbled_output(tmp_path) -> None:
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/plan find me a camera")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert len(channel.sent) == 1
     assert channel.sent[0][0] == "42"
@@ -175,12 +180,12 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="remember this context")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
     assert len(channel.sent) == 1
     assert "Noted." in channel.sent[0][1]
 
     ctx_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/ctxfull")
-    asyncio.run(bot.on_incoming(ctx_msg))
+    _await_process(bot, ctx_msg)
     assert len(channel.sent) == 2
     assert "scratchpad" in channel.sent[1][1].lower()
 
@@ -233,7 +238,7 @@ def test_tool_results_are_persisted_in_context(tmp_path) -> None:
 
     bot.mcp = cast(Any, _ToolMcp())
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     stored = bot.contexts.get("chat", "telegram:42", "tool_results")
     assert isinstance(stored, dict)
@@ -257,11 +262,11 @@ def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
         user_id="u1",
         text="/scratchpad clear",
     )
-    asyncio.run(bot.on_incoming(set_msg))
+    _await_process(bot, set_msg)
     assert "Scratchpad cleared" in channel.sent[-1][1]
 
     show_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/scratchpad show")
-    asyncio.run(bot.on_incoming(show_msg))
+    _await_process(bot, show_msg)
     assert "Structured scratchpad" in channel.sent[-1][1]
 
 
@@ -303,7 +308,7 @@ def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="help me buy laptop")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert "Working on it." in channel.sent[-1][1]
     state = bot.contexts.get("chat", "telegram:42", "scratchpad")
@@ -359,7 +364,7 @@ def test_session_scratchpad_write_clips_long_fields(tmp_path) -> None:
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="start")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     state = bot.contexts.get("chat", "telegram:42", "scratchpad")
     assert isinstance(state, dict)
@@ -420,7 +425,7 @@ def test_phase2_logs_violation_but_does_not_block(tmp_path) -> None:
     bot.mcp = cast(Any, mcp)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert mcp.calls == ["timer__time_now", "timer__time_now"]
     assert "Stopped for protocol correction." in channel.sent[-1][1]
@@ -487,7 +492,7 @@ def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) ->
     bot.mcp = cast(Any, mcp)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert channel.sent[-1][1] == "Done."
     assert mcp.calls == ["timer__time_now", "timer__time_now"]
@@ -565,7 +570,7 @@ def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
     bot.mcp = cast(Any, mcp)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert mcp.calls == ["timer__time_now", "timer__time_now", "timer__time_now", "timer__time_now"]
     assert channel.sent[-1][1] == "Done after four calls."
@@ -579,6 +584,6 @@ def test_empty_final_reply_uses_fallback(tmp_path) -> None:
     bot.mcp = cast(Any, _FakeMcp())
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert channel.sent[-1][1] == EMPTY_REPLY_FALLBACK
