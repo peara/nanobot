@@ -140,6 +140,11 @@ class BotCore:
     async def _handle_user_message(self, msg: UserMessage) -> None:
         scope = msg.scope
         cmd = command_name(msg.text)
+        scope = scoped_chat_id(message.channel, message.chat_id)
+        cmd = command_name(message.text)
+        if scope in self.active_requests and cmd != "/status":
+            await self._send(scope, "I'm still processing the previous message. Type /status to check the status.")
+            return
         if cmd is not None:
             incoming = IncomingMessage(
                 channel=msg.channel,
@@ -184,23 +189,26 @@ class BotCore:
         if len(msg.tool_trace) == 0:
             return len(msg.summary) > 50
         return True
+            self.active_requests[scope] = ActiveRequest(
+                chat_id=scope,
+                started_at=datetime.now(),
+                current_step="processing user message",
+            )
+            try:
+                await self._begin_processing(scope)
+                await self._process(scope, message.text)
+            finally:
+                await self._end_processing(scope)
+                self.active_requests.pop(scope, None)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         await self._process_scheduled(scoped_id, prompt)
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
-        self.active_requests[scope] = ActiveRequest(
-            chat_id=scope,
-            started_at=datetime.now(),
-            current_step="processing user message",
-        )
-        try:
-            self.memory.add_message(scope, "user", user_text)
-            self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
-            await self.router.route_user_message(scope)
-        finally:
-            self.active_requests.pop(scope, None)
+        self.memory.add_message(scope, "user", user_text)
+        self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
+        await self.router.route_user_message(scope)
 
     async def _process_scheduled(self, scope: str, prompt: str) -> None:
         logger.info("Processing scheduled task for scope=%s prompt=%s", scope, clip(prompt, limit=200))
@@ -285,3 +293,29 @@ class BotCore:
             raise KeyError(f"No channel configured for '{channel_name}'")
         logger.info("Sending message via channel=%s chat_id=%s", channel_name, raw_chat_id)
         await channel.send(raw_chat_id, text)
+
+    async def _begin_processing(self, scope: str) -> None:
+        channel_name, raw_chat_id = unscoped_chat_id(scope)
+        channel = self.channels.get(channel_name)
+        if channel is None:
+            return
+        begin_processing = getattr(channel, "begin_processing", None)
+        if not callable(begin_processing):
+            return
+        try:
+            await begin_processing(raw_chat_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to begin processing indicator scope=%s channel=%s", scope, channel_name)
+
+    async def _end_processing(self, scope: str) -> None:
+        channel_name, raw_chat_id = unscoped_chat_id(scope)
+        channel = self.channels.get(channel_name)
+        if channel is None:
+            return
+        end_processing = getattr(channel, "end_processing", None)
+        if not callable(end_processing):
+            return
+        try:
+            await end_processing(raw_chat_id)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to end processing indicator scope=%s channel=%s", scope, channel_name)

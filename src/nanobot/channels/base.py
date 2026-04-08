@@ -35,3 +35,9 @@ class Channel(ABC):
 
     @abstractmethod
     async def send(self, chat_id: str, text: str) -> None: ...
+
+    async def begin_processing(self, chat_id: str) -> None:
+        del chat_id
+
+    async def end_processing(self, chat_id: str) -> None:
+        del chat_id

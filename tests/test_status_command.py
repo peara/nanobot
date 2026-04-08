@@ -18,9 +18,17 @@ def _await_process(bot: BotCore, message: IncomingMessage) -> None:
 class _FakeChannel:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.processing_started: list[str] = []
+        self.processing_stopped: list[str] = []
 
     async def send(self, chat_id: str, text: str) -> None:
         self.sent.append((chat_id, text))
+
+    async def begin_processing(self, chat_id: str) -> None:
+        self.processing_started.append(chat_id)
+
+    async def end_processing(self, chat_id: str) -> None:
+        self.processing_stopped.append(chat_id)
 
 
 class _FakeLlm:
@@ -31,6 +39,21 @@ class _FakeLlm:
         response_format: dict[str, Any] | None = None,
     ) -> dict:
         del messages, tools, response_format
+        return {"content": "ok", "tool_calls": None}
+
+
+class _BlockingFakeLlm:
+    def __init__(self, gate: asyncio.Event) -> None:
+        self._gate = gate
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict[str, Any] | None = None,
+    ) -> dict:
+        del messages, tools, response_format
+        await self._gate.wait()
         return {"content": "ok", "tool_calls": None}
 
 
@@ -180,3 +203,68 @@ def test_status_command_with_seconds_only_elapsed(tmp_path) -> None:
     assert "🔴 Busy" in channel.sent[0][1]
     assert "15s" in channel.sent[0][1]
     assert "quick task" in channel.sent[0][1]
+
+
+def test_normal_message_indicates_processing_before_reply(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = _FakeLlm()  # type: ignore
+    bot.mcp = _FakeMcp()  # type: ignore
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
+    asyncio.run(bot.on_incoming(message))
+
+    assert channel.processing_started == ["42"]
+    assert channel.processing_stopped == ["42"]
+    assert len(channel.sent) == 1
+    assert channel.sent[0][1] == "ok"
+
+
+def test_normal_message_while_busy_returns_busy_notice(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = _FakeLlm()  # type: ignore
+    bot.mcp = _FakeMcp()  # type: ignore
+
+    scope = "telegram:42"
+    from nanobot.core import ActiveRequest
+
+    bot.active_requests[scope] = ActiveRequest(chat_id="42", started_at=datetime.now(), current_step="processing")
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello again")
+    asyncio.run(bot.on_incoming(message))
+
+    assert channel.processing_started == []
+    assert channel.processing_stopped == []
+    assert len(channel.sent) == 1
+    assert "processing the previous message" in channel.sent[0][1].lower()
+    assert "/status" in channel.sent[0][1]
+
+
+def test_concurrent_messages_same_chat_reject_second_request(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    gate = asyncio.Event()
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = _BlockingFakeLlm(gate)  # type: ignore
+    bot.mcp = _FakeMcp()  # type: ignore
+
+    first = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="first")
+    second = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="second")
+
+    async def _go() -> None:
+        first_task = asyncio.create_task(bot.on_incoming(first))
+        await asyncio.sleep(0)
+        await bot.on_incoming(second)
+        gate.set()
+        await first_task
+
+    asyncio.run(_go())
+
+    assert channel.processing_started == ["42"]
+    assert channel.processing_stopped == ["42"]
+    assert len(channel.sent) == 2
+    assert "processing the previous message" in channel.sent[0][1].lower()
+    assert channel.sent[1][1] == "ok"

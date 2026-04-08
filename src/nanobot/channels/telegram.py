@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+from contextlib import suppress
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 from nanobot.channels.base import Channel, IncomingMessage
+
+logger = logging.getLogger(__name__)
+TYPING_INTERVAL_SECONDS = 4.0
 
 
 class TelegramChannel(Channel):
@@ -13,6 +20,7 @@ class TelegramChannel(Channel):
         super().__init__()
         self.token = token
         self.app: Application | None = None
+        self._typing_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_chat is None or update.effective_user is None or update.message is None:
@@ -30,7 +38,9 @@ class TelegramChannel(Channel):
         )
 
     async def start(self) -> None:
-        app = ApplicationBuilder().token(self.token).build()
+        # Process updates concurrently so a second message can be rejected immediately
+        # while the first one is still running for the same chat.
+        app = ApplicationBuilder().token(self.token).concurrent_updates(True).build()
         # Accept both regular text and slash commands so bot-side commands
         # (/ctx, /ctxfull, /reset, /help) can be handled in core logic.
         app.add_handler(MessageHandler(filters.TEXT, self._on_message))
@@ -42,6 +52,8 @@ class TelegramChannel(Channel):
         self.app = app
 
     async def stop(self) -> None:
+        for chat_id in list(self._typing_tasks):
+            await self.end_processing(chat_id)
         if self.app is None:
             return
         if self.app.updater is not None:
@@ -56,6 +68,35 @@ class TelegramChannel(Channel):
         normalized = self._normalize_for_telegram(text)
         for chunk in self._chunk_text(normalized):
             await self.app.bot.send_message(chat_id=chat_id, text=chunk)
+
+    async def begin_processing(self, chat_id: str) -> None:
+        if self.app is None:
+            raise RuntimeError("Telegram channel not started.")
+        existing = self._typing_tasks.get(chat_id)
+        if existing is not None and not existing.done():
+            return
+        await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        self._typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
+
+    async def end_processing(self, chat_id: str) -> None:
+        task = self._typing_tasks.pop(chat_id, None)
+        if task is None:
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    async def _typing_loop(self, chat_id: str) -> None:
+        try:
+            while True:
+                await asyncio.sleep(TYPING_INTERVAL_SECONDS)
+                if self.app is None:
+                    return
+                await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to keep typing indicator alive chat_id=%s", chat_id)
 
     def _normalize_for_telegram(self, text: str) -> str:
         # Convert common HTML line breaks produced by models.
