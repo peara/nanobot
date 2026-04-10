@@ -14,6 +14,7 @@ from nanobot.core_scratchpad import (
     MAX_TOOL_JOURNAL,
     SCRATCHPAD_TOOL_NAME,
 )
+from nanobot.tools.base import Tool
 
 
 def _await_process(bot: BotCore, message: IncomingMessage) -> None:
@@ -63,13 +64,50 @@ class _RecordingFakeLlm(_FakeLlm):
         return await super().chat(messages, tools, response_format)
 
 
-class _FakeMcp:
-    def list_openai_tools(self) -> list[dict]:
-        return []
+class _FakeTool(Tool):
+    def __init__(self, name: str, result: str = "ok") -> None:
+        self._name = name
+        self._result = result
 
-    async def call_tool(self, fn_name: str, args: dict) -> str:
-        del fn_name, args
-        raise RuntimeError("No tools expected in this test")
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        return self._result
+
+
+class _CountingFakeTool(Tool):
+    def __init__(self, name: str, result: str = "tool output") -> None:
+        self._name = name
+        self._result = result
+        self.calls: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Counting fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        self.calls.append(self._name)
+        return self._result
 
 
 def _build_config(tmp_path) -> AppConfig:
@@ -110,8 +148,7 @@ def test_plan_command_creates_plan_run_scope_and_reports_result(tmp_path) -> Non
             ]
         ),
     )
-    bot.mcp = cast(Any, _FakeMcp())
-
+    # bot.mcp removed - tools registry in use
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/plan book me a flight")
     _await_process(bot, message)
 
@@ -145,7 +182,7 @@ def test_plan_command_recovers_from_garbled_output(tmp_path) -> None:
             ]
         ),
     )
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/plan find me a camera")
     _await_process(bot, message)
@@ -178,7 +215,7 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
             ]
         ),
     )
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="remember this context")
     _await_process(bot, message)
@@ -197,7 +234,7 @@ def test_new_turn_clears_old_scratchpad_state_before_prompt(tmp_path) -> None:
     llm = _RecordingFakeLlm(replies=[{"content": "ok", "tool_calls": None}])
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, llm)
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
     bot.contexts.put(
         "chat",
         "telegram:42",
@@ -217,9 +254,7 @@ def test_new_turn_clears_old_scratchpad_state_before_prompt(tmp_path) -> None:
     _await_process(bot, message)
 
     scratchpad_messages = [
-        item
-        for item in llm.calls_messages[0]
-        if str(item.get("content", "")).startswith("[Internal scratchpad state")
+        item for item in llm.calls_messages[0] if str(item.get("content", "")).startswith("[Internal scratchpad state")
     ]
     assert len(scratchpad_messages) == 1
     scratchpad_text = str(scratchpad_messages[0]["content"])
@@ -253,27 +288,8 @@ def test_tool_results_are_persisted_in_context(tmp_path) -> None:
         ),
     )
 
-    class _ToolMcp(_FakeMcp):
-        def list_openai_tools(self) -> list[dict]:
-            return [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "timer__time_now",
-                        "description": "Get current date-time in ISO format for a timezone.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"timezone_name": {"type": "string"}},
-                        },
-                    },
-                }
-            ]
+    bot.tools.register(_FakeTool("timer__time_now", result="tool output: 2026-03-08T10:00:00Z"))
 
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            del fn_name, args
-            return "tool output: 2026-03-08T10:00:00Z"
-
-    bot.mcp = cast(Any, _ToolMcp())
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     _await_process(bot, message)
 
@@ -291,7 +307,7 @@ def test_scratchpad_command_can_force_write_and_read(tmp_path) -> None:
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "ok", "tool_calls": None}]))
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     set_msg = IncomingMessage(
         channel="telegram",
@@ -342,7 +358,7 @@ def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
             ]
         ),
     )
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="help me buy laptop")
     _await_process(bot, message)
@@ -398,7 +414,7 @@ def test_session_scratchpad_write_clips_long_fields(tmp_path) -> None:
             ]
         ),
     )
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="start")
     _await_process(bot, message)
@@ -449,22 +465,13 @@ def test_phase2_logs_violation_but_does_not_block(tmp_path) -> None:
         ),
     )
 
-    class _CountingMcp(_FakeMcp):
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            del args
-            self.calls.append(fn_name)
-            return "tool output"
-
-    mcp = _CountingMcp()
-    bot.mcp = cast(Any, mcp)
+    counting_tool = _CountingFakeTool("timer__time_now")
+    bot.tools.register(counting_tool)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     _await_process(bot, message)
 
-    assert mcp.calls == ["timer__time_now", "timer__time_now"]
+    assert counting_tool.calls == ["timer__time_now", "timer__time_now"]
     assert "Stopped for protocol correction." in channel.sent[-1][1]
 
 
@@ -516,23 +523,14 @@ def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) ->
         ),
     )
 
-    class _CountingMcp(_FakeMcp):
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            del args
-            self.calls.append(fn_name)
-            return "tool output"
-
-    mcp = _CountingMcp()
-    bot.mcp = cast(Any, mcp)
+    counting_tool = _CountingFakeTool("timer__time_now")
+    bot.tools.register(counting_tool)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     _await_process(bot, message)
 
     assert channel.sent[-1][1] == "Done."
-    assert mcp.calls == ["timer__time_now", "timer__time_now"]
+    assert counting_tool.calls == ["timer__time_now", "timer__time_now"]
     state = bot.contexts.get("chat", "telegram:42", "scratchpad")
     assert isinstance(state, dict)
     assert state["current_step"] == "Captured current time"
@@ -594,22 +592,13 @@ def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
         ),
     )
 
-    class _CountingMcp(_FakeMcp):
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            del args
-            self.calls.append(fn_name)
-            return "tool output"
-
-    mcp = _CountingMcp()
-    bot.mcp = cast(Any, mcp)
+    counting_tool = _CountingFakeTool("timer__time_now")
+    bot.tools.register(counting_tool)
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     _await_process(bot, message)
 
-    assert mcp.calls == ["timer__time_now", "timer__time_now", "timer__time_now", "timer__time_now"]
+    assert counting_tool.calls == ["timer__time_now", "timer__time_now", "timer__time_now", "timer__time_now"]
     assert channel.sent[-1][1] == "Done after four calls."
 
 
@@ -618,7 +607,7 @@ def test_empty_final_reply_uses_fallback(tmp_path) -> None:
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "\n\n\n", "tool_calls": None}]))
-    bot.mcp = cast(Any, _FakeMcp())
+    # bot.mcp removed - tools registry in use
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
     _await_process(bot, message)

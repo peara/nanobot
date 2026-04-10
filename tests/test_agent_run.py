@@ -8,6 +8,8 @@ from typing import Any
 from nanobot.agent_run import AgentRun, prepare_messages_for_chat
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
+from nanobot.tools.base import Tool
+from nanobot.tools.registry import ToolRegistry
 
 
 class _FakeContexts:
@@ -57,9 +59,47 @@ class _RecordingFakeLlm(_FakeLlm):
         return await super().chat(messages, tools, response_format)
 
 
-class _FakeMcp:
-    async def call_tool(self, name: str, args: dict[str, Any]) -> str:
-        del name, args
+class _FakeTool(Tool):
+    def __init__(self, name: str, result: str = "ok") -> None:
+        self._name = name
+        self._result = result
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        return self._result
+
+
+class _RecordingTool(Tool):
+    def __init__(self, name: str, call_log: list[tuple[str, dict]]) -> None:
+        self._name = name
+        self._call_log = call_log
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Recording tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        self._call_log.append((self._name, dict(args)))
         return "ok"
 
 
@@ -67,8 +107,8 @@ class _FakeHost:
     def __init__(self, llm: _FakeLlm) -> None:
         self.config = SimpleNamespace(working_timezone="UTC")
         self.llm = llm
-        self.mcp = _FakeMcp()
         self.contexts = _FakeContexts()
+        self.tools = ToolRegistry()
         self.active_requests: dict[str, Any] = {}
         self.tool_hooks: list[Any] = []
         self.events: list[ToolCallEvent] = []
@@ -153,6 +193,7 @@ def test_agent_run_does_not_repeat_finalize_scratchpad_calls() -> None:
         ]
     )
     host = _FakeHost(llm)
+    host.tools.register(_FakeTool("scheduler__schedule_task"))
     run = AgentRun(host)
 
     async def _go() -> None:
@@ -170,14 +211,10 @@ def test_agent_run_does_not_repeat_finalize_scratchpad_calls() -> None:
     asyncio.run(_go())
 
     assert len(llm.calls_messages) == 3
-    assert not any(
-        "Internal scratchpad state" in str(message.get("content", ""))
-        for message in llm.calls_messages[-1]
-    )
-    assert [
-        str(tool.get("function", {}).get("name", ""))
-        for tool in llm.calls_tools[-1]
-    ] == ["scheduler__schedule_task"]
+    assert not any("Internal scratchpad state" in str(message.get("content", "")) for message in llm.calls_messages[-1])
+    assert [str(tool.get("function", {}).get("name", "")) for tool in llm.calls_tools[-1]] == [
+        "scheduler__schedule_task"
+    ]
 
 
 def test_agent_run_normalizes_numeric_schedule_chat_id_to_current_scope() -> None:
@@ -207,13 +244,7 @@ def test_agent_run_normalizes_numeric_schedule_chat_id_to_current_scope() -> Non
     )
     host = _FakeHost(llm)
     recorded_calls: list[tuple[str, dict[str, Any]]] = []
-
-    class _RecordingMcp:
-        async def call_tool(self, name: str, args: dict[str, Any]) -> str:
-            recorded_calls.append((name, dict(args)))
-            return "ok"
-
-    host.mcp = _RecordingMcp()
+    host.tools.register(_RecordingTool("scheduler__schedule_task", recorded_calls))
     run = AgentRun(host)
 
     async def _go() -> None:

@@ -75,7 +75,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         final_reply, tool_trace = await bot._run_agent_loop(
             scope_for_tools=chat_scope,
             messages=run_messages,
-            tools=bot.mcp.list_openai_tools(),
+            tools=bot.tools.list_openai_specs(),
         )
         bot.contexts.put("plan_run", run_id, "execution_raw", {"text": final_reply})
         if looks_garbled_text(final_reply):

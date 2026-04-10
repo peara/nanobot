@@ -23,12 +23,12 @@ from nanobot.core_utils import (
 )
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
-from nanobot.mcp_hub import McpHub
 from nanobot.memory import ConversationStore
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 from nanobot.subagent import SubagentRunner
+from nanobot.tools import McpToolSource, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,8 @@ class BotCore:
                 server.env = dict(server.env)
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
                 server.env.setdefault("SCHEDULER_TIMEZONE", config.working_timezone)
-        self.mcp = McpHub(config.mcp_servers)
+        self._mcp_source = McpToolSource(config.mcp_servers)
+        self.tools = ToolRegistry()
         self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
@@ -85,7 +86,8 @@ class BotCore:
             str(Path(self.config.database_path).resolve()),
             str(Path(self.config.scheduler_db_path).resolve()),
         )
-        await self.mcp.start()
+        await self._mcp_source.start()
+        self.tools.add_source(self._mcp_source)
         await self.scheduler.start()
         self._queue_task = asyncio.create_task(self._process_queue_loop())
 
@@ -97,7 +99,7 @@ class BotCore:
             except asyncio.CancelledError:
                 pass
         await self.scheduler.stop()
-        await self.mcp.stop()
+        await self._mcp_source.stop()
 
     async def on_incoming(self, message: IncomingMessage) -> None:
         user_msg = UserMessage(
@@ -258,8 +260,8 @@ class BotCore:
             response_format=response_format,
         )
 
-    def _list_openai_tools(self) -> list[dict]:
-        return [scratchpad_tool_spec(), *self.mcp.list_openai_tools()]
+    def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
+        return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]
 
     def _build_context_report(self, scope: str) -> str:
         return build_context_report(self, scope)

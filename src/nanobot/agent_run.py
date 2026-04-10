@@ -64,11 +64,7 @@ class AgentRun:
     def _tools_for_chat(tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
         if allow_scratchpad:
             return tools
-        return [
-            tool
-            for tool in tools
-            if str(tool.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME
-        ]
+        return [tool for tool in tools if str(tool.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME]
 
     async def run(
         self,
@@ -134,11 +130,7 @@ class AgentRun:
                 args = json.loads(raw_args)
                 if fn_name.endswith("__schedule_task"):
                     chat_id = str(args.get("chat_id", "")).strip()
-                    if (
-                        not chat_id
-                        or ":" not in chat_id
-                        or chat_id in {"current_chat", "this_chat", "current", "here"}
-                    ):
+                    if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
                         args["chat_id"] = scope_for_tools
                 ok = True
                 error: str | None = None
@@ -158,7 +150,7 @@ class AgentRun:
                         if scratchpad_mode == "finalize":
                             round_finalized_scratchpad = True
                     else:
-                        result = await self._host.mcp.call_tool(fn_name, args)
+                        result = await self._host.tools.call(fn_name, args)
                         needs_scratchpad_update = True
                         round_used_external_tool = True
                     logger.info("Tool succeeded tool=%s", fn_name)

@@ -7,6 +7,7 @@ from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfi
 from nanobot.core import BotCore
 from nanobot.messages import SubagentResultMessage
 from nanobot.subagent import SubagentRunner
+from nanobot.tools.base import Tool
 
 
 class _FakeChannel:
@@ -36,13 +37,48 @@ class _FakeLlm:
         return reply
 
 
-class _FakeMcp:
-    def list_openai_tools(self) -> list[dict]:
-        return []
+class _FakeTool(Tool):
+    def __init__(self, name: str, result: str = "ok") -> None:
+        self._name = name
+        self._result = result
 
-    async def call_tool(self, fn_name: str, args: dict) -> str:
-        del fn_name, args
-        raise RuntimeError("No tools expected in this test")
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        return self._result
+
+
+class _TrackingTool(Tool):
+    def __init__(self, name: str, call_log: list[tuple[str, dict]]) -> None:
+        self._name = name
+        self._call_log = call_log
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Tracking tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        self._call_log.append((self._name, args))
+        return "ok"
 
 
 def _build_config(tmp_path) -> AppConfig:
@@ -71,7 +107,6 @@ def test_subagent_runner_returns_result_on_success(tmp_path) -> None:
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "Task completed", "tool_calls": None}]))
-    bot.mcp = cast(Any, _FakeMcp())
 
     runner = SubagentRunner(bot)
 
@@ -96,7 +131,6 @@ def test_subagent_runner_stores_context_on_success(tmp_path) -> None:
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "Done", "tool_calls": None}]))
-    bot.mcp = cast(Any, _FakeMcp())
 
     runner = SubagentRunner(bot)
 
@@ -128,7 +162,6 @@ def test_subagent_runner_handles_failure(tmp_path) -> None:
             raise RuntimeError("LLM connection failed")
 
     bot.llm = cast(Any, _FailingLlm())
-    bot.mcp = cast(Any, _FakeMcp())
 
     runner = SubagentRunner(bot)
 
@@ -173,23 +206,7 @@ def test_subagent_runner_with_tool_calls(tmp_path) -> None:
         ),
     )
 
-    class _ToolMcp:
-        def list_openai_tools(self) -> list[dict]:
-            return [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "timer__time_now",
-                        "description": "Get time",
-                        "parameters": {"type": "object"},
-                    },
-                }
-            ]
-
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            return "2025-01-01T12:00:00Z"
-
-    bot.mcp = cast(Any, _ToolMcp())
+    bot.tools.register(_FakeTool("timer__time_now", result="2025-01-01T12:00:00Z"))
 
     runner = SubagentRunner(bot)
 
@@ -214,14 +231,7 @@ def test_subagent_runner_uses_parent_scope_for_tools(tmp_path) -> None:
     bot = BotCore(config=config, channels={"telegram": channel})
 
     call_log: list[tuple[str, dict]] = []
-
-    class _TrackingMcp:
-        def list_openai_tools(self) -> list[dict]:
-            return [{"type": "function", "function": {"name": "test_tool", "parameters": {}}}]
-
-        async def call_tool(self, fn_name: str, args: dict) -> str:
-            call_log.append((fn_name, args))
-            return "ok"
+    bot.tools.register(_TrackingTool("test_tool", call_log))
 
     bot.llm = cast(
         Any,
@@ -241,7 +251,6 @@ def test_subagent_runner_uses_parent_scope_for_tools(tmp_path) -> None:
             ]
         ),
     )
-    bot.mcp = cast(Any, _TrackingMcp())
 
     runner = SubagentRunner(bot)
 

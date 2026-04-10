@@ -13,7 +13,13 @@ class SubagentRunner:
     def __init__(self, bot: BotCore) -> None:
         self._bot = bot
 
-    async def run(self, goal: str, parent_scope: str, system_prompt: str) -> SubagentResultMessage:
+    async def run(
+        self,
+        goal: str,
+        parent_scope: str,
+        system_prompt: str,
+        tool_patterns: list[str] | None = None,
+    ) -> SubagentResultMessage:
         run_id = f"subagent-{uuid.uuid4().hex[:10]}"
 
         self._bot.contexts.put("subagent_run", run_id, "goal", {"text": goal})
@@ -34,7 +40,7 @@ class SubagentRunner:
             reply, tool_trace = await self._bot.agent_run.run(
                 scope_for_tools=parent_scope,
                 messages=messages,
-                tools=self._bot._list_openai_tools(),
+                tools=self._bot._list_openai_tools(patterns=tool_patterns),
             )
         except Exception as exc:
             success = False
