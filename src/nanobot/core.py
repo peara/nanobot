@@ -73,6 +73,7 @@ class BotCore:
 
         self.command_manager = CommandManager(self)
         self.active_requests: dict[str, ActiveRequest] = {}
+        self._pending_user_scopes: set[str] = set()
         self.agent_run = AgentRun(self)
         self.router = MessageRouter(self)
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
@@ -106,7 +107,31 @@ class BotCore:
             text=message.text,
             user_id=message.user_id,
         )
-        await self._message_queue.put(user_msg)
+        scope = user_msg.scope
+        cmd = command_name(user_msg.text)
+
+        if cmd == "/status":
+            await self.command_manager.handle(cmd, message, scope)
+            return
+
+        if scope in self.active_requests or scope in self._pending_user_scopes:
+            await self._send(scope, "I'm still processing the previous message. Type /status to check the status.")
+            return
+
+        self._pending_user_scopes.add(scope)
+        self.active_requests[scope] = ActiveRequest(
+            chat_id=scope,
+            started_at=datetime.now(),
+            current_step="queued",
+        )
+        try:
+            await self._begin_processing(scope)
+            await self._message_queue.put(user_msg)
+        except Exception:
+            self._pending_user_scopes.discard(scope)
+            await self._end_processing(scope)
+            self.active_requests.pop(scope, None)
+            raise
 
     async def on_subagent_result(self, result: SubagentResultMessage) -> None:
         await self._message_queue.put(result)
@@ -121,6 +146,8 @@ class BotCore:
                     await self._handle_subagent_result(msg)
             except Exception:
                 logger.exception("Error processing message type=%s", type(msg).__name__)
+            finally:
+                self._message_queue.task_done()
 
     async def _process_one_message(self) -> bool:
         try:
@@ -135,26 +162,33 @@ class BotCore:
                 await self._handle_subagent_result(msg)
         except Exception:
             logger.exception("Error processing message type=%s", type(msg).__name__)
+        finally:
+            self._message_queue.task_done()
         return True
 
     async def _handle_user_message(self, msg: UserMessage) -> None:
         scope = msg.scope
         cmd = command_name(msg.text)
-        scope = scoped_chat_id(message.channel, message.chat_id)
-        cmd = command_name(message.text)
-        if scope in self.active_requests and cmd != "/status":
-            await self._send(scope, "I'm still processing the previous message. Type /status to check the status.")
-            return
-        if cmd is not None:
-            incoming = IncomingMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_id=msg.user_id,
-                text=msg.text,
+        self._pending_user_scopes.discard(scope)
+        if scope in self.active_requests:
+            self.active_requests[scope].current_step = (
+                f"running command {cmd}" if cmd is not None else "processing user message"
             )
-            await self.command_manager.handle(cmd, incoming, scope)
-        else:
-            await self._process(scope, msg.text)
+
+        try:
+            if cmd is not None:
+                incoming = IncomingMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                    text=msg.text,
+                )
+                await self.command_manager.handle(cmd, incoming, scope)
+            else:
+                await self._process(scope, msg.text)
+        finally:
+            await self._end_processing(scope)
+            self.active_requests.pop(scope, None)
 
     async def _handle_subagent_result(self, msg: SubagentResultMessage) -> None:
         logger.info(
@@ -189,17 +223,6 @@ class BotCore:
         if len(msg.tool_trace) == 0:
             return len(msg.summary) > 50
         return True
-            self.active_requests[scope] = ActiveRequest(
-                chat_id=scope,
-                started_at=datetime.now(),
-                current_step="processing user message",
-            )
-            try:
-                await self._begin_processing(scope)
-                await self._process(scope, message.text)
-            finally:
-                await self._end_processing(scope)
-                self.active_requests.pop(scope, None)
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         await self._process_scheduled(scoped_id, prompt)

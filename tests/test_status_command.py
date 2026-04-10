@@ -213,7 +213,7 @@ def test_normal_message_indicates_processing_before_reply(tmp_path) -> None:
     bot.mcp = _FakeMcp()  # type: ignore
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="hello")
-    asyncio.run(bot.on_incoming(message))
+    _await_process(bot, message)
 
     assert channel.processing_started == ["42"]
     assert channel.processing_stopped == ["42"]
@@ -255,11 +255,12 @@ def test_concurrent_messages_same_chat_reject_second_request(tmp_path) -> None:
     second = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="second")
 
     async def _go() -> None:
-        first_task = asyncio.create_task(bot.on_incoming(first))
-        await asyncio.sleep(0)
+        await bot.on_incoming(first)
         await bot.on_incoming(second)
+        process_task = asyncio.create_task(bot._process_one_message())
+        await asyncio.sleep(0)
         gate.set()
-        await first_task
+        await process_task
 
     asyncio.run(_go())
 
