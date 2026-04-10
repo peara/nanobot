@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent_run import AgentRun
-from nanobot.channels.base import IncomingMessage
+from nanobot.channels.base import IncomingMessage, ProcessingAwareChannel
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
@@ -320,25 +320,19 @@ class BotCore:
     async def _begin_processing(self, scope: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
         channel = self.channels.get(channel_name)
-        if channel is None:
-            return
-        begin_processing = getattr(channel, "begin_processing", None)
-        if not callable(begin_processing):
+        if channel is None or not isinstance(channel, ProcessingAwareChannel):
             return
         try:
-            await begin_processing(raw_chat_id)
+            await channel.begin_processing(raw_chat_id)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to begin processing indicator scope=%s channel=%s", scope, channel_name)
 
     async def _end_processing(self, scope: str) -> None:
         channel_name, raw_chat_id = unscoped_chat_id(scope)
         channel = self.channels.get(channel_name)
-        if channel is None:
-            return
-        end_processing = getattr(channel, "end_processing", None)
-        if not callable(end_processing):
+        if channel is None or not isinstance(channel, ProcessingAwareChannel):
             return
         try:
-            await end_processing(raw_chat_id)
+            await channel.end_processing(raw_chat_id)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to end processing indicator scope=%s channel=%s", scope, channel_name)

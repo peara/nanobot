@@ -9,13 +9,13 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from nanobot.channels.base import Channel, IncomingMessage
+from nanobot.channels.base import IncomingMessage, ProcessingAwareChannel
 
 logger = logging.getLogger(__name__)
 TYPING_INTERVAL_SECONDS = 4.0
 
 
-class TelegramChannel(Channel):
+class TelegramChannel(ProcessingAwareChannel):
     def __init__(self, token: str) -> None:
         super().__init__()
         self.token = token
