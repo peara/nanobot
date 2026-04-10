@@ -5,6 +5,7 @@ import logging
 import uuid
 from typing import Any
 
+from nanobot.core_scratchpad import clear_scratchpad
 from nanobot.core_utils import command_body, extract_json_object, looks_garbled_text
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     if not request_text:
         await bot._send(chat_scope, "Usage: /plan <request>")
         return
+    clear_scratchpad(bot, chat_scope)
 
     run_id = f"run-{uuid.uuid4().hex[:10]}"
     logger.info("Starting plan run run_id=%s chat_scope=%s", run_id, chat_scope)

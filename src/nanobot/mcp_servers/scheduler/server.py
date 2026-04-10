@@ -13,7 +13,8 @@ from nanobot.scheduler_store import SchedulerStore
 
 def _scheduler_store() -> SchedulerStore:
     db_path = os.environ.get("SCHEDULER_DB_PATH", "./data/scheduler.db")
-    return SchedulerStore(db_path)
+    timezone_name = os.environ.get("SCHEDULER_TIMEZONE", "UTC")
+    return SchedulerStore(db_path, timezone_name=timezone_name)
 
 
 def _run_crontab(args: list[str], stdin_data: str | None = None) -> subprocess.CompletedProcess:

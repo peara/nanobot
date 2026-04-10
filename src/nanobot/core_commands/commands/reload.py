@@ -71,8 +71,12 @@ class ReloadCommand(BaseCommand):
                 if server.name == "scheduler":
                     server.env = dict(server.env)
                     server.env.setdefault("SCHEDULER_DB_PATH", new_config.scheduler_db_path)
+                    server.env.setdefault("SCHEDULER_TIMEZONE", new_config.working_timezone)
             self.core.mcp = McpHub(new_config.mcp_servers)
-            self.core.scheduler_store = SchedulerStore(new_config.scheduler_db_path)
+            self.core.scheduler_store = SchedulerStore(
+                new_config.scheduler_db_path,
+                timezone_name=new_config.working_timezone,
+            )
             self.core.scheduler = SchedulerRunner(
                 store=self.core.scheduler_store,
                 on_due_task=self.core._handle_scheduled_task,
@@ -92,6 +96,7 @@ class ReloadCommand(BaseCommand):
                 if server.name == "scheduler":
                     server.env = dict(server.env)
                     server.env.setdefault("SCHEDULER_DB_PATH", self.core.config.scheduler_db_path)
+                    server.env.setdefault("SCHEDULER_TIMEZONE", self.core.config.working_timezone)
             self.core.mcp = McpHub(self.core.config.mcp_servers)
             await self.core.start()
             return {"message": "MCP servers restarted successfully.", "success": True}
@@ -131,9 +136,13 @@ class ReloadCommand(BaseCommand):
                 if server.name == "scheduler":
                     server.env = dict(server.env)
                     server.env.setdefault("SCHEDULER_DB_PATH", self.core.config.scheduler_db_path)
+                    server.env.setdefault("SCHEDULER_TIMEZONE", self.core.config.working_timezone)
             self.core.llm = LlmClient(self.core.config.model)
             self.core.mcp = McpHub(self.core.config.mcp_servers)
-            self.core.scheduler_store = SchedulerStore(self.core.config.scheduler_db_path)
+            self.core.scheduler_store = SchedulerStore(
+                self.core.config.scheduler_db_path,
+                timezone_name=self.core.config.working_timezone,
+            )
             self.core.scheduler = SchedulerRunner(
                 store=self.core.scheduler_store,
                 on_due_task=self.core._handle_scheduled_task,
@@ -160,9 +169,13 @@ class ReloadCommand(BaseCommand):
                 if server.name == "scheduler":
                     server.env = dict(server.env)
                     server.env.setdefault("SCHEDULER_DB_PATH", self.core.config.scheduler_db_path)
+                    server.env.setdefault("SCHEDULER_TIMEZONE", self.core.config.working_timezone)
             self.core.llm = LlmClient(self.core.config.model)
             self.core.mcp = McpHub(self.core.config.mcp_servers)
-            self.core.scheduler_store = SchedulerStore(self.core.config.scheduler_db_path)
+            self.core.scheduler_store = SchedulerStore(
+                self.core.config.scheduler_db_path,
+                timezone_name=self.core.config.working_timezone,
+            )
             self.core.scheduler = SchedulerRunner(
                 store=self.core.scheduler_store,
                 on_due_task=self.core._handle_scheduled_task,

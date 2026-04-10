@@ -74,6 +74,17 @@ def _to_text_list(value: Any, *, limit_items: int, limit_chars: int = MAX_FIELD_
     return cleaned[-limit_items:]
 
 
+def _dedupe_text_list(values: list[str], *, limit_items: int) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped[-limit_items:]
+
+
 def _coerce_state(payload: Any, timezone_name: str = "UTC") -> dict[str, Any]:
     state = empty_scratchpad_state()
     if not isinstance(payload, dict):
@@ -163,7 +174,7 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
             state["known_facts"] = known_facts
         else:
             combined = [*state.get("known_facts", []), *known_facts]
-            state["known_facts"] = _to_text_list(combined, limit_items=MAX_KNOWN_FACTS)
+            state["known_facts"] = _dedupe_text_list(combined, limit_items=MAX_KNOWN_FACTS)
 
     tool_journal = _to_text_list(args.get("tool_journal"), limit_items=MAX_TOOL_JOURNAL)
     if tool_journal:
@@ -171,13 +182,25 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
             state["tool_journal"] = tool_journal
         else:
             combined = [*state.get("tool_journal", []), *tool_journal]
-            state["tool_journal"] = _to_text_list(combined, limit_items=MAX_TOOL_JOURNAL)
+            state["tool_journal"] = _dedupe_text_list(combined, limit_items=MAX_TOOL_JOURNAL)
 
     timezone_name = _bot_timezone(bot)
     state["updated_at"] = human_now(timezone_name)
     normalized = _coerce_state(state, timezone_name=timezone_name)
     bot.contexts.put("chat", scope, "scratchpad", normalized)
     return normalized
+
+
+def scratchpad_tool_result(mode: str, state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "mode": mode,
+        "updated_at": state.get("updated_at", ""),
+        "current_step": state.get("current_step", ""),
+        "next_step": state.get("next_step", ""),
+        "known_facts_count": len(state.get("known_facts", [])),
+        "tool_journal_count": len(state.get("tool_journal", [])),
+    }
 
 
 def apply_scratchpad_append_from_content(bot: Any, scope: str, content: str) -> None:

@@ -9,6 +9,7 @@ from nanobot.core_scratchpad import (
     apply_scratchpad_append_from_content,
     apply_scratchpad_tool_call,
     scratchpad_assistant_message,
+    scratchpad_tool_result,
 )
 from nanobot.core_utils import human_now, tool_result_preview
 from nanobot.hooks import ToolCallEvent
@@ -59,6 +60,16 @@ class AgentRun:
     def __init__(self, host: Any) -> None:
         self._host = host
 
+    @staticmethod
+    def _tools_for_chat(tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
+        if allow_scratchpad:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if str(tool.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME
+        ]
+
     async def run(
         self,
         scope_for_tools: str,
@@ -66,18 +77,20 @@ class AgentRun:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
+        include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
         prepared_messages = prepare_messages_for_chat(to_send)
         assistant_message = await self._host.llm.chat(
             messages=prepared_messages,
-            tools=tools,
+            tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
             response_format=response_format,
         )
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
         while assistant_message.get("tool_calls"):
             requested_calls = assistant_message["tool_calls"]
+            include_scratchpad_prompt = needs_scratchpad_update
             if needs_scratchpad_update:
                 scratchpad_seen = False
                 protocol_violation = False
@@ -113,13 +126,19 @@ class AgentRun:
                     "tool_calls": requested_calls,
                 }
             )
+            round_used_external_tool = False
+            round_finalized_scratchpad = False
             for tool_call in requested_calls:
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
                 if fn_name.endswith("__schedule_task"):
                     chat_id = str(args.get("chat_id", "")).strip()
-                    if not chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
+                    if (
+                        not chat_id
+                        or ":" not in chat_id
+                        or chat_id in {"current_chat", "this_chat", "current", "here"}
+                    ):
                         args["chat_id"] = scope_for_tools
                 ok = True
                 error: str | None = None
@@ -130,11 +149,18 @@ class AgentRun:
                     logger.info("Calling tool=%s args=%s", fn_name, args)
                     if fn_name == SCRATCHPAD_TOOL_NAME:
                         scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args)
-                        result = json.dumps({"ok": True, "scratchpad": scratchpad}, ensure_ascii=True)
+                        scratchpad_mode = str(args.get("mode", "")).strip().lower()
+                        result = json.dumps(
+                            scratchpad_tool_result(scratchpad_mode, scratchpad),
+                            ensure_ascii=True,
+                        )
                         needs_scratchpad_update = False
+                        if scratchpad_mode == "finalize":
+                            round_finalized_scratchpad = True
                     else:
                         result = await self._host.mcp.call_tool(fn_name, args)
                         needs_scratchpad_update = True
+                        round_used_external_tool = True
                     logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
@@ -180,13 +206,19 @@ class AgentRun:
                         "content": result_text,
                     }
                 )
+            if round_used_external_tool:
+                include_scratchpad_prompt = True
+            elif round_finalized_scratchpad:
+                include_scratchpad_prompt = False
             trimmed = trim_to_last_tool_round(messages)
-            scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools)
+            scratchpad_msg = (
+                scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None
+            )
             to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
             prepared_messages = prepare_messages_for_chat(to_send)
             assistant_message = await self._host.llm.chat(
                 messages=prepared_messages,
-                tools=tools,
+                tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
                 response_format=response_format,
             )
         reply = assistant_message.get("content") or "I could not generate a response."

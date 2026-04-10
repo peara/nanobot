@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 
@@ -39,10 +40,17 @@ class ScheduledTask:
 
 
 class SchedulerStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, timezone_name: str = "UTC") -> None:
         self.db_path = db_path
+        self.timezone_name = timezone_name or "UTC"
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    def _timezone(self) -> ZoneInfo:
+        try:
+            return ZoneInfo(self.timezone_name)
+        except ZoneInfoNotFoundError:
+            return ZoneInfo("UTC")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
@@ -64,8 +72,10 @@ class SchedulerStore:
             )
 
     def _next_run(self, cron_expr: str, now: datetime | None = None) -> datetime:
-        base = now or utc_now()
-        return croniter(cron_expr, base).get_next(datetime).astimezone(timezone.utc)
+        base_utc = now or utc_now()
+        base_local = base_utc.astimezone(self._timezone())
+        next_local = croniter(cron_expr, base_local).get_next(datetime)
+        return next_local.astimezone(timezone.utc)
 
     def add_task(self, chat_id: str, prompt: str, cron_expr: str) -> dict:
         now = utc_now()
