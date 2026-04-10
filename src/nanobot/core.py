@@ -15,7 +15,7 @@ from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
 from nanobot.core_router import MessageRouter
-from nanobot.core_scratchpad import scratchpad_tool_spec
+from nanobot.core_scratchpad import clear_scratchpad, scratchpad_tool_spec
 from nanobot.core_utils import (
     SCHEDULED_SYSTEM_MARKER,
     clip,
@@ -61,8 +61,9 @@ class BotCore:
             if server.name == "scheduler":
                 server.env = dict(server.env)
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
+                server.env.setdefault("SCHEDULER_TIMEZONE", config.working_timezone)
         self.mcp = McpHub(config.mcp_servers)
-        self.scheduler_store = SchedulerStore(config.scheduler_db_path)
+        self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,
@@ -198,12 +199,14 @@ class BotCore:
         try:
             self.memory.add_message(scope, "user", user_text)
             self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
+            clear_scratchpad(self, scope)
             await self.router.route_user_message(scope)
         finally:
             self.active_requests.pop(scope, None)
 
     async def _process_scheduled(self, scope: str, prompt: str) -> None:
         logger.info("Processing scheduled task for scope=%s prompt=%s", scope, clip(prompt, limit=200))
+        clear_scratchpad(self, scope)
         messages = [
             self._base_system_message(),
             {"role": "system", "content": SCHEDULED_SYSTEM_MARKER},

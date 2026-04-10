@@ -190,6 +190,42 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     assert "scratchpad" in channel.sent[1][1].lower()
 
 
+def test_new_turn_clears_old_scratchpad_state_before_prompt(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    llm = _RecordingFakeLlm(replies=[{"content": "ok", "tool_calls": None}])
+    bot = BotCore(config=config, channels={"telegram": channel})
+    bot.llm = cast(Any, llm)
+    bot.mcp = cast(Any, _FakeMcp())
+    bot.contexts.put(
+        "chat",
+        "telegram:42",
+        "scratchpad",
+        {
+            "goal": "Provide accurate, up-to-date information about React 19 news",
+            "context": "stale context",
+            "known_facts": ["stale fact"],
+            "current_step": "stale step",
+            "next_step": "stale next",
+            "tool_journal": ["stale journal"],
+            "updated_at": "old",
+        },
+    )
+
+    message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="set a reminder")
+    _await_process(bot, message)
+
+    scratchpad_messages = [
+        item
+        for item in llm.calls_messages[0]
+        if str(item.get("content", "")).startswith("[Internal scratchpad state")
+    ]
+    assert len(scratchpad_messages) == 1
+    scratchpad_text = str(scratchpad_messages[0]["content"])
+    assert "React 19 news" not in scratchpad_text
+    assert '"goal": ""' in scratchpad_text
+
+
 def test_tool_results_are_persisted_in_context(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()

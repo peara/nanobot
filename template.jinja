@@ -1,0 +1,30 @@
+{%- set ns = namespace(user_query="") -%}
+{%- for message in messages -%}
+  {%- if message.role == "user" -%}
+    {%- set content = (message.content | string).strip() -%}
+    {%- if content and not content.startswith("[Internal scratchpad state") -%}
+      {%- set ns.user_query = content -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if not ns.user_query -%}
+{{ raise_exception("No user query found in messages.") }}
+{%- endif -%}
+{%- for message in messages if message.role == "system" -%}
+{{ message.content }}
+
+{%- endfor -%}
+{%- if tools %}
+<tools>
+{%- for tool in tools %}
+{{ tool.function.name }}{% if tool.function.description %}: {{ tool.function.description }}{% endif %}
+{%- endfor %}
+</tools>
+
+{%- endif %}
+<conversation>
+{%- for message in messages if message.role != "system" %}
+<message role="{{ message.role }}">{{ message.content }}</message>
+{%- endfor %}
+</conversation>
+{% if add_generation_prompt %}<assistant>{% endif %}
