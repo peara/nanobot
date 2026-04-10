@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
-from nanobot.channels.base import IncomingMessage
+from nanobot.channels.base import IncomingMessage, ProcessingAwareChannel
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
 from nanobot.core import BotCore
 
@@ -15,9 +15,15 @@ def _await_process(bot: BotCore, message: IncomingMessage) -> None:
     asyncio.run(bot._process_one_message())
 
 
-class _FakeChannel:
+class _FakeChannel(ProcessingAwareChannel):
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
 
     async def send(self, chat_id: str, text: str) -> None:
         self.sent.append((chat_id, text))

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent_run import AgentRun
-from nanobot.channels.base import IncomingMessage
+from nanobot.channels.base import IncomingMessage, ProcessingAwareChannel
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan

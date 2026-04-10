@@ -5,10 +5,10 @@ import re
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from nanobot.channels.base import Channel, IncomingMessage
+from nanobot.channels.base import IncomingMessage, ProcessingAwareChannel
 
 
-class TelegramChannel(Channel):
+class TelegramChannel(ProcessingAwareChannel):
     def __init__(self, token: str) -> None:
         super().__init__()
         self.token = token
