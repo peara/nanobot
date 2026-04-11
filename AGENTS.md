@@ -1,96 +1,112 @@
 # NanoBot Agent Guidelines
 
-## Project Overview
+**Generated:** 2026-04-11
+**Commit:** 9062d3b
+**Branch:** main
+
+## Overview
 Minimal personal assistant bot with Telegram interface, OpenAI-compatible LLM backend (Ollama/vLLM), and MCP tool extensibility. Uses Python 3.11+ with uv for dependency management.
 
-## Build/Lint/Test Commands
-
-### Dependency Management
-```bash
-uv sync --group dev          # Install dependencies including dev tools
-source .venv/bin/activate    # Activate virtual environment
+## Structure
+```
+nanobot/
+├── src/nanobot/           # Main package
+│   ├── core.py            # BotCore - agent loop, tool orchestration
+│   ├── main.py            # Entry point
+│   ├── debug_cli.py       # Debug/inspection CLI
+│   ├── config.py          # Config loading (load_config, AppConfig)
+│   ├── mcp_hub.py         # MCP server connections
+│   ├── memory.py          # SQLite conversation history
+│   ├── channels/          # Telegram/GitHub channel implementations
+│   ├── mcp_servers/       # timer, memory, scheduler MCP servers
+│   ├── core_commands/     # Built-in commands (session, status, reset)
+│   └── tools/             # Tool interfaces and registry
+├── tests/                 # Pytest tests (mirrors src structure)
+└── config.yaml            # Bot configuration
 ```
 
-### Running Tests (Single Test)
+## Where to Look
+| Task | Location | Notes |
+|------|----------|-------|
+| Add new channel | `src/nanobot/channels/` | Implement Channel interface |
+| Add MCP tool | `src/nanobot/mcp_servers/` | Create server.py in subpackage |
+| Add built-in command | `src/nanobot/core_commands/commands/` | Register in command_manager.py |
+| Modify agent loop | `src/nanobot/core.py` | `_process()`, `_run_agent_loop()` |
+| Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
+| Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |
+
+## Commands
 ```bash
-uv run pytest                # Run all tests in tests/ directory
-uv run pytest tests/         # Run specific test file
-uv run pytest tests/test_foo.py -k test_specific  # Run single test by name pattern
-uv run pytest tests/test_foo.py::test_name  # Run specific test function exactly
+uv sync --group dev                    # Install dependencies
+uv run pytest                          # Run tests
+uv run pytest tests/test_foo.py -k name  # Run specific test
+uv run ruff check . && uv run ruff format .  # Lint + format
+uv run mypy                            # Type check
+python -m nanobot.main --config config.yaml  # Run bot
+uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 ```
 
-### Code Quality
-```bash
-uv run ruff check .          # Lint code (selects E, F, I, B rules)
-uv run ruff format .         # Format code (120 char lines, double quotes)
-uv run mypy                  # Type checking with strict settings
-uv run pre-commit run --all-files  # Run all git hooks
-```
-
-### Development Workflow
-```bash
-python -m nanobot.main --config config.yaml    # Run the bot
-uv run python -m nanobot.debug_cli --config config.yaml <command>  # Debug CLI for inspection
-```
-
-## Code Style Guidelines
+## Conventions
 
 ### Imports
-- Use `from __future__ import annotations` at top of all files
-- Standard library imports first (alphabetically: os, sys, typing)
-- Third-party imports second (alphabetically: mcp, yaml, pytest)
-- Local imports last as `nanobot.*` (alphabetically within group)
-- Group related imports with blank lines between groups
+- `from __future__ import annotations` at top of ALL files
+- Order: stdlib → third-party → local `nanobot.*` (alphabetically within groups)
 
 ### Type Annotations
-- Use explicit return type annotations for all functions: `-> None`, `-> str`, etc.
-- Use modern generics: `list[type]`, `dict[str, type]`, not `List`, `Dict`
-- Use union syntax: `str | None` instead of `Optional[str]`
-- Use `cast(Any, ...)` when interfacing with dynamic code or mocks
-- Annotate function parameters for public APIs and complex internal functions
+- Explicit return types on ALL functions: `-> None`, `-> str`, etc.
+- Modern generics: `list[type]`, `dict[str, type]` (NOT `List`, `Dict`)
+- Union syntax: `str | None` (NOT `Optional[str]`)
+- `cast(Any, ...)` for dynamic code/mocks
 
-### Naming Conventions
-- Classes: PascalCase (`BotCore`, `Config`, `McpHub`)
-- Functions/variables: snake_case (`load_config`, `chat_scope`, `tool_hooks`)
-- Constants: UPPER_SNAKE_CASE (`MAX_TOKENS`, `SCRATCHPAD_TOOL_NAME`, `EMPTY_REPLY_FALLBACK`)
-- Private members: single leading underscore (`_process`, `_send`, `_build_config`)
+### Naming
+- Classes: PascalCase (`BotCore`)
+- Functions/variables: snake_case (`load_config`)
+- Constants: UPPER_SNAKE_CASE (`MAX_TOKENS`)
+- Private: single underscore (`_process`)
 
-### Formatting Standards (Ruff Config)
-- Line length: 120 characters maximum
-- Indentation: spaces (4 spaces per level)
-- Quotes: double quotes for all strings (`"` not `'`)
-- Blank lines: two between top-level definitions, one inside functions
-- Trailing commas in multi-line function calls and type hints
+### Formatting (Ruff: 120 chars, double quotes)
+- Line length: 120 max
+- Quotes: `"` only (never `'`)
+- Indent: 4 spaces
+- Blank lines: 2 between top-level, 1 inside functions
+- Trailing commas in multi-line calls
 
 ### Error Handling
-- Use `try/except` with specific exception types where meaningful (KeyError, ValueError)
-- Catch broad exceptions only when necessary (`# pylint: disable=broad-except`)
-- Log errors with full context using `logger.exception()` for traceback
-- Never silently swallow exceptions - always log or re-raise
-- Use descriptive error messages including relevant context
+- Specific exceptions (KeyError, ValueError) - broad only when necessary with `# pylint: disable=broad-except`
+- NEVER silently swallow - always log or re-raise
+- `logger.exception()` for full traceback
 
 ### Logging
-- Use `logging.getLogger(__name__)` for module-specific logger instance
-- Include contextual information: scope, chat_id, tool_name, step number
-- Use appropriate levels: `info` for normal flow, `warning` for recoverable issues, `error`/`exception` for failures
-- Clip long strings in logs using helpers like `clip()` or `tool_result_preview()` to avoid log spam
+- `logging.getLogger(__name__)` per module
+- Include context: scope, chat_id, tool_name
+- Clip long strings with `clip()` helper
 
-### Async Patterns
-- Always use `async def` and `await` appropriately throughout the codebase
-- Use `AsyncExitStack` for managing multiple async context managers (see McpHub)
-- Pass bot instance explicitly where needed instead of relying on closures
+### Async
+- `async def`/`await` throughout
+- `AsyncExitStack` for multiple async context managers (see McpHub)
 
 ### Data Classes
-- Prefer `@dataclass` over plain dicts for structured data (ModelConfig, ChannelConfig)
-- Use `field(default_factory=...)` for mutable defaults like lists and dicts
-- Mark frozen dataclasses with `frozen=True` when immutable (ToolCallEvent)
-- Include type annotations on all fields
+- `@dataclass` over plain dicts for structured data
+- `field(default_factory=...)` for mutable defaults
+- `frozen=True` for immutable (e.g., ToolCallEvent)
 
-### Testing Conventions (Pytest)
-- Tests live in `tests/` directory parallel to source structure
-- Use `tmp_path` fixture from pytest for temporary file/directory testing
-- Create fake implementations for external dependencies: `_FakeChannel`, `_FakeLlm`, `_FakeMcp`
-- Mock external services with classes inheriting from expected interfaces
-- Test both success paths and error/recovery scenarios (garbled output, tool failures)
-- Use `asyncio.run()` to execute async test methods
-- Name helper functions starting with underscore (`_build_config`)
+### Testing
+- `tests/` mirrors source structure
+- `tmp_path` fixture for temp files
+- Fake implementations: `_FakeChannel`, `_FakeLlm`, `_FakeMcp`
+- `@pytest.mark.asyncio` for async tests
+- In-memory SQLite: `:memory:`
+
+## Anti-Patterns (THIS PROJECT)
+- **Type errors**: Suppress with `# type: ignore` only when unavoidable
+- **Empty catch blocks**: `except: pass` - Never
+- **Deleting failing tests**: to "pass" - Never
+- **Commit without explicit request**: Never
+- **Speculate about unread code**: Never
+- **Leave code in broken state**: Never
+
+## Notes
+- No GitHub Actions CI - all testing/linting is local via `uv run`
+- `reset_state.py` at project root (not in src/) - utility script
+- `.agents/skills/` contains project-specific AI agent skills
+- Entry points: `python -m nanobot.main` and `python -m nanobot.debug_cli`
