@@ -5,7 +5,12 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from nanobot.agent_run import AgentRun, prepare_messages_for_chat
+from nanobot.agent_run import (
+    REPEATED_TOOL_CALL_ABORT_REPLY,
+    TOOL_CALL_LIMIT_ABORT_REPLY,
+    AgentRun,
+    prepare_messages_for_chat,
+)
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
 from nanobot.tools.base import Tool
@@ -264,3 +269,68 @@ def test_agent_run_normalizes_numeric_schedule_chat_id_to_current_scope() -> Non
             {"chat_id": "telegram:1", "cron_expr": "18 11 * * *", "prompt": "nau com"},
         )
     ]
+
+
+def test_agent_run_aborts_on_repeated_identical_tool_calls() -> None:
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "web__read_page",
+            "arguments": json.dumps({"url": "https://example.com"}),
+        },
+    }
+    llm = _FakeLlm(
+        [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "", "tool_calls": [tool_call]},
+        ]
+    )
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "read this page"}],
+            tools=[{"type": "function", "function": {"name": "web__read_page"}}],
+        )
+        assert text == REPEATED_TOOL_CALL_ABORT_REPLY
+        assert [item["name"] for item in trace] == ["web__read_page", "web__read_page"]
+
+    asyncio.run(_go())
+
+
+def test_agent_run_aborts_after_tool_call_limit() -> None:
+    replies = []
+    for idx in range(20):
+        replies.append(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": "timer__time_now",
+                            "arguments": json.dumps({"timezone_name": f"UTC+{idx}"}),
+                        },
+                    }
+                ],
+            }
+        )
+    llm = _FakeLlm(replies)
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "loop tools"}],
+            tools=[{"type": "function", "function": {"name": "timer__time_now"}}],
+        )
+        assert text == TOOL_CALL_LIMIT_ABORT_REPLY
+        assert len(trace) == 16
+
+    asyncio.run(_go())

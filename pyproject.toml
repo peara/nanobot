@@ -17,6 +17,13 @@ dependencies = [
   "mem0ai>=1.0.4",
   "PyGithub>=2.3.0",
   "python-dotenv>=1.0.0",
+  "beautifulsoup4>=4.12.3",
+  "httpx>=0.27.2",
+  "playwright>=1.55.0",
+  "readability-lxml>=0.8.4.1",
+  "selectolax>=0.3.27",
+  "trafilatura>=2.0.0",
+  "crawl4ai>=0.7.0",
 ]
 
 [tool.setuptools]

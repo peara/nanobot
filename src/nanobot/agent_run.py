@@ -16,6 +16,16 @@ from nanobot.hooks import ToolCallEvent
 
 logger = logging.getLogger(__name__)
 
+MAX_TOOL_CALLS_PER_TURN = 16
+MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
+REPEATED_TOOL_CALL_ABORT_REPLY = (
+    "I got stuck repeating the same tool call in this turn. "
+    "The source may be redirecting or returning unhelpful content. Please try another source or rephrase the request."
+)
+TOOL_CALL_LIMIT_ABORT_REPLY = (
+    "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
+)
+
 
 def trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
     """Keep only the last round of tool use (assistant with tool_calls + its tool results)."""
@@ -61,6 +71,18 @@ class AgentRun:
         self._host = host
 
     @staticmethod
+    def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
+        fn_name = str(tool_call.get("function", {}).get("name", ""))
+        raw_args = tool_call.get("function", {}).get("arguments") or "{}"
+        try:
+            parsed_args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            normalized_args = raw_args
+        else:
+            normalized_args = json.dumps(parsed_args, ensure_ascii=True, sort_keys=True)
+        return fn_name, str(normalized_args)
+
+    @staticmethod
     def _tools_for_chat(tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
         if allow_scratchpad:
             return tools
@@ -84,8 +106,25 @@ class AgentRun:
         )
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
+        total_tool_calls = 0
+        previous_round_signatures: list[tuple[str, str]] | None = None
+        identical_round_repeats = 0
         while assistant_message.get("tool_calls"):
             requested_calls = assistant_message["tool_calls"]
+            requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
+            if previous_round_signatures == requested_signatures:
+                identical_round_repeats += 1
+            else:
+                identical_round_repeats = 1
+            previous_round_signatures = requested_signatures
+            if identical_round_repeats >= MAX_IDENTICAL_TOOL_CALL_REPEATS:
+                logger.warning(
+                    "Aborting repeated identical tool calls scope=%s repeats=%d calls=%s",
+                    scope_for_tools,
+                    identical_round_repeats,
+                    requested_signatures,
+                )
+                return REPEATED_TOOL_CALL_ABORT_REPLY, tool_trace
             include_scratchpad_prompt = needs_scratchpad_update
             if needs_scratchpad_update:
                 scratchpad_seen = False
@@ -125,6 +164,14 @@ class AgentRun:
             round_used_external_tool = False
             round_finalized_scratchpad = False
             for tool_call in requested_calls:
+                total_tool_calls += 1
+                if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
+                    logger.warning(
+                        "Aborting tool loop after limit scope=%s total_tool_calls=%d",
+                        scope_for_tools,
+                        total_tool_calls,
+                    )
+                    return TOOL_CALL_LIMIT_ABORT_REPLY, tool_trace
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
