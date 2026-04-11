@@ -40,7 +40,16 @@ source .venv/bin/activate
 ```bash
 cp config.example.yaml config.yaml
 export TELEGRAM_BOT_TOKEN="..."
+export TAVILY_API_KEY="..."   # recommended for structured web search
+# or: export EXA_API_KEY="..."  # optional fallback / alternative provider
 ```
+
+For web search, configure at least one provider:
+
+- `TAVILY_API_KEY`: recommended default for current events, prices, and general web lookup
+- `EXA_API_KEY`: optional alternative or fallback provider
+
+If neither key is set, `web__search_web` will return a configuration error instead of searching.
 
 You can customize behavior in `config.yaml`:
 
@@ -174,6 +183,28 @@ Recommended local embedding model:
 
 - `mxbai-embed-large` (best quality)
 - `nomic-embed-text` (lighter/faster fallback)
+
+## Web search provider setup
+
+The built-in web MCP server exposes `web__search_web` for structured search before `web__read_page`.
+
+Recommended setup:
+
+```bash
+export TAVILY_API_KEY="..."
+```
+
+Optional fallback:
+
+```bash
+export EXA_API_KEY="..."
+```
+
+Notes:
+
+- The bot will try `Tavily` first, then fall back to `Exa` when both keys are configured.
+- If only one key is configured, it will use that provider only.
+- This avoids the old behavior of inventing URLs or relying on fragile Google HTML scraping.
 
 ## Notes
 

@@ -24,6 +24,8 @@ system_prompt_template: |
   Working timezone: {working_timezone}.
   Current local time: {current_time}.
   Always interpret and communicate times in this timezone unless the user explicitly requests another timezone.
+  For questions about current events, prices, or topics without a known URL, call web__search_web first.
+  Do not invent URLs. After search, open promising results with web__read_page.
   For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id.
   Format responses as plain text suitable for Telegram.
   Do not use markdown tables, HTML tags, or raw markup.
@@ -70,6 +72,16 @@ mcp_servers:
     args: ["-m", "nanobot.mcp_servers.memory.server"]
     env:
       MEM0_CONFIG_PATH: "./config.mem0.yaml"
+
+  - name: "web"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.web.server"]
+    env:
+      WEB_AGENT_HEADLESS: "true"
+      WEB_AGENT_SAVE_OUTPUTS: "true"
+      # Configure at least one search provider in your shell before running:
+      # export TAVILY_API_KEY="..."
+      # export EXA_API_KEY="..."
 
   - name: "playwright"
     command: "npx"
