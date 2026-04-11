@@ -50,6 +50,7 @@ class AppConfig:
     channels: list[ChannelConfig]
     mcp_servers: list[McpServerConfig]
     owner_chat_id: int = 0
+    enable_tool_stats: bool = False
 
 
 def _expand_env_value(value: Any) -> Any:
@@ -102,4 +103,5 @@ def load_config(config_path: str) -> AppConfig:
         channels=channel_cfg,
         mcp_servers=mcp_cfg,
         owner_chat_id=int(data.get("owner_chat_id", 0)),
+        enable_tool_stats=bool(data.get("enable_tool_stats", False)),
     )

@@ -28,7 +28,7 @@ from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMes
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 from nanobot.subagent import SubagentRunner
-from nanobot.tools import McpToolSource, ToolRegistry
+from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,8 @@ class BotCore:
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
                 server.env.setdefault("SCHEDULER_TIMEZONE", config.working_timezone)
         self._mcp_source = McpToolSource(config.mcp_servers)
-        self.tools = ToolRegistry()
+        self.tool_stats = ToolStatsStore(config.database_path) if config.enable_tool_stats else None
+        self.tools = ToolRegistry(stats_store=self.tool_stats)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(

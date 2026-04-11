@@ -150,7 +150,7 @@ class AgentRun:
                         if scratchpad_mode == "finalize":
                             round_finalized_scratchpad = True
                     else:
-                        result = await self._host.tools.call(fn_name, args)
+                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools)
                         needs_scratchpad_update = True
                         round_used_external_tool = True
                     logger.info("Tool succeeded tool=%s", fn_name)
