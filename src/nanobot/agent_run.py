@@ -16,7 +16,7 @@ from nanobot.hooks import ToolCallEvent
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_CALLS_PER_TURN = 16
+MAX_TOOL_CALLS_PER_TURN = 30
 MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
 REPEATED_TOOL_CALL_ABORT_REPLY = (
     "I got stuck repeating the same tool call in this turn. "
@@ -94,6 +94,7 @@ class AgentRun:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools)
@@ -197,7 +198,7 @@ class AgentRun:
                         if scratchpad_mode == "finalize":
                             round_finalized_scratchpad = True
                     else:
-                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools)
+                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
                         needs_scratchpad_update = True
                         round_used_external_tool = True
                     logger.info("Tool succeeded tool=%s", fn_name)

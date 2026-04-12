@@ -52,7 +52,13 @@ class ToolRegistry:
     def list_openai_specs(self, patterns: list[str] | None = None) -> list[dict]:
         return [t.to_openai_spec() for t in self.list_tools(patterns)]
 
-    async def call(self, name: str, args: dict, scope: str | None = None) -> str:
+    async def call(
+        self,
+        name: str,
+        args: dict,
+        scope: str | None = None,
+        run_id: str | None = None,
+    ) -> str:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Unknown tool: {name}")
@@ -84,6 +90,7 @@ class ToolRegistry:
                     error_preview=error_preview,
                     input_preview=input_preview,
                     output_chars=output_chars,
+                    run_id=run_id,
                 )
 
     @staticmethod

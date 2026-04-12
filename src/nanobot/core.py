@@ -14,11 +14,12 @@ from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
-from nanobot.core_router import MessageRouter
 from nanobot.core_scratchpad import clear_scratchpad, scratchpad_tool_spec
 from nanobot.core_utils import (
+    attach_human_timestamps,
     command_name,
     human_now,
+    trim_history_by_chars,
     unscoped_chat_id,
 )
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
@@ -27,7 +28,7 @@ from nanobot.memory import ConversationStore
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
-from nanobot.subagent import SubagentRunner
+from nanobot.subagents import SubagentManager
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,12 @@ class BotCore:
         self.command_manager = CommandManager(self)
         self.active_requests: dict[str, ActiveRequest] = {}
         self.agent_run = AgentRun(self)
-        self.router = MessageRouter(self)
+        self.subagent_manager = SubagentManager(
+            db_path=config.database_path,
+            contexts=self.contexts,
+            agent_run=self.agent_run,
+            tools=self.tools,
+        )
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None
 
@@ -162,16 +168,6 @@ class BotCore:
             msg.success,
             len(msg.tool_trace),
         )
-        self.contexts.put(
-            "subagent_run",
-            msg.run_id,
-            "result",
-            {
-                "summary": msg.summary,
-                "tool_trace": msg.tool_trace,
-                "success": msg.success,
-            },
-        )
 
         if self._should_notify_user(msg):
             self.memory.add_message(msg.parent_scope, "assistant", msg.summary)
@@ -190,13 +186,21 @@ class BotCore:
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         logger.info("Scheduled task triggered scope=%s", scoped_id)
-        runner = SubagentRunner(self)
-        result = await runner.run(
-            goal=prompt,
+        messages = [
+            {"role": "system", "content": self.config.subagent_system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        run = self.subagent_manager.spawn(scope=scoped_id, goal=prompt)
+        result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
+        msg = SubagentResultMessage(
+            run_id=result.run_id,
             parent_scope=scoped_id,
-            system_prompt=self.config.subagent_system_prompt,
+            success=result.success,
+            summary=result.reply,
+            tool_trace=result.tool_trace,
+            metadata={"error": result.error} if result.error else None,
         )
-        await self.on_subagent_result(result)
+        await self.on_subagent_result(msg)
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
@@ -209,7 +213,28 @@ class BotCore:
             self.memory.add_message(scope, "user", user_text)
             self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
             clear_scratchpad(self, scope)
-            await self.router.route_user_message(scope)
+
+            history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
+            history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
+            history = trim_history_by_chars(history, self.config.history_char_limit)
+            messages = [self._base_system_message()]
+            messages.extend(history)
+
+            run = self.subagent_manager.spawn(scope=scope)
+            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
+
+            final_reply = str(result.reply or "")
+            if not final_reply.strip():
+                logger.warning(
+                    "Assistant produced empty/whitespace reply scope=%s chars=%d; using fallback",
+                    scope,
+                    len(final_reply),
+                )
+                final_reply = EMPTY_REPLY_FALLBACK
+
+            self.memory.add_message(scope, "assistant", final_reply)
+            self.contexts.put("chat", scope, "last_assistant_message", {"text": final_reply})
+            await self._send(scope, final_reply)
         finally:
             self.active_requests.pop(scope, None)
 
@@ -225,41 +250,6 @@ class BotCore:
                 current_time=human_now(self.config.working_timezone),
             ),
         }
-
-    async def _run_agent_turn(self, scope: str, messages: list[dict], persist_assistant: bool) -> None:
-        if scope in self.active_requests:
-            self.active_requests[scope].current_step = "calling tools"
-        reply, _ = await self.agent_run.run(
-            scope_for_tools=scope,
-            messages=messages,
-            tools=self._list_openai_tools(),
-        )
-        final_reply = str(reply or "")
-        if not final_reply.strip():
-            logger.warning(
-                "Assistant produced empty/whitespace reply scope=%s chars=%d; using fallback",
-                scope,
-                len(final_reply),
-            )
-            final_reply = EMPTY_REPLY_FALLBACK
-        if persist_assistant:
-            self.memory.add_message(scope, "assistant", final_reply)
-        self.contexts.put("chat", scope, "last_assistant_message", {"text": final_reply})
-        await self._send(scope, final_reply)
-
-    async def _run_agent_loop(
-        self,
-        scope_for_tools: str,
-        messages: list[dict],
-        tools: list[dict],
-        response_format: dict[str, Any] | None = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
-        return await self.agent_run.run(
-            scope_for_tools=scope_for_tools,
-            messages=messages,
-            tools=tools,
-            response_format=response_format,
-        )
 
     def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]

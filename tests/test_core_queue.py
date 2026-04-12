@@ -159,7 +159,7 @@ def test_should_notify_user_returns_true_for_tools_used(bot: BotCore) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_subagent_result_stores_and_notifies(bot: BotCore) -> None:
+async def test_handle_subagent_result_notifies_when_should(bot: BotCore) -> None:
     msg = SubagentResultMessage(
         run_id="subagent-test",
         parent_scope="telegram:123",
@@ -169,18 +169,11 @@ async def test_handle_subagent_result_stores_and_notifies(bot: BotCore) -> None:
     )
 
     with patch.object(bot.memory, "add_message") as mock_add:
-        with patch.object(bot.contexts, "put") as mock_put:
-            with patch.object(bot, "_send", new_callable=AsyncMock) as mock_send:
-                await bot._handle_subagent_result(msg)
+        with patch.object(bot, "_send", new_callable=AsyncMock) as mock_send:
+            await bot._handle_subagent_result(msg)
 
-                mock_put.assert_called_once()
-                args = mock_put.call_args[0]
-                assert args[0] == "subagent_run"
-                assert args[1] == "subagent-test"
-                assert args[2] == "result"
-
-                mock_add.assert_called_once_with("telegram:123", "assistant", "I completed the task.")
-                mock_send.assert_called_once_with("telegram:123", "I completed the task.")
+            mock_add.assert_called_once_with("telegram:123", "assistant", "I completed the task.")
+            mock_send.assert_called_once_with("telegram:123", "I completed the task.")
 
 
 @pytest.mark.asyncio
@@ -194,9 +187,8 @@ async def test_handle_subagent_result_does_not_notify_when_should_not(bot: BotCo
     )
 
     with patch.object(bot.memory, "add_message") as mock_add:
-        with patch.object(bot.contexts, "put"):
-            with patch.object(bot, "_send", new_callable=AsyncMock) as mock_send:
-                await bot._handle_subagent_result(msg)
+        with patch.object(bot, "_send", new_callable=AsyncMock) as mock_send:
+            await bot._handle_subagent_result(msg)
 
-                mock_add.assert_not_called()
-                mock_send.assert_not_called()
+            mock_add.assert_not_called()
+            mock_send.assert_not_called()

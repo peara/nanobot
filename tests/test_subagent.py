@@ -5,8 +5,7 @@ from typing import Any, cast
 
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
 from nanobot.core import BotCore
-from nanobot.messages import SubagentResultMessage
-from nanobot.subagent import SubagentRunner
+from nanobot.subagents import SubagentRunResult
 from nanobot.tools.base import Tool
 
 
@@ -102,44 +101,41 @@ def _build_config(tmp_path) -> AppConfig:
     )
 
 
-def test_subagent_runner_returns_result_on_success(tmp_path) -> None:
+def test_subagent_manager_returns_result_on_success(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "Task completed", "tool_calls": None}]))
 
-    runner = SubagentRunner(bot)
-
-    async def _run() -> SubagentResultMessage:
-        return await runner.run(
-            goal="Check the weather",
-            parent_scope="telegram:123",
-            system_prompt="You are an autonomous agent.",
-        )
+    async def _run() -> SubagentRunResult:
+        run = bot.subagent_manager.spawn(scope="telegram:123", goal="Check the weather")
+        messages = [
+            {"role": "system", "content": "You are an autonomous agent."},
+            {"role": "user", "content": "Check the weather"},
+        ]
+        return await bot.subagent_manager.execute(run, messages, [])
 
     result = asyncio.run(_run())
 
     assert result.success is True
-    assert result.summary == "Task completed"
-    assert result.parent_scope == "telegram:123"
-    assert result.run_id.startswith("subagent-")
+    assert result.reply == "Task completed"
+    assert result.run_id.startswith("run-")
     assert len(result.tool_trace) == 0
 
 
-def test_subagent_runner_stores_context_on_success(tmp_path) -> None:
+def test_subagent_manager_stores_context_on_success(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[{"content": "Done", "tool_calls": None}]))
 
-    runner = SubagentRunner(bot)
-
-    async def _run() -> SubagentResultMessage:
-        return await runner.run(
-            goal="Test task",
-            parent_scope="telegram:456",
-            system_prompt="Do it.",
-        )
+    async def _run() -> SubagentRunResult:
+        run = bot.subagent_manager.spawn(scope="telegram:456", goal="Test task")
+        messages = [
+            {"role": "system", "content": "Do it."},
+            {"role": "user", "content": "Test task"},
+        ]
+        return await bot.subagent_manager.execute(run, messages, [])
 
     result = asyncio.run(_run())
 
@@ -152,7 +148,7 @@ def test_subagent_runner_stores_context_on_success(tmp_path) -> None:
     assert status == {"value": "completed"}
 
 
-def test_subagent_runner_handles_failure(tmp_path) -> None:
+def test_subagent_manager_handles_failure(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
@@ -163,27 +159,25 @@ def test_subagent_runner_handles_failure(tmp_path) -> None:
 
     bot.llm = cast(Any, _FailingLlm())
 
-    runner = SubagentRunner(bot)
-
-    async def _run() -> SubagentResultMessage:
-        return await runner.run(
-            goal="Failing task",
-            parent_scope="telegram:789",
-            system_prompt="Do it.",
-        )
+    async def _run() -> SubagentRunResult:
+        run = bot.subagent_manager.spawn(scope="telegram:789", goal="Failing task")
+        messages = [
+            {"role": "system", "content": "Do it."},
+            {"role": "user", "content": "Failing task"},
+        ]
+        return await bot.subagent_manager.execute(run, messages, [])
 
     result = asyncio.run(_run())
 
     assert result.success is False
-    assert "Error:" in result.summary
-    assert result.metadata is not None
-    assert "error" in result.metadata
+    assert "Error:" in result.reply
+    assert result.error is not None
 
     status = bot.contexts.get("subagent_run", result.run_id, "status")
     assert status == {"value": "failed"}
 
 
-def test_subagent_runner_with_tool_calls(tmp_path) -> None:
+def test_subagent_manager_with_tool_calls(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
@@ -208,24 +202,23 @@ def test_subagent_runner_with_tool_calls(tmp_path) -> None:
 
     bot.tools.register(_FakeTool("timer__time_now", result="2025-01-01T12:00:00Z"))
 
-    runner = SubagentRunner(bot)
-
-    async def _run() -> SubagentResultMessage:
-        return await runner.run(
-            goal="Check time",
-            parent_scope="telegram:999",
-            system_prompt="Get the current time.",
-        )
+    async def _run() -> SubagentRunResult:
+        run = bot.subagent_manager.spawn(scope="telegram:999", goal="Check time")
+        messages = [
+            {"role": "system", "content": "Get the current time."},
+            {"role": "user", "content": "Check time"},
+        ]
+        return await bot.subagent_manager.execute(run, messages, bot._list_openai_tools())
 
     result = asyncio.run(_run())
 
     assert result.success is True
-    assert result.summary == "Time checked"
+    assert result.reply == "Time checked"
     assert len(result.tool_trace) == 1
     assert result.tool_trace[0]["name"] == "timer__time_now"
 
 
-def test_subagent_runner_uses_parent_scope_for_tools(tmp_path) -> None:
+def test_subagent_manager_uses_parent_scope_for_tools(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
@@ -252,15 +245,37 @@ def test_subagent_runner_uses_parent_scope_for_tools(tmp_path) -> None:
         ),
     )
 
-    runner = SubagentRunner(bot)
-
-    async def _run() -> SubagentResultMessage:
-        return await runner.run(
-            goal="Test scope",
-            parent_scope="telegram:parent123",
-            system_prompt="Do it.",
-        )
+    async def _run() -> SubagentRunResult:
+        run = bot.subagent_manager.spawn(scope="telegram:parent123", goal="Test scope")
+        messages = [
+            {"role": "system", "content": "Do it."},
+            {"role": "user", "content": "Test scope"},
+        ]
+        return await bot.subagent_manager.execute(run, messages, bot._list_openai_tools())
 
     asyncio.run(_run())
 
     assert len(call_log) == 1
+
+
+def test_subagent_manager_spawn_creates_run_record(tmp_path) -> None:
+    config = _build_config(tmp_path)
+    channel = _FakeChannel()
+    bot = BotCore(config=config, channels={"telegram": channel})
+
+    run = bot.subagent_manager.spawn(scope="telegram:spawn_test", goal="Test goal")
+
+    assert run.id.startswith("run-")
+    assert run.scope == "telegram:spawn_test"
+    assert run.status == "pending"
+    assert run.goal == "Test goal"
+
+    stored_goal = bot.contexts.get("subagent_run", run.id, "goal")
+    assert stored_goal == {"text": "Test goal"}
+
+    stored_status = bot.contexts.get("subagent_run", run.id, "status")
+    assert stored_status == {"value": "pending"}
+
+    retrieved = bot.subagent_manager.get(run.id)
+    assert retrieved is not None
+    assert retrieved.id == run.id

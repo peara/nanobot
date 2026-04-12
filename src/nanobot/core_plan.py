@@ -40,7 +40,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         },
         {"role": "user", "content": request_text},
     ]
-    intake_reply, _ = await bot._run_agent_loop(scope_for_tools=chat_scope, messages=intake_messages, tools=[])
+    intake_reply, _ = await bot.agent_run.run(scope_for_tools=chat_scope, messages=intake_messages, tools=[])
     bot.contexts.put("plan_run", run_id, "intake_raw", {"text": intake_reply})
     plan_brief = extract_json_object(intake_reply) or {
         "goal": request_text,
@@ -72,7 +72,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     ]
     bot.contexts.put("plan_run", run_id, "status", {"value": "running"})
     try:
-        final_reply, tool_trace = await bot._run_agent_loop(
+        final_reply, tool_trace = await bot.agent_run.run(
             scope_for_tools=chat_scope,
             messages=run_messages,
             tools=bot.tools.list_openai_specs(),
@@ -97,7 +97,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
                 },
                 {"role": "user", "content": json.dumps(recovery_payload, ensure_ascii=True)},
             ]
-            recovered_reply, _ = await bot._run_agent_loop(
+            recovered_reply, _ = await bot.agent_run.run(
                 scope_for_tools=chat_scope,
                 messages=recovery_messages,
                 tools=[],
