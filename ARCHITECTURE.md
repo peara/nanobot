@@ -101,33 +101,66 @@ Efficiency means **aggressive budgeting** (what goes into the prompt, how often,
 
 ## Current runtime (implementation)
 
-Today there is a **single primary agent loop** in `BotCore` (orchestrated sub-agents are not yet a separate runtime). The path matches the vision’s “orchestrator talks, uses tools, persists, replies.”
+User messages flow through `BotCore` → `SubagentManager` → `AgentRun`. Each non-command message creates a `SubagentRun` record for observability.
 
 ```mermaid
 flowchart TD
     A[Channel adapter] -->|IncomingMessage| B[BotCore.on_incoming]
-    B --> C[_process or command handler]
-    C --> D[_run_agent_turn / _run_agent_loop]
-    D --> E[LlmClient.chat]
-    E -->|tool_calls| F[McpHub.call_tool]
-    F --> G[after_tool_call hooks]
-    G --> G1[ToolResultRecorderHook]
-    G --> G2[BrowseEventRecorderHook]
-    G --> D
-    E -->|final text| H[persist assistant + send]
+    B --> C{_handle_user_message}
+    C -->|command| D[CommandManager.handle]
+    C -->|else| E[_process]
+    E --> F[SubagentManager.spawn]
+    F --> G[SubagentManager.execute]
+    G --> H[AgentRun.run]
+    H --> I[LlmClient.chat]
+    I -->|tool_calls| J[ToolRegistry.call]
+    J --> K[after_tool_call hooks]
+    K --> K1[ToolResultRecorderHook]
+    K --> K2[BrowseEventRecorderHook]
+    K --> H
+    I -->|final text| L[persist assistant + send]
+    
+    D --> M[no SubagentRun created]
+    
+    subgraph Storage
+        N[(SubagentRunStore)]
+        O[(ToolStatsStore)]
+        P[(ConversationStore)]
+        Q[(ContextStore)]
+    end
+    
+    F --> N
+    J --> O
+    E --> P
+    E --> Q
 ```
 
-1. **`src/nanobot/main.py`** — Loads config, builds channels and `BotCore`, wires `Channel.set_handler(core.on_incoming)`.
-2. **`src/nanobot/core.py` (`BotCore`)** — `on_incoming`; slash commands via `core_commands` / `CommandManager`; other traffic → `_process`.
-3. **`_process`** — Persists user message to `ConversationStore`; pointers and blobs in `ContextStore`; builds LLM messages (system, scratchpad, bounded history); runs `_run_agent_turn` → `_run_agent_loop`.
-4. **`_run_agent_loop`** — `LlmClient.chat`; tool calls → `McpHub.call_tool`; append results; repeat until text reply.
-5. **After turn** — Assistant message to `ConversationStore`; context updates; reply via `_send`.
+**Message flow:**
 
-### Storage boundaries (today)
+1. **`main.py`** — Loads config, builds channels and `BotCore`, wires `Channel.set_handler(core.on_incoming)`.
+2. **`BotCore._handle_user_message`** — Routes to `CommandManager` for slash commands, else `_process`.
+3. **`_process`** — Persists user message, clears scratchpad, builds messages with history.
+4. **`SubagentManager.spawn`** — Creates `SubagentRun` record in SQLite (`subagent_runs` table).
+5. **`SubagentManager.execute`** — Calls `AgentRun.run()` with messages and tools, records completion.
+6. **`AgentRun.run`** — LLM chat loop; tool calls through `ToolRegistry.call()` (records to `tool_calls` with `run_id`).
+7. **After turn** — Persist assistant message, update context, send reply via `_send`.
 
-- **`ConversationStore`** (`src/nanobot/memory.py`) — Durable transcript (`messages`).
-- **`ContextStore`** (`src/nanobot/context_store.py`) — Scoped JSON (`contexts`): scratchpad, pointers, tool/browse traces, plan metadata.
-- **`SchedulerStore`** (`src/nanobot/scheduler_store.py`) — `scheduled_tasks`.
+**Slash commands bypass SubagentManager** — they execute directly without creating run records.
+
+### Storage boundaries
+
+| Store | File | Table | Purpose |
+| ----- | ---- | ----- | ------- |
+| **ConversationStore** | `memory.py` | `messages` | Full chat transcript |
+| **ContextStore** | `context_store.py` | `contexts` | Scoped JSON (scratchpad, pointers, traces) |
+| **SchedulerStore** | `scheduler_store.py` | `scheduled_tasks` | Time-based task queue |
+| **SubagentRunStore** | `subagents/store.py` | `subagent_runs` | Run metadata (scope, status, timing) |
+| **ToolStatsStore** | `tools/stats.py` | `tool_calls` | Tool invocations with `run_id` link |
+
+**Key relationships:**
+- `subagent_runs.id` ← `tool_calls.run_id` — Links tool calls to specific runs
+- `subagent_runs.scope` — Chat scope (e.g., `telegram:500506690`)
+- `contexts` — Stores run goal/status/result under `subagent_run:{id}` scope
 
 ### Hooks (`src/nanobot/hooks/`)
 

@@ -11,16 +11,18 @@ Minimal personal assistant bot with Telegram interface, OpenAI-compatible LLM ba
 ```
 nanobot/
 ├── src/nanobot/           # Main package
-│   ├── core.py            # BotCore - agent loop, tool orchestration
+│   ├── core.py            # BotCore - orchestrator, message queue, command dispatch
 │   ├── main.py            # Entry point
 │   ├── debug_cli.py       # Debug/inspection CLI
 │   ├── config.py          # Config loading (load_config, AppConfig)
 │   ├── mcp_hub.py         # MCP server connections
 │   ├── memory.py          # SQLite conversation history
+│   ├── agent_run.py       # AgentRun - LLM chat loop with tools
+│   ├── subagents/         # SubagentManager + SubagentRunStore
 │   ├── channels/          # Telegram/GitHub channel implementations
 │   ├── mcp_servers/       # timer, memory, scheduler MCP servers
 │   ├── core_commands/     # Built-in commands (session, status, reset)
-│   └── tools/             # Tool interfaces and registry
+│   └── tools/             # ToolRegistry + ToolStatsStore
 ├── tests/                 # Pytest tests (mirrors src structure)
 └── config.yaml            # Bot configuration
 ```
@@ -31,7 +33,9 @@ nanobot/
 | Add new channel | `src/nanobot/channels/` | Implement Channel interface |
 | Add MCP tool | `src/nanobot/mcp_servers/` | Create server.py in subpackage |
 | Add built-in command | `src/nanobot/core_commands/commands/` | Register in command_manager.py |
-| Modify agent loop | `src/nanobot/core.py` | `_process()`, `_run_agent_loop()` |
+| Modify message flow | `src/nanobot/core.py` | `_process()`, SubagentManager |
+| Modify agent loop | `src/nanobot/agent_run.py` | `AgentRun.run()` - tool calling |
+| Add run tracking | `src/nanobot/subagents/` | SubagentManager, SubagentRunStore |
 | Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
 | Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |
 
