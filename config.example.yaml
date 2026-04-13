@@ -1,6 +1,7 @@
 assistant_name: "Nano"
 database_path: "./data/nanobot.db"
 scheduler_db_path: "./data/scheduler.db"
+plan_db_path: "./data/plans.db"
 poll_interval_seconds: 20
 history_message_limit: 24
 history_char_limit: 12000

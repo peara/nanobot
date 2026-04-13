@@ -7,6 +7,7 @@ from typing import Any
 
 from nanobot.config import AppConfig, load_config
 from nanobot.hooks import HookDebugCommand, build_default_tool_hooks
+from nanobot.plans import PlanStore
 
 PLACEHOLDER_SCOPES = {"12345", "123456789", "1234567890", "<current_chat_id>", "current_chat_id", "default"}
 
@@ -298,6 +299,42 @@ def _scheduler_clear_invalid(config: AppConfig, purge_messages: bool) -> None:
         print(f"Purged messages in invalid scopes: {before_msgs}")
 
 
+def _plans_list(config: AppConfig, limit: int) -> None:
+    store = PlanStore(config.plan_db_path)
+    plans = store.list_plans(limit=limit)
+    if not plans:
+        print("No plans found.")
+        return
+    for plan in plans:
+        goal_preview = plan.goal[:60] + ("..." if len(plan.goal) > 60 else "")
+        print(f"id={plan.id}\tname={plan.name}")
+        print(f"\tgoal: {goal_preview}")
+        print(f"\tstats: {plan.success_count} success, {plan.failure_count} failure")
+
+
+def _plans_show(config: AppConfig, plan_id: int) -> None:
+    store = PlanStore(config.plan_db_path)
+    plan = store.get(plan_id)
+    if not plan:
+        print(f"Plan {plan_id} not found.")
+        return
+    print(f"Plan {plan.id}: {plan.name}")
+    print(f"  Goal: {plan.goal}")
+    print(f"  Constraints: {', '.join(plan.constraints) or 'none'}")
+    print(f"  Required inputs: {', '.join(plan.required_inputs) or 'none'}")
+    print(f"  Risk flags: {', '.join(plan.risk_flags) or 'none'}")
+    print(f"  Notes: {plan.notes or 'none'}")
+    print(f"  Source: {plan.source_type} ({plan.source_scope})")
+    print(f"  Version: {plan.version}")
+    print(f"  Stats: {plan.success_count} success, {plan.failure_count} failure")
+    print(f"  Created: {plan.created_at.isoformat() if plan.created_at else 'unknown'}")
+    print(f"  Updated: {plan.updated_at.isoformat() if plan.updated_at else 'unknown'}")
+    if plan.steps:
+        print(f"  Steps ({len(plan.steps)}):")
+        for i, step in enumerate(plan.steps, 1):
+            print(f"    {i}. {step}")
+
+
 def main() -> None:
     hook_commands: dict[str, HookDebugCommand] = {}
     parser = argparse.ArgumentParser(description="nanobot debug CLI")
@@ -334,6 +371,13 @@ def main() -> None:
     plan_show = plan_sub.add_parser("show", help="Show detailed plan run fields")
     plan_show.add_argument("--run-id", help="Run id, e.g. run-abc123")
     plan_show.add_argument("--latest", action="store_true", help="Use latest plan run by status update")
+
+    plans = sub.add_parser("plans", help="Inspect persistent plans")
+    plans_sub = plans.add_subparsers(dest="plans_cmd", required=True)
+    plans_list = plans_sub.add_parser("list", help="List saved plans")
+    plans_list.add_argument("--limit", type=int, default=20, help="Number of plans to show")
+    plans_show = plans_sub.add_parser("show", help="Show plan details")
+    plans_show.add_argument("id", type=int, help="Plan ID")
 
     for hook in build_default_tool_hooks():
         debug_commands = getattr(hook, "debug_commands", None)
@@ -385,6 +429,14 @@ def main() -> None:
             if not run_id:
                 raise SystemExit("Run id is required. Pass --run-id or --latest.")
             _plan_show(config, run_id)
+            return
+
+    if args.cmd == "plans":
+        if args.plans_cmd == "list":
+            _plans_list(config, int(args.limit))
+            return
+        if args.plans_cmd == "show":
+            _plans_show(config, args.id)
             return
 
     if args.cmd in hook_commands:

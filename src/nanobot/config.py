@@ -40,6 +40,7 @@ class AppConfig:
     assistant_name: str
     database_path: str
     scheduler_db_path: str
+    plan_db_path: str
     poll_interval_seconds: int
     system_prompt_template: str
     subagent_system_prompt: str
@@ -76,6 +77,7 @@ def load_config(config_path: str) -> AppConfig:
         assistant_name=data.get("assistant_name", "Nano"),
         database_path=data.get("database_path", "./data/nanobot.db"),
         scheduler_db_path=data.get("scheduler_db_path", "./data/scheduler.db"),
+        plan_db_path=data.get("plan_db_path", "./data/plans.db"),
         poll_interval_seconds=int(data.get("poll_interval_seconds", 20)),
         system_prompt_template=data.get(
             "system_prompt_template",

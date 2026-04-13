@@ -26,6 +26,7 @@ from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
+from nanobot.plans import PlanStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 from nanobot.subagents import SubagentManager
@@ -66,6 +67,7 @@ class BotCore:
         self.tool_stats = ToolStatsStore(config.database_path) if config.enable_tool_stats else None
         self.tools = ToolRegistry(stats_store=self.tool_stats)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
+        self.plan_store = PlanStore(config.plan_db_path)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,

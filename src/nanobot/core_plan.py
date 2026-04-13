@@ -7,6 +7,7 @@ from typing import Any
 
 from nanobot.core_scratchpad import clear_scratchpad
 from nanobot.core_utils import command_body, extract_json_object, looks_garbled_text
+from nanobot.plans import PlanBrief
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,17 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         bot.contexts.put("plan_run", run_id, "tool_trace", tool_trace)
         bot.contexts.put("plan_run", run_id, "result", {"text": final_reply})
         bot.contexts.put("plan_run", run_id, "status", {"value": "completed"})
+
+        plan_name = request_text[:80] + ("..." if len(request_text) > 80 else "")
+        brief = PlanBrief.from_dict(plan_brief)
+        saved_plan = bot.plan_store.create_from_brief(
+            brief=brief,
+            name=plan_name,
+            source_type="plan_command",
+            source_scope=chat_scope,
+        )
+        logger.info("Saved plan_id=%d from plan run run_id=%s", saved_plan.id, run_id)
+
         bot.memory.add_message(chat_scope, "assistant", final_reply)
         bot.contexts.put("chat", chat_scope, "last_assistant_message", {"text": final_reply})
         await bot._send(chat_scope, final_reply)

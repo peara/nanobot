@@ -113,10 +113,12 @@ class _CountingFakeTool(Tool):
 def _build_config(tmp_path) -> AppConfig:
     db_path = str(tmp_path / "nanobot.db")
     scheduler_db_path = str(tmp_path / "scheduler.db")
+    plan_db_path = str(tmp_path / "plans.db")
     return AppConfig(
         assistant_name="Nano",
         database_path=db_path,
         scheduler_db_path=scheduler_db_path,
+        plan_db_path=plan_db_path,
         poll_interval_seconds=20,
         system_prompt_template="You are {assistant_name}.",
         subagent_system_prompt="You are an autonomous agent.",
@@ -165,6 +167,12 @@ def test_plan_command_creates_plan_run_scope_and_reports_result(tmp_path) -> Non
     result = bot.contexts.get("plan_run", run_id, "result")
     assert isinstance(result, dict)
     assert "Plan completed" in str(result["text"])
+
+    # Verify plan was persisted
+    plans = bot.plan_store.list_plans(source_type="plan_command", limit=10)
+    assert len(plans) == 1
+    assert plans[0].goal == "Book flight"
+    assert plans[0].source_scope == "telegram:42"
 
 
 def test_plan_command_recovers_from_garbled_output(tmp_path) -> None:
