@@ -83,6 +83,8 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             "role": "system",
             "content": (
                 "You are an execution agent operating in a dedicated plan_run scope. "
+                "You have access to plan management tools: plan__get, plan__update, plan__add_step. "
+                "Use plan__update when you discover new constraints or your approach isn't working. "
                 "Use only the provided run payload as context, execute the task, and provide "
                 "a practical final answer. If important inputs are missing, clearly ask for them."
             ),
@@ -95,7 +97,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         final_reply, tool_trace = await bot.agent_run.run(
             scope_for_tools=chat_scope,
             messages=run_messages,
-            tools=bot.tools.list_openai_specs(),
+            tools=bot._list_openai_tools(),
         )
         bot.contexts.put("plan_run", run_id, "execution_raw", {"text": final_reply})
         if looks_garbled_text(final_reply):
@@ -143,6 +145,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             source_scope=chat_scope,
         )
         logger.info("Saved plan_id=%d from plan run run_id=%s", saved_plan.id, run_id)
+        bot.contexts.put("chat", chat_scope, "active_plan_id", {"plan_id": saved_plan.id})
 
         bot.memory.add_message(chat_scope, "assistant", final_reply)
         bot.contexts.put("chat", chat_scope, "last_assistant_message", {"text": final_reply})
