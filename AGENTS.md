@@ -20,10 +20,19 @@ nanobot/
 │   ├── agent_run.py       # AgentRun - LLM chat loop with tools
 │   ├── subagents/         # SubagentManager + SubagentRunStore
 │   ├── channels/          # Telegram/GitHub channel implementations
-│   ├── mcp_servers/       # timer, memory, scheduler MCP servers
+│   ├── mcp_servers/       # timer, memory, scheduler, web MCP servers
 │   ├── core_commands/     # Built-in commands (session, status, reset)
+│   ├── plans/             # Plan storage and management
 │   └── tools/             # ToolRegistry + ToolStatsStore
 ├── tests/                 # Pytest tests (mirrors src structure)
+│   ├── agent_run/         # Tests for agent_run.py
+│   ├── core_commands/     # Tests for core_commands/
+│   ├── mcp_servers/       # Tests for mcp_servers/
+│   ├── plans/             # Tests for plans/
+│   ├── scheduler/         # Tests for scheduler_store.py
+│   ├── subagents/         # Tests for subagents/
+│   ├── tools/             # Tests for tools/
+│   └── test_*.py          # Top-level module tests
 └── config.yaml            # Bot configuration
 ```
 
@@ -39,11 +48,25 @@ nanobot/
 | Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
 | Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |
 
+### Test Location Convention
+Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go in `tests/subagents/test_manager.py`.
+
+| Source | Tests |
+|--------|-------|
+| `src/nanobot/agent_run.py` | `tests/agent_run/test_agent_run.py` |
+| `src/nanobot/core_commands/` | `tests/core_commands/` |
+| `src/nanobot/mcp_servers/` | `tests/mcp_servers/` |
+| `src/nanobot/plans/` | `tests/plans/` |
+| `src/nanobot/subagents/` | `tests/subagents/` |
+| `src/nanobot/tools/` | `tests/tools/` |
+| Top-level modules (core.py, etc.) | `tests/test_*.py` (top-level) |
+
 ## Commands
 ```bash
 uv sync --group dev                    # Install dependencies
 uv run pytest                          # Run tests
-uv run pytest tests/test_foo.py -k name  # Run specific test
+uv run pytest tests/subagents/         # Run tests for a package
+uv run pytest tests/plans/test_plan_store.py -k name  # Run specific test
 uv run ruff check . && uv run ruff format .  # Lint + format
 uv run mypy                            # Type check
 python -m nanobot.main --config config.yaml  # Run bot
@@ -96,6 +119,8 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 
 ### Testing
 - `tests/` mirrors source structure
+- Package tests: `tests/subagents/test_manager.py` tests `src/nanobot/subagents/`
+- Top-level module tests: `tests/test_core_queue.py` tests `src/nanobot/core.py`
 - `tmp_path` fixture for temp files
 - Fake implementations: `_FakeChannel`, `_FakeLlm`, `_FakeMcp`
 - `@pytest.mark.asyncio` for async tests
