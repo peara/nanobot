@@ -33,10 +33,31 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         {
             "role": "system",
             "content": (
-                "Extract a concise planning brief as strict JSON object only. "
-                "Include keys: goal (string), constraints (array of strings), "
-                "required_inputs (array of strings), risk_flags (array of strings), "
-                "notes (string)."
+                "You are a planning brief extractor. Output ONLY a JSON object. "
+                "Do not use tools. Do not call functions. Do not use scratchpad. "
+                "Do not explain. Output only the JSON.\n\n"
+                "Extract from the user request:\n"
+                "- goal: the main objective (string)\n"
+                "- constraints: limitations or requirements (array of strings)\n"
+                "- required_inputs: information needed before starting (array of strings)\n"
+                "- risk_flags: potential issues or blockers (array of strings)\n"
+                "- notes: additional context (string)\n\n"
+                "Example 1:\n"
+                "User: Remind me to take out trash every Tuesday at 7pm\n"
+                "Output: "
+                '{"goal": "Set up recurring reminder for trash", '
+                '"constraints": ["Tuesday at 7pm"], '
+                '"required_inputs": [], '
+                '"risk_flags": [], '
+                '"notes": "Weekly recurring task"}\n\n'
+                "Example 2:\n"
+                "User: Book a flight to Tokyo under $800 leaving next week\n"
+                "Output: "
+                '{"goal": "Book flight to Tokyo", '
+                '"constraints": ["budget under $800", "departure next week"], '
+                '"required_inputs": ["exact departure date", "return date"], '
+                '"risk_flags": ["price may exceed budget", "limited availability"], '
+                '"notes": "International travel booking"}'
             ),
         },
         {"role": "user", "content": request_text},
