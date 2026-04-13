@@ -7,7 +7,7 @@ from typing import Any
 
 from nanobot.core_scratchpad import clear_scratchpad
 from nanobot.core_utils import command_body, extract_json_object, looks_garbled_text
-from nanobot.plans import PlanBrief
+from nanobot.plans.models import PlanBrief
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,6 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     bot.contexts.put("plan_run", run_id, "request_text", {"text": request_text})
     bot.contexts.put("plan_run", run_id, "status", {"value": "created"})
 
-    # Pass 1: extract plan brief in chat-facing intake mode.
     intake_messages = [
         bot._base_system_message(),
         {
@@ -74,7 +73,6 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     bot.contexts.put("plan_run", run_id, "plan_brief", plan_brief)
     bot.contexts.put("plan_run", run_id, "status", {"value": "planning"})
 
-    # Pass 2: run execution mode using only plan-run context payload.
     run_payload = {
         "run_id": run_id,
         "request_text": request_text,

@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 
 from nanobot.core_commands.commands.base import BaseCommand
-from nanobot.core_plan import process_plan
 from nanobot.core_utils import command_body
+from nanobot.plans import process_plan
 
 logger = logging.getLogger(__name__)
 

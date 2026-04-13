@@ -12,7 +12,6 @@ from nanobot.agent_run import AgentRun
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
-from nanobot.core_plan import process_plan
 from nanobot.core_reports import build_context_report, build_full_context_report
 from nanobot.core_scratchpad import clear_scratchpad, scratchpad_tool_spec
 from nanobot.core_utils import (
@@ -239,9 +238,6 @@ class BotCore:
             await self._send(scope, final_reply)
         finally:
             self.active_requests.pop(scope, None)
-
-    async def _process_plan(self, chat_scope: str, raw_text: str) -> None:
-        await process_plan(self, chat_scope, raw_text)
 
     def _base_system_message(self) -> dict[str, str]:
         return {
