@@ -73,6 +73,21 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     bot.contexts.put("plan_run", run_id, "plan_brief", plan_brief)
     bot.contexts.put("plan_run", run_id, "status", {"value": "planning"})
 
+    plan_name = request_text[:80] + ("..." if len(request_text) > 80 else "")
+    try:
+        saved_plan = bot.plan_store.create_from_brief(
+            brief=PlanBrief.from_dict(plan_brief),
+            name=plan_name,
+            source_type="plan_command",
+            source_scope=chat_scope,
+        )
+        saved_plan_id = saved_plan.id
+        logger.info("Saved plan_id=%d from plan run run_id=%s", saved_plan.id, run_id)
+        bot.contexts.put("chat", chat_scope, "active_plan_id", {"plan_id": saved_plan_id})
+    except Exception:
+        logger.exception("Failed to create plan before execution run_id=%s", run_id)
+        saved_plan_id = None
+
     run_payload = {
         "run_id": run_id,
         "request_text": request_text,
@@ -136,17 +151,18 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         bot.contexts.put("plan_run", run_id, "result", {"text": final_reply})
         bot.contexts.put("plan_run", run_id, "status", {"value": "completed"})
 
-        plan_name = request_text[:80] + ("..." if len(request_text) > 80 else "")
-        brief = PlanBrief.from_dict(plan_brief)
-        saved_plan = bot.plan_store.create_from_brief(
-            brief=brief,
-            name=plan_name,
-            source_type="plan_command",
-            source_scope=chat_scope,
-        )
-        logger.info("Saved plan_id=%d from plan run run_id=%s", saved_plan.id, run_id)
-        bot.contexts.put("chat", chat_scope, "active_plan_id", {"plan_id": saved_plan.id})
+        # Update plan notes with the final result and increment stats
+        if saved_plan_id is not None:
+            try:
+                existing_plan = bot.plan_store.get(saved_plan_id)
+                current_notes = existing_plan.notes or ""
+                new_notes = (current_notes + "\n" + final_reply).strip() if current_notes else final_reply
+                bot.plan_store.update(saved_plan_id, notes=new_notes)
+                bot.plan_store.increment_stats(saved_plan_id, True)
+            except Exception:
+                logger.exception("Failed to update plan notes/stats for plan_id=%s", saved_plan_id)
 
+        logger.info("Plan run finished run_id=%s plan_name=%s plan_id=%s", run_id, plan_name, saved_plan_id)
         bot.memory.add_message(chat_scope, "assistant", final_reply)
         bot.contexts.put("chat", chat_scope, "last_assistant_message", {"text": final_reply})
         await bot._send(chat_scope, final_reply)
@@ -154,4 +170,15 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         logger.exception("Plan run failed run_id=%s", run_id)
         bot.contexts.put("plan_run", run_id, "error", {"message": str(exc)})
         bot.contexts.put("plan_run", run_id, "status", {"value": "failed"})
+        # If a plan was created before execution, record the failure in the plan
+        if saved_plan_id is not None:
+            try:
+                existing_plan = bot.plan_store.get(saved_plan_id)
+                current_notes = existing_plan.notes or ""
+                note = f"Plan run failed ({run_id}): {exc}"
+                new_notes = (current_notes + "\n" + note).strip() if current_notes else note
+                bot.plan_store.update(saved_plan_id, notes=new_notes)
+                bot.plan_store.increment_stats(saved_plan_id, False)
+            except Exception:
+                logger.exception("Failed to annotate plan with failure for plan_id=%s", saved_plan_id)
         await bot._send(chat_scope, f"Plan run failed ({run_id}): {exc}")
