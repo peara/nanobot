@@ -158,7 +158,75 @@ class PlanAddStepTool(Tool):
         return json.dumps({"ok": True, "plan": updated.as_dict()}, ensure_ascii=True)
 
 
+class PlanEditStepTool(Tool):
+    def __init__(self, plan_store: PlanStore) -> None:
+        self._store = plan_store
+
+    @property
+    def name(self) -> str:
+        return "plan__edit_step"
+
+    @property
+    def description(self) -> str:
+        return "Edit an existing execution step in the plan by index."
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "integer",
+                    "description": "Plan ID to edit step in (required)",
+                },
+                "step_index": {
+                    "type": "integer",
+                    "description": "0-based index of the step to edit (required)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New step description",
+                },
+                "tool_hint": {
+                    "type": "string",
+                    "description": "Optional hint about which tool to use for this step",
+                },
+            },
+            "required": ["plan_id", "step_index", "description"],
+        }
+
+    async def call(self, args: dict[str, Any]) -> str:
+        plan_id = int(args.get("plan_id", 0))
+        step_index = int(args.get("step_index", -1))
+        description = str(args.get("description", ""))
+        tool_hint = args.get("tool_hint")
+
+        plan = self._store.get(plan_id)
+        if plan is None:
+            return json.dumps({"error": f"Plan {plan_id} not found"}, ensure_ascii=True)
+
+        steps = plan.steps or []
+        if step_index < 0 or step_index >= len(steps):
+            return json.dumps({"error": f"Invalid step_index {step_index} for plan {plan_id}"}, ensure_ascii=True)
+
+        existing = steps[step_index] if isinstance(steps[step_index], dict) else {}
+        new_step: dict[str, Any] = {"description": description}
+        if tool_hint is not None:
+            new_step["tool_hint"] = tool_hint
+        else:
+            if isinstance(existing, dict) and "tool_hint" in existing:
+                new_step["tool_hint"] = existing.get("tool_hint")
+
+        steps[step_index] = new_step
+
+        updated = self._store.update(plan_id, steps=steps, increment_version=True)
+        if updated is None:
+            return json.dumps({"error": f"Failed to update plan {plan_id}"}, ensure_ascii=True)
+        return json.dumps({"ok": True, "plan": updated.as_dict()}, ensure_ascii=True)
+
+
 def register_plan_tools(registry: Any, plan_store: PlanStore) -> None:
     registry.register(PlanGetTool(plan_store))
     registry.register(PlanUpdateTool(plan_store))
     registry.register(PlanAddStepTool(plan_store))
+    registry.register(PlanEditStepTool(plan_store))
