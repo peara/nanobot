@@ -225,8 +225,67 @@ class PlanEditStepTool(Tool):
         return json.dumps({"ok": True, "plan": updated.as_dict()}, ensure_ascii=True)
 
 
+class PlanListTool(Tool):
+    def __init__(self, plan_store: PlanStore) -> None:
+        self._store = plan_store
+
+    @property
+    def name(self) -> str:
+        return "plan__list"
+
+    @property
+    def description(self) -> str:
+        return "List all plans with brief summaries (no notes)."
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        # Optional filters for listing by origin of plans
+        return {
+            "type": "object",
+            "properties": {
+                "source_type": {
+                    "type": "string",
+                    "description": "Optional filter for source_type of plans",
+                },
+                "source_scope": {
+                    "type": "string",
+                    "description": "Optional filter for source_scope of plans",
+                },
+            },
+            "additionalProperties": False,
+        }
+
+    async def call(self, args: dict[str, Any]) -> str:
+        source_type = args.get("source_type")
+        source_scope = args.get("source_scope")
+
+        plans = self._store.list_plans(
+            source_type=source_type if source_type else None,
+            source_scope=source_scope if source_scope else None,
+        )
+
+        summaries: list[dict[str, Any]] = []
+        for plan in plans:
+            # Build a concise summary per plan
+            name = plan.name or ""
+            goal = plan.goal or ""
+            summary = {
+                "id": plan.id,
+                "name": (name[:50] + "...") if len(name) > 50 else name,
+                "goal": (goal[:100] + "...") if len(goal) > 100 else goal,
+                "steps_count": len(plan.steps) if plan.steps else 0,
+                "success_count": plan.success_count,
+                "failure_count": plan.failure_count,
+            }
+            summaries.append(summary)
+
+        return json.dumps({"plans": summaries}, ensure_ascii=True)
+
+
 def register_plan_tools(registry: Any, plan_store: PlanStore) -> None:
     registry.register(PlanGetTool(plan_store))
     registry.register(PlanUpdateTool(plan_store))
     registry.register(PlanAddStepTool(plan_store))
     registry.register(PlanEditStepTool(plan_store))
+    # PlanListTool should be registered alongside other plan tools
+    registry.register(PlanListTool(plan_store))

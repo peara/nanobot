@@ -99,7 +99,8 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             "role": "system",
             "content": (
                 "You are an execution agent operating in a dedicated plan_run scope. "
-                "You have access to plan management tools: plan__get, plan__update, plan__add_step, plan__edit_step. "
+                "You have access to plan management tools: plan__get, plan__list, plan__update, "
+                "plan__add_step, plan__edit_step. "
                 "The active_plan_id is provided in the payload. Use it when calling plan tools. "
                 "Use plan__update when you discover new constraints or your approach isn't working. "
                 "Use only the provided run payload as context, execute the task, and provide "
