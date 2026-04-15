@@ -92,6 +92,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         "run_id": run_id,
         "request_text": request_text,
         "plan_brief": plan_brief,
+        "active_plan_id": saved_plan_id,
     }
     run_messages = [
         {

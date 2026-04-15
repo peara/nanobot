@@ -20,10 +20,7 @@ class PlanGetTool(Tool):
 
     @property
     def description(self) -> str:
-        return (
-            "Get the current execution plan by ID. Use when you need to review the plan structure, "
-            "constraints, or steps."
-        )
+        return "Get the execution plan by ID. Review the plan structure, constraints, or steps."
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -32,7 +29,7 @@ class PlanGetTool(Tool):
             "properties": {
                 "plan_id": {
                     "type": "integer",
-                    "description": "Plan ID to retrieve. If not provided, uses the active plan for current scope.",
+                    "description": "Plan ID to retrieve (required)",
                 }
             },
             "required": ["plan_id"],
@@ -68,7 +65,7 @@ class PlanUpdateTool(Tool):
             "properties": {
                 "plan_id": {
                     "type": "integer",
-                    "description": "Plan ID to update",
+                    "description": "Plan ID to update (required)",
                 },
                 "constraints": {
                     "type": "array",
@@ -125,7 +122,7 @@ class PlanAddStepTool(Tool):
             "properties": {
                 "plan_id": {
                     "type": "integer",
-                    "description": "Plan ID to add step to",
+                    "description": "Plan ID to add step to (required)",
                 },
                 "description": {
                     "type": "string",
