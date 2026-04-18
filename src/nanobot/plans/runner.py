@@ -29,36 +29,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
 
     intake_messages = [
         bot._base_system_message(),
-        {
-            "role": "system",
-            "content": (
-                "You are a planning brief extractor. Output ONLY a JSON object. "
-                "Do not use tools. Do not call functions. Do not use scratchpad. "
-                "Do not explain. Output only the JSON.\n\n"
-                "Extract from the user request:\n"
-                "- goal: the main objective (string)\n"
-                "- constraints: limitations or requirements (array of strings)\n"
-                "- required_inputs: information needed before starting (array of strings)\n"
-                "- risk_flags: potential issues or blockers (array of strings)\n"
-                "- notes: additional context (string)\n\n"
-                "Example 1:\n"
-                "User: Remind me to take out trash every Tuesday at 7pm\n"
-                "Output: "
-                '{"goal": "Set up recurring reminder for trash", '
-                '"constraints": ["Tuesday at 7pm"], '
-                '"required_inputs": [], '
-                '"risk_flags": [], '
-                '"notes": "Weekly recurring task"}\n\n'
-                "Example 2:\n"
-                "User: Book a flight to Tokyo under $800 leaving next week\n"
-                "Output: "
-                '{"goal": "Book flight to Tokyo", '
-                '"constraints": ["budget under $800", "departure next week"], '
-                '"required_inputs": ["exact departure date", "return date"], '
-                '"risk_flags": ["price may exceed budget", "limited availability"], '
-                '"notes": "International travel booking"}'
-            ),
-        },
+        {"role": "system", "content": bot.prompts.render("plan_brief_extractor")},
         {"role": "user", "content": request_text},
     ]
     intake_reply, _ = await bot.agent_run.run(scope_for_tools=chat_scope, messages=intake_messages, tools=[])
@@ -95,18 +66,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         "active_plan_id": saved_plan_id,
     }
     run_messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an execution agent operating in a dedicated plan_run scope. "
-                "You have access to plan management tools: plan__get, plan__list, plan__update, "
-                "plan__add_step, plan__edit_step. "
-                "The active_plan_id is provided in the payload. Use it when calling plan tools. "
-                "Use plan__update when you discover new constraints or your approach isn't working. "
-                "Use only the provided run payload as context, execute the task, and provide "
-                "a practical final answer. If important inputs are missing, clearly ask for them."
-            ),
-        },
+        {"role": "system", "content": bot.prompts.render("plan_execution_agent")},
         {"role": "system", "content": json.dumps(run_payload, ensure_ascii=True)},
         {"role": "user", "content": "Execute this plan request and return the final result."},
     ]
@@ -127,14 +87,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             }
             recovery_messages = [
                 bot._base_system_message(),
-                {
-                    "role": "system",
-                    "content": (
-                        "Rewrite a clear, concise plain-text answer in English. "
-                        "Do not output long runs of '?' characters. "
-                        "If data is incomplete, state what is missing."
-                    ),
-                },
+                {"role": "system", "content": bot.prompts.render("plan_recovery")},
                 {"role": "user", "content": json.dumps(recovery_payload, ensure_ascii=True)},
             ]
             recovered_reply, _ = await bot.agent_run.run(

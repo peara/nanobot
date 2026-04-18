@@ -110,6 +110,10 @@ class _RecordingTool(Tool):
 
 class _FakeHost:
     def __init__(self, llm: _FakeLlm) -> None:
+        import tempfile
+
+        from nanobot.prompts import PromptStore
+
         self.config = SimpleNamespace(working_timezone="UTC")
         self.llm = llm
         self.contexts = _FakeContexts()
@@ -117,6 +121,8 @@ class _FakeHost:
         self.active_requests: dict[str, Any] = {}
         self.tool_hooks: list[Any] = []
         self.events: list[ToolCallEvent] = []
+        self._temp_dir = tempfile.mkdtemp()
+        self.prompts = PromptStore(f"{self._temp_dir}/prompts.db", seed_defaults=True)
 
     async def _dispatch_after_tool_call(self, event: ToolCallEvent) -> None:
         self.events.append(event)

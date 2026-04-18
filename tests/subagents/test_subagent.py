@@ -85,19 +85,21 @@ def _build_config(tmp_path) -> AppConfig:
 
     db_path = str(Path(tmp_path) / "nanobot.db")
     scheduler_db_path = str(Path(tmp_path) / "scheduler.db")
+    plan_db_path = str(Path(tmp_path) / "plans.db")
+    prompt_db_path = str(Path(tmp_path) / "prompts.db")
     return AppConfig(
         assistant_name="Nano",
         database_path=db_path,
         scheduler_db_path=scheduler_db_path,
+        plan_db_path=plan_db_path,
         poll_interval_seconds=20,
-        system_prompt_template="You are {assistant_name}.",
-        subagent_system_prompt="You are an autonomous agent. Complete the task.",
         working_timezone="UTC",
         history_message_limit=24,
         history_char_limit=12000,
         model=ModelConfig(base_url="http://localhost:11434/v1", api_key="dummy", model="dummy-model"),
         channels=[ChannelConfig(type="telegram")],
         mcp_servers=[McpServerConfig(name="none", command="echo", args=["ok"])],
+        prompt_db_path=prompt_db_path,
     )
 
 

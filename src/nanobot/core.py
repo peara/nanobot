@@ -26,6 +26,7 @@ from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.plans import PlanStore, register_plan_tools
+from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 from nanobot.subagents import SubagentManager
@@ -67,6 +68,7 @@ class BotCore:
         self.tools = ToolRegistry(stats_store=self.tool_stats)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
         self.plan_store = PlanStore(config.plan_db_path)
+        self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
@@ -188,8 +190,9 @@ class BotCore:
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         logger.info("Scheduled task triggered scope=%s", scoped_id)
+        system_content = self.prompts.render("subagent_default")
         messages = [
-            {"role": "system", "content": self.config.subagent_system_prompt},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
         ]
         run = self.subagent_manager.spawn(scope=scoped_id, goal=prompt)
@@ -241,14 +244,13 @@ class BotCore:
             self.active_requests.pop(scope, None)
 
     def _base_system_message(self) -> dict[str, str]:
-        return {
-            "role": "system",
-            "content": self.config.system_prompt_template.format(
-                assistant_name=self.config.assistant_name,
-                working_timezone=self.config.working_timezone,
-                current_time=human_now(self.config.working_timezone),
-            ),
-        }
+        content = self.prompts.render(
+            "orchestrator_main",
+            assistant_name=self.config.assistant_name,
+            working_timezone=self.config.working_timezone,
+            current_time=human_now(self.config.working_timezone),
+        )
+        return {"role": "system", "content": content}
 
     def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]

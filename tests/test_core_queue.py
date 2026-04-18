@@ -25,21 +25,24 @@ class _FakeChannel:
 
 
 def _make_config() -> Any:
+    import tempfile
+
     from nanobot.config import AppConfig, ModelConfig
 
+    tmp = tempfile.mkdtemp()
     return AppConfig(
         assistant_name="TestBot",
-        database_path=":memory:",
-        scheduler_db_path=":memory:",
+        database_path=f"{tmp}/nanobot.db",
+        scheduler_db_path=f"{tmp}/scheduler.db",
+        plan_db_path=f"{tmp}/plans.db",
         poll_interval_seconds=20,
-        system_prompt_template="You are {assistant_name}.",
-        subagent_system_prompt="You are an autonomous agent.",
         working_timezone="UTC",
         history_message_limit=24,
         history_char_limit=12000,
         model=ModelConfig(base_url="http://localhost", api_key="test", model="test"),
         channels=[],
         mcp_servers=[],
+        prompt_db_path=f"{tmp}/prompts.db",
     )
 
 
