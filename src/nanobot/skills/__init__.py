@@ -4,6 +4,7 @@ from nanobot.skills.injection import build_skill_catalog_message, build_skill_me
 from nanobot.skills.matcher import SkillMatcher
 from nanobot.skills.models import VALID_TRIGGER_MODES, Skill
 from nanobot.skills.store import SkillStore
+from nanobot.skills.tools import register_skill_tools
 
 __all__ = [
     "Skill",
@@ -12,4 +13,5 @@ __all__ = [
     "VALID_TRIGGER_MODES",
     "build_skill_catalog_message",
     "build_skill_messages",
+    "register_skill_tools",
 ]

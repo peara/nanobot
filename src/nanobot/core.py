@@ -29,7 +29,7 @@ from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
-from nanobot.skills import SkillStore
+from nanobot.skills import SkillStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 
@@ -72,6 +72,7 @@ class BotCore:
         self.skills = SkillStore(config.skill_db_path)
         self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
+        register_skill_tools(self.tools, self.skills)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,
