@@ -41,6 +41,7 @@ class AppConfig:
     database_path: str
     scheduler_db_path: str
     plan_db_path: str
+    skill_db_path: str
     poll_interval_seconds: int
     working_timezone: str
     history_message_limit: int
@@ -77,6 +78,7 @@ def load_config(config_path: str) -> AppConfig:
         database_path=data.get("database_path", "./data/nanobot.db"),
         scheduler_db_path=data.get("scheduler_db_path", "./data/scheduler.db"),
         plan_db_path=data.get("plan_db_path", "./data/plans.db"),
+        skill_db_path=data.get("skill_db_path", "./data/skills.db"),
         poll_interval_seconds=int(data.get("poll_interval_seconds", 20)),
         working_timezone=data.get("working_timezone", "UTC"),
         history_message_limit=int(data.get("history_message_limit", 24)),

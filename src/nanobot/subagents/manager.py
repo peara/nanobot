@@ -5,11 +5,14 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nanobot.skills import Skill, SkillMatcher, SkillStore
+from nanobot.skills.injection import build_skill_messages
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
 
 if TYPE_CHECKING:
     from nanobot.agent_run import AgentRun
     from nanobot.context_store import ContextStore
+    from nanobot.prompts import PromptStore
     from nanobot.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -35,11 +38,16 @@ class SubagentManager:
         contexts: ContextStore,
         agent_run: AgentRun,
         tools: ToolRegistry,
+        skills: SkillStore,
+        prompts: PromptStore,
     ) -> None:
         self._store = SubagentRunStore(db_path)
         self._contexts = contexts
         self._agent_run = agent_run
         self._tools = tools
+        self._skills = skills
+        self._prompts = prompts
+        self._skill_matcher = SkillMatcher(skills)
 
     def spawn(
         self,
@@ -47,7 +55,6 @@ class SubagentManager:
         parent_run_id: str | None = None,
         goal: str | None = None,
     ) -> SubagentRun:
-        """Create a new subagent run record."""
         run_id = f"run-{uuid.uuid4().hex[:10]}"
         run = self._store.create(
             run_id=run_id,
@@ -59,6 +66,14 @@ class SubagentManager:
         if parent_run_id:
             self._contexts.put("subagent_run", run_id, "parent_run_id", {"value": parent_run_id})
         self._contexts.put("subagent_run", run_id, "status", {"value": "pending"})
+
+        if goal:
+            relevant_skills = self._skill_matcher.find_relevant_skills(goal)
+            skill_names = [s.name for s in relevant_skills]
+            if skill_names:
+                self._contexts.put("subagent_run", run_id, "active_skills", {"skills": skill_names})
+                logger.info("Matched skills for run_id=%s skills=%s", run_id, skill_names)
+
         logger.info("Spawned subagent run run_id=%s scope=%s parent=%s", run_id, scope, parent_run_id)
         return run
 
@@ -69,10 +84,25 @@ class SubagentManager:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
     ) -> SubagentRunResult:
-        """Execute a subagent run and return the result."""
         self._store.set_status(run.id, "running")
         self._contexts.put("subagent_run", run.id, "status", {"value": "running"})
         logger.info("Starting subagent run run_id=%s", run.id)
+
+        active_skills_data = self._contexts.get("subagent_run", run.id, "active_skills")
+        skill_messages: list[dict] = []
+        if active_skills_data and isinstance(active_skills_data, dict):
+            skill_names = active_skills_data.get("skills", [])
+            if skill_names:
+                loaded_skills: list[Skill] = []
+                for name in skill_names:
+                    skill = self._skills.get_by_name(name)
+                    if skill is not None and skill.is_active:
+                        loaded_skills.append(skill)
+                skill_messages = build_skill_messages(loaded_skills, self._prompts)
+                if skill_messages:
+                    logger.info("Injecting %d skill messages for run_id=%s", len(skill_messages), run.id)
+
+        enhanced_messages = skill_messages + messages
 
         success = True
         error: str | None = None
@@ -82,7 +112,7 @@ class SubagentManager:
         try:
             reply, tool_trace = await self._agent_run.run(
                 scope_for_tools=run.scope,
-                messages=messages,
+                messages=enhanced_messages,
                 tools=tools,
                 response_format=response_format,
                 run_id=run.id,
@@ -127,7 +157,6 @@ class SubagentManager:
         return result
 
     def get(self, run_id: str) -> SubagentRun | None:
-        """Get a run by ID."""
         return self._store.get(run_id)
 
     def list_by_scope(
@@ -136,5 +165,4 @@ class SubagentManager:
         status: str | None = None,
         limit: int = 100,
     ) -> list[SubagentRun]:
-        """List runs for a scope."""
         return self._store.list_by_scope(scope, status=status, limit=limit)

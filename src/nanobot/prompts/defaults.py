@@ -89,6 +89,13 @@ SCRATCHPAD_USER_TEMPLATE = (
 
 SCRATCHPAD_USER_VARIABLES = ["state_json"]
 
+SKILL_INSTRUCTIONS_TEMPLATE = """[Skill: {skill_name}]
+{skill_description}
+
+{skill_instructions}"""
+
+SKILL_INSTRUCTIONS_VARIABLES = ["skill_name", "skill_description", "skill_instructions"]
+
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
@@ -98,4 +105,5 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "scratchpad_system": (SCRATCHPAD_SYSTEM_TEMPLATE, "scratchpad", SCRATCHPAD_SYSTEM_VARIABLES),
     "scratchpad_next_instruction": (SCRATCHPAD_NEXT_INSTRUCTION, "scratchpad", []),
     "scratchpad_user": (SCRATCHPAD_USER_TEMPLATE, "scratchpad", SCRATCHPAD_USER_VARIABLES),
+    "skill_instructions": (SKILL_INSTRUCTIONS_TEMPLATE, "skill", SKILL_INSTRUCTIONS_VARIABLES),
 }

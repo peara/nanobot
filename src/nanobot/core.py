@@ -29,6 +29,7 @@ from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
+from nanobot.skills import SkillStore
 from nanobot.subagents import SubagentManager
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 
@@ -68,6 +69,7 @@ class BotCore:
         self.tools = ToolRegistry(stats_store=self.tool_stats)
         self.scheduler_store = SchedulerStore(config.scheduler_db_path, timezone_name=config.working_timezone)
         self.plan_store = PlanStore(config.plan_db_path)
+        self.skills = SkillStore(config.skill_db_path)
         self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
@@ -86,6 +88,8 @@ class BotCore:
             contexts=self.contexts,
             agent_run=self.agent_run,
             tools=self.tools,
+            skills=self.skills,
+            prompts=self.prompts,
         )
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None
@@ -225,7 +229,7 @@ class BotCore:
             messages = [self._base_system_message()]
             messages.extend(history)
 
-            run = self.subagent_manager.spawn(scope=scope)
+            run = self.subagent_manager.spawn(scope=scope, goal=user_text)
             result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
 
             final_reply = str(result.reply or "")
