@@ -47,12 +47,6 @@ mcp_servers:
     args: ["-m", "nanobot.mcp_servers.scheduler.server"]
     env: {}
 
-  - name: "memory"
-    command: "python"
-    args: ["-m", "nanobot.mcp_servers.memory.server"]
-    env:
-      MEM0_CONFIG_PATH: "./config.mem0.yaml"
-
   - name: "web"
     command: "python"
     args: ["-m", "nanobot.mcp_servers.web.server"]
