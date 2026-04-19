@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from nanobot.skills import Skill, SkillMatcher, SkillStore
+from nanobot.skills import Skill, SkillMatcher, SkillMem0Store, SkillStore
 from nanobot.skills.injection import build_skill_messages
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
 
@@ -40,6 +40,7 @@ class SubagentManager:
         tools: ToolRegistry,
         skills: SkillStore,
         prompts: PromptStore,
+        mem0_store: SkillMem0Store | None = None,
     ) -> None:
         self._store = SubagentRunStore(db_path)
         self._contexts = contexts
@@ -47,7 +48,7 @@ class SubagentManager:
         self._tools = tools
         self._skills = skills
         self._prompts = prompts
-        self._skill_matcher = SkillMatcher(skills)
+        self._skill_matcher = SkillMatcher(skills, mem0_store=mem0_store)
 
     def spawn(
         self,

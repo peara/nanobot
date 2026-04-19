@@ -192,5 +192,6 @@ class TestPromptStoreSeedDefaults:
             "scratchpad_system",
             "scratchpad_next_instruction",
             "scratchpad_user",
+            "skill_instructions",
         }
         assert names == expected

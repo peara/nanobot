@@ -30,7 +30,7 @@ from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
-from nanobot.skills import SkillStore, register_skill_tools
+from nanobot.skills import SkillMem0Store, SkillStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 from nanobot.vector_store import VectorStore
@@ -74,16 +74,18 @@ class BotCore:
         self.skills = SkillStore(config.skill_db_path)
         self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
-        register_skill_tools(self.tools, self.skills)
         self.vector_store: VectorStore | None = None
+        self.mem0_skill_store: SkillMem0Store | None = None
         if config.mem0_config_path:
             vs_path = Path(config.mem0_config_path)
             if vs_path.exists():
                 self.vector_store = VectorStore(str(vs_path))
+                self.mem0_skill_store = SkillMem0Store(self.vector_store)
                 register_memory_tools(self.tools, self.vector_store)
                 logger.info("VectorStore initialized from %s", config.mem0_config_path)
             else:
                 logger.warning("mem0_config_path specified but file not found: %s", config.mem0_config_path)
+        register_skill_tools(self.tools, self.skills, self.mem0_skill_store)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,
@@ -102,6 +104,7 @@ class BotCore:
             tools=self.tools,
             skills=self.skills,
             prompts=self.prompts,
+            mem0_store=self.mem0_skill_store,
         )
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None

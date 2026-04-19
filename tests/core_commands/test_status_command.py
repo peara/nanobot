@@ -48,11 +48,13 @@ def _build_config(tmp_path) -> AppConfig:
     scheduler_db_path = str(tmp_path / "scheduler.db")
     plan_db_path = str(tmp_path / "plans.db")
     prompt_db_path = str(tmp_path / "prompts.db")
+    skill_db_path = str(tmp_path / "skills.db")
     return AppConfig(
         assistant_name="Nano",
         database_path=db_path,
         scheduler_db_path=scheduler_db_path,
         plan_db_path=plan_db_path,
+        skill_db_path=skill_db_path,
         poll_interval_seconds=20,
         working_timezone="UTC",
         history_message_limit=24,

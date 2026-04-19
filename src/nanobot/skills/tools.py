@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nanobot.skills.store import SkillStore
 from nanobot.tools.base import Tool
+
+if TYPE_CHECKING:
+    from nanobot.skills.mem0_integration import SkillMem0Store
 
 logger = logging.getLogger(__name__)
 
 
 class SkillListTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -60,8 +64,9 @@ class SkillListTool(Tool):
 
 
 class SkillGetTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -105,8 +110,9 @@ class SkillGetTool(Tool):
 
 
 class SkillCreateTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -175,6 +181,13 @@ class SkillCreateTool(Tool):
                 priority=priority,
                 is_active=True,
             )
+            # Sync to mem0 for intelligent trigger mode
+            if trigger_mode == "intelligent" and self._mem0:
+                try:
+                    self._mem0.store_skill(skill)
+                    logger.info("Synced skill '%s' to mem0 for intelligent trigger", name)
+                except Exception:
+                    logger.exception("Failed to sync skill '%s' to mem0", name)
             return json.dumps({"ok": True, "skill": skill.as_dict()}, ensure_ascii=True)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=True)
@@ -183,8 +196,9 @@ class SkillCreateTool(Tool):
 
 
 class SkillUpdateTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -244,11 +258,13 @@ class SkillUpdateTool(Tool):
         if trigger_patterns and not isinstance(trigger_patterns, list):
             trigger_patterns = [str(trigger_patterns)]
 
+        new_trigger_mode = args.get("trigger_mode")
+
         updated = self._store.update(
             existing.id,
             description=args.get("description"),
             instructions=args.get("instructions"),
-            trigger_mode=args.get("trigger_mode"),
+            trigger_mode=new_trigger_mode,
             trigger_patterns=trigger_patterns,
             priority=args.get("priority"),
             is_active=args.get("is_active"),
@@ -257,12 +273,22 @@ class SkillUpdateTool(Tool):
         if updated is None:
             return json.dumps({"error": f"Failed to update skill: {name}"}, ensure_ascii=True)
 
+        # Sync to mem0 for intelligent trigger mode
+        effective_mode = new_trigger_mode or existing.trigger_mode
+        if effective_mode == "intelligent" and self._mem0:
+            try:
+                self._mem0.store_skill(updated)
+                logger.info("Synced updated skill '%s' to mem0", name)
+            except Exception:
+                logger.exception("Failed to sync skill '%s' to mem0", name)
+
         return json.dumps({"ok": True, "skill": updated.as_dict()}, ensure_ascii=True)
 
 
 class SkillActivateTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -312,8 +338,9 @@ class SkillActivateTool(Tool):
 
 
 class SkillDeleteTool(Tool):
-    def __init__(self, skill_store: SkillStore) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
         self._store = skill_store
+        self._mem0 = mem0_store
 
     @property
     def name(self) -> str:
@@ -339,17 +366,30 @@ class SkillDeleteTool(Tool):
     async def call(self, args: dict[str, Any]) -> str:
         name = str(args.get("name", ""))
 
+        existing = self._store.get_by_name(name)
+        if existing is None:
+            return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
+
+        was_intelligent = existing.trigger_mode == "intelligent"
+
         deleted = self._store.delete_by_name(name)
         if not deleted:
             return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
 
+        if was_intelligent and self._mem0:
+            try:
+                self._mem0.remove_skill(name)
+                logger.info("Removed skill '%s' from mem0", name)
+            except Exception:
+                logger.exception("Failed to remove skill '%s' from mem0", name)
+
         return json.dumps({"ok": True, "deleted": name}, ensure_ascii=True)
 
 
-def register_skill_tools(registry: Any, skill_store: SkillStore) -> None:
-    registry.register(SkillListTool(skill_store))
-    registry.register(SkillGetTool(skill_store))
-    registry.register(SkillCreateTool(skill_store))
-    registry.register(SkillUpdateTool(skill_store))
-    registry.register(SkillActivateTool(skill_store))
-    registry.register(SkillDeleteTool(skill_store))
+def register_skill_tools(registry: Any, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    registry.register(SkillListTool(skill_store, mem0_store))
+    registry.register(SkillGetTool(skill_store, mem0_store))
+    registry.register(SkillCreateTool(skill_store, mem0_store))
+    registry.register(SkillUpdateTool(skill_store, mem0_store))
+    registry.register(SkillActivateTool(skill_store, mem0_store))
+    registry.register(SkillDeleteTool(skill_store, mem0_store))

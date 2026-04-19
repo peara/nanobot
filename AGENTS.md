@@ -126,6 +126,11 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - `@pytest.mark.asyncio` for async tests
 - In-memory SQLite: `:memory:`
 
+### Git Commits
+- Link to GitHub issues when applicable: append `Closes #xxx` or `Fixes #xxx`
+- Ask user about issue linkage if not mentioned
+- See `.agents/skills/git-commit/SKILL.md` for detailed workflow
+
 ## Anti-Patterns (THIS PROJECT)
 - **Type errors**: Suppress with `# type: ignore` only when unavoidable
 - **Empty catch blocks**: `except: pass` - Never
@@ -133,6 +138,7 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - **Commit without explicit request**: Never
 - **Speculate about unread code**: Never
 - **Leave code in broken state**: Never
+- **Commit without issue reference**: Ask about GitHub issue linkage first
 
 ## Notes
 - No GitHub Actions CI - all testing/linting is local via `uv run`

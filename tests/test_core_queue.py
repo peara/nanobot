@@ -35,6 +35,7 @@ def _make_config() -> Any:
         database_path=f"{tmp}/nanobot.db",
         scheduler_db_path=f"{tmp}/scheduler.db",
         plan_db_path=f"{tmp}/plans.db",
+        skill_db_path=f"{tmp}/skills.db",
         poll_interval_seconds=20,
         working_timezone="UTC",
         history_message_limit=24,
