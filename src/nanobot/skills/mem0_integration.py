@@ -26,17 +26,16 @@ class SkillMem0Store:
         text = f"{skill.name}: {skill.description}"
         self._memories.add(
             [{"role": "user", "content": text}],
-            user_id="skills",
             metadata={"skill_name": skill.name, "skill_id": skill.id},
         )
         logger.debug("Stored skill in mem0: %s", skill.name)
 
     def remove_skill(self, skill_name: str) -> None:
-        self._memories.delete(user_id="skills", metadata={"skill_name": skill_name})
+        self._memories.delete(metadata={"skill_name": skill_name})
         logger.debug("Removed skill from mem0: %s", skill_name)
 
     def search_skills(self, query: str, limit: int = 3) -> list[str]:
-        results = self._memories.search(query=query, user_id="skills", limit=limit)
+        results = self._memories.search(query=query, limit=limit)
         if isinstance(results, dict):
             results = results.get("results", [])
         skill_names: list[str] = []

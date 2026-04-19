@@ -155,7 +155,17 @@ async def read_page(
 
 @mcp.tool()
 async def snapshot_page(url: str, headless: bool | None = None) -> dict[str, Any]:
-    """Open a webpage in the browser and return visible text, buttons, links, and inputs."""
+    """Open a webpage and return elements for browser interaction.
+
+    Returns:
+    - visible_text: Page text content
+    - buttons: List of {text, type, aria_label} - use "text" as target for click
+    - links: List of {text, href} - use "text" as target for click
+    - inputs: List of {name, type, placeholder, label} - use "name", "placeholder", or CSS selector as target
+    - candidate_actions: Suggested actions like "click:Next" - use quoted text as target
+
+    Use this BEFORE interact_page to discover element identifiers for the "target" parameter.
+    """
     try:
         tool = _build_tool(quality_threshold=None, headless=headless)
         return _normalize_payload(await tool.snapshot(url))
@@ -171,7 +181,28 @@ async def interact_page(
     headless: bool | None = None,
     save_outputs: bool | None = None,
 ) -> dict[str, Any]:
-    """Run safe browser actions such as click/type/select/scroll/wait_for and then extract the page."""
+    """Run browser actions and extract the page content.
+
+    Steps format: [{"action": "...", ...fields...}]
+    Each action requires specific fields:
+
+    - click:  {"action": "click", "target": "..."}
+    - type:   {"action": "type", "target": "...", "text": "..."}
+    - select: {"action": "select", "target": "...", "value": "..."}
+    - scroll: {"action": "scroll", "amount": 500} OR {"action": "scroll", "until_text": "..."}
+    - wait_for: {"action": "wait_for", "selector": "..."} OR {"action": "wait_for", "text": "..."}
+
+    "target" can be:
+    - CSS selector: "#search", ".btn-primary", "input[name='q']"
+    - Button/link text from snapshot: "Submit", "Next"
+    - Placeholder text from snapshot: "探す"
+    - Input name attribute: use CSS "[name='p']" or the placeholder text
+
+    Example steps:
+    [{"action": "type", "target": "探す", "text": "search query"}, {"action": "click", "target": "検索"}]
+
+    Use snapshot_page first to discover available targets from buttons[], inputs[], and candidate_actions.
+    """
     try:
         tool = _build_tool(quality_threshold=quality_threshold, headless=headless)
         payload = _normalize_payload(await tool.interact(url, steps=steps))

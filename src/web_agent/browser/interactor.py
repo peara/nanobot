@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, async_playwright
@@ -9,6 +10,9 @@ from playwright.async_api import Page, async_playwright
 from ..config import BLOCKED_ACTION_PATTERNS, EXPANSION_LABELS, MAX_VISIBLE_TEXT_CHARS
 from ..models import SnapshotResult
 from ..utils import is_selector_target, normalize_text_block, normalize_whitespace
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser, BrowserContext, Playwright
 
 
 class SafeActionError(RuntimeError):
@@ -22,9 +26,9 @@ class BrowserUnavailableError(RuntimeError):
 class BrowserInteractor:
     def __init__(self, headless: bool = True):
         self.headless = headless
-        self._playwright = None
-        self._browser = None
-        self._context = None
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
         self.page: Page | None = None
 
     async def __aenter__(self) -> BrowserInteractor:
@@ -55,8 +59,9 @@ class BrowserInteractor:
 
     async def dismiss_overlays(self) -> None:
         assert self.page is not None
-        for label in ("Accept", "I agree", "Close", "Dismiss", "Got it"):
-            locator = self.page.get_by_role("button", name=re.compile(label, re.I))
+        # Common overlay dismiss labels (English + Japanese)
+        for label in ("Accept", "I agree", "Close", "Dismiss", "Got it", "あとで", "閉じる", "同意する", "×"):
+            locator = self.page.get_by_role("button", name=re.compile(re.escape(label), re.I))
             try:
                 if await locator.count():
                     await locator.first.click(timeout=1500)
@@ -164,6 +169,7 @@ class BrowserInteractor:
         return str(output_path)
 
     async def maybe_expand_content(self) -> list[str]:
+        assert self.page is not None
         actions: list[str] = []
         for label in EXPANSION_LABELS:
             try:

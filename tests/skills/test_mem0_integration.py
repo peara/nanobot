@@ -35,7 +35,6 @@ class TestSkillMem0Store:
                 assert len(call_args[0][0]) == 1
                 assert call_args[0][0][0]["role"] == "user"
                 assert "debug-skill" in call_args[0][0][0]["content"]
-                assert call_args[1]["user_id"] == "skills"
                 assert call_args[1]["metadata"]["skill_name"] == "debug-skill"
 
     def test_remove_skill_deletes_from_mem0(self) -> None:
@@ -53,7 +52,6 @@ class TestSkillMem0Store:
 
                 mock_memory.delete.assert_called_once()
                 call_args = mock_memory.delete.call_args
-                assert call_args[1]["user_id"] == "skills"
                 assert call_args[1]["metadata"]["skill_name"] == "old-skill"
 
     def test_search_skills_returns_skill_names(self) -> None:
@@ -82,7 +80,6 @@ class TestSkillMem0Store:
                 mock_memory.search.assert_called_once()
                 call_args = mock_memory.search.call_args
                 assert call_args[1]["query"] == "I have a bug"
-                assert call_args[1]["user_id"] == "skills"
                 assert call_args[1]["limit"] == 3
 
     def test_search_skills_handles_empty_results(self) -> None:

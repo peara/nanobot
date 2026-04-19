@@ -295,9 +295,7 @@ class WebAgentTool:
     def _final_payload(self, flow: FlowState, actions_taken: list[str]) -> dict[str, Any]:
         result = flow.best_result
         title = (
-            result.markdown.splitlines()[0].lstrip("# ").strip()
-            if result
-            else flow.fetch.title or flow.fetch.final_url
+            result.markdown.splitlines()[0].lstrip("# ").strip() if result else flow.fetch.title or flow.fetch.final_url
         )
         content = result.content if result else ""
         if result:

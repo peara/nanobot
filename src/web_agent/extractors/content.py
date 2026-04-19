@@ -175,9 +175,7 @@ async def crawl4ai_extract(url: str) -> tuple[str, str]:
                 remove_consent_popups=True,
             )
             try:
-                async with AsyncWebCrawler(
-                    base_directory=str(Path("./data/web_agent/.crawl4ai").resolve())
-                ) as crawler:
+                async with AsyncWebCrawler(base_directory=str(Path("./data/web_agent/.crawl4ai").resolve())) as crawler:
                     result = await crawler.arun(url, config=config)
             except Exception:
                 return "", ""

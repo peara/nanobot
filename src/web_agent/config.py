@@ -93,8 +93,8 @@ JS_HEAVY_HINTS = (
     "__next",
     "__nuxt",
     "application/json",
-    "id=\"root\"",
-    "id=\"app\"",
+    'id="root"',
+    'id="app"',
     "data-reactroot",
     "ng-version",
 )
