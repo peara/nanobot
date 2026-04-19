@@ -24,6 +24,7 @@ from nanobot.core_utils import (
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
+from nanobot.memstore.tools import register_memory_tools
 from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
 from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
@@ -32,6 +33,7 @@ from nanobot.scheduler_store import SchedulerStore
 from nanobot.skills import SkillStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
+from nanobot.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,15 @@ class BotCore:
         self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
         register_skill_tools(self.tools, self.skills)
+        self.vector_store: VectorStore | None = None
+        if config.mem0_config_path:
+            vs_path = Path(config.mem0_config_path)
+            if vs_path.exists():
+                self.vector_store = VectorStore(str(vs_path))
+                register_memory_tools(self.tools, self.vector_store)
+                logger.info("VectorStore initialized from %s", config.mem0_config_path)
+            else:
+                logger.warning("mem0_config_path specified but file not found: %s", config.mem0_config_path)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,

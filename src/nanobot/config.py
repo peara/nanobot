@@ -52,6 +52,7 @@ class AppConfig:
     owner_chat_id: int = 0
     enable_tool_stats: bool = False
     prompt_db_path: str = "./data/prompts.db"
+    mem0_config_path: str | None = None
 
 
 def _expand_env_value(value: Any) -> Any:
@@ -89,4 +90,5 @@ def load_config(config_path: str) -> AppConfig:
         owner_chat_id=int(data.get("owner_chat_id", 0)),
         enable_tool_stats=bool(data.get("enable_tool_stats", False)),
         prompt_db_path=data.get("prompt_db_path", "./data/prompts.db"),
+        mem0_config_path=data.get("mem0_config_path"),
     )
