@@ -310,7 +310,7 @@ def test_agent_run_aborts_on_repeated_identical_tool_calls() -> None:
 
 def test_agent_run_aborts_after_tool_call_limit() -> None:
     replies = []
-    for idx in range(20):
+    for idx in range(35):
         replies.append(
             {
                 "content": "",
@@ -328,6 +328,7 @@ def test_agent_run_aborts_after_tool_call_limit() -> None:
         )
     llm = _FakeLlm(replies)
     host = _FakeHost(llm)
+    host.tools.register(_FakeTool("timer__time_now"))
     run = AgentRun(host)
 
     async def _go() -> None:
@@ -337,6 +338,6 @@ def test_agent_run_aborts_after_tool_call_limit() -> None:
             tools=[{"type": "function", "function": {"name": "timer__time_now"}}],
         )
         assert text == TOOL_CALL_LIMIT_ABORT_REPLY
-        assert len(trace) == 16
+        assert len(trace) == 30
 
     asyncio.run(_go())

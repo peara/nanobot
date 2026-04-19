@@ -549,7 +549,7 @@ def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) ->
 
 
 def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
-    """With relaxed protocol we never abort; all requested tools run."""
+    """Test relaxed protocol: all tools run. Use different args to avoid repeated call guard."""
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
@@ -573,7 +573,7 @@ def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
                         {
                             "id": "call_ext_2",
                             "type": "function",
-                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC+1"}'},
                         }
                     ],
                 },
@@ -583,7 +583,7 @@ def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
                         {
                             "id": "call_ext_3",
                             "type": "function",
-                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC+2"}'},
                         }
                     ],
                 },
@@ -593,7 +593,7 @@ def test_phase2_relaxed_no_abort_continues_executing(tmp_path) -> None:
                         {
                             "id": "call_ext_4",
                             "type": "function",
-                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC"}'},
+                            "function": {"name": "timer__time_now", "arguments": '{"timezone_name":"UTC+3"}'},
                         }
                     ],
                 },
