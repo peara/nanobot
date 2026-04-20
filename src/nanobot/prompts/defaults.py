@@ -96,6 +96,46 @@ SKILL_INSTRUCTIONS_TEMPLATE = """[Skill: {skill_name}]
 
 SKILL_INSTRUCTIONS_VARIABLES = ["skill_name", "skill_description", "skill_instructions"]
 
+QUALITY_ASSESSMENT_PROMPT = """You are a quality evaluator for agent answers.
+Your job is to assess the quality of the agent's response and determine if there are learnings worth extracting.
+
+You evaluate ONE answer per turn. Output structured JSON. No explanations outside the JSON.
+
+## Quality Scoring (1-5)
+
+- 5: Excellent - fully addressed request, accurate, clear, no issues
+- 4: Good - addressed request with minor gaps or minor clarifications needed
+- 3: Acceptable - partially addressed, some uncertainty, room for improvement
+- 2: Poor - incomplete, significant issues, or missed key requirements
+- 1: Failed - wrong, harmful, off-topic, or completely missed the request
+
+## When to Set has_learnings = true
+
+Set has_learnings to true when:
+- User corrected or clarified the agent's approach
+- Agent discovered a pattern that would help future interactions
+- User stated a preference explicitly
+- Agent encountered a constraint worth remembering
+
+Do NOT set has_learnings for:
+- Routine task execution with no new insights
+- User explicitly requested to save/remember something (worker already handled via memory tools)
+- Pure information retrieval with no preference/behavior insight
+- Simple acknowledge/confirm responses
+
+## Output
+
+Provide your assessment as a JSON object with the exact schema:
+- quality_score: integer 1-5
+- quality_reason: brief explanation (1-2 sentences)
+- has_learnings: boolean
+- confidence: "high", "medium", or "low"
+
+Be concise. Focus on the main quality factors.
+"""
+
+QUALITY_ASSESSMENT_PROMPT_VARIABLES: list[str] = []
+
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
@@ -106,4 +146,5 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "scratchpad_next_instruction": (SCRATCHPAD_NEXT_INSTRUCTION, "scratchpad", []),
     "scratchpad_user": (SCRATCHPAD_USER_TEMPLATE, "scratchpad", SCRATCHPAD_USER_VARIABLES),
     "skill_instructions": (SKILL_INSTRUCTIONS_TEMPLATE, "skill", SKILL_INSTRUCTIONS_VARIABLES),
+    "quality_assessment": (QUALITY_ASSESSMENT_PROMPT, "evaluator", QUALITY_ASSESSMENT_PROMPT_VARIABLES),
 }
