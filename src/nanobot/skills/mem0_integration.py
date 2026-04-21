@@ -17,7 +17,12 @@ class SkillMem0Store:
 
     Uses a separate Qdrant collection (nanobot_skills) from user memories
     (nanobot_memories), loaded from the same config.mem0.yaml file.
+
+    mem0 v1.x requires an agent_id for add/search operations.
+    Skills are agent-scoped, so we use a fixed agent_id.
     """
+
+    AGENT_ID = "nanobot_skill_matcher"
 
     def __init__(self, vector_store: VectorStore) -> None:
         self._memories: Memory = vector_store.get_collection(COLLECTION_SKILLS)
@@ -26,6 +31,7 @@ class SkillMem0Store:
         text = f"{skill.name}: {skill.description}"
         self._memories.add(
             [{"role": "user", "content": text}],
+            agent_id=self.AGENT_ID,
             metadata={"skill_name": skill.name, "skill_id": skill.id},
         )
         logger.debug("Stored skill in mem0: %s", skill.name)
@@ -35,7 +41,7 @@ class SkillMem0Store:
         logger.debug("Removed skill from mem0: %s", skill_name)
 
     def search_skills(self, query: str, limit: int = 3) -> list[str]:
-        results = self._memories.search(query=query, limit=limit)
+        results = self._memories.search(query=query, agent_id=self.AGENT_ID, limit=limit)
         if isinstance(results, dict):
             results = results.get("results", [])
         skill_names: list[str] = []
