@@ -114,27 +114,57 @@ class LearningEvaluator:
         user_request: str,
         worker_result: SubagentRunResult,
     ) -> str:
-        return f"""User request:
-{user_request}
+        parts = [
+            "User request:",
+            user_request,
+            "",
+            "Agent reply:",
+            worker_result.reply,
+        ]
 
-Agent reply:
-{worker_result.reply}
+        if not worker_result.success:
+            parts.extend(["", "Run status: FAILED"])
 
-Assess the quality and determine if there are learnings worth extracting."""
+        if worker_result.error:
+            parts.extend(["Error:", worker_result.error])
+
+        tool_names = [t.get("name", "?") for t in worker_result.tool_trace]
+        if tool_names:
+            parts.extend(["", f"Tools called ({len(tool_names)}): {', '.join(tool_names)}"])
+
+        parts.append("")
+        parts.append("Assess the quality and determine if there are learnings worth extracting.")
+        return "\n".join(parts)
 
     def _build_learning_input(
         self,
         user_request: str,
         worker_result: SubagentRunResult,
     ) -> str:
-        return f"""User request:
-{user_request}
+        parts = [
+            "User request:",
+            user_request,
+            "",
+            "Agent reply:",
+            worker_result.reply,
+        ]
 
-Agent reply:
-{worker_result.reply}
+        if not worker_result.success:
+            parts.extend(["", "Run status: FAILED"])
 
-Extract learnings from this interaction. Focus on user preferences, workflow \
-patterns, and constraints that would help future interactions."""
+        if worker_result.error:
+            parts.extend(["Error:", worker_result.error])
+
+        tool_names = [t.get("name", "?") for t in worker_result.tool_trace]
+        if tool_names:
+            parts.extend(["", f"Tools called ({len(tool_names)}): {', '.join(tool_names)}"])
+
+        parts.append("")
+        parts.append(
+            "Extract learnings from this interaction. Focus on user preferences, workflow \
+patterns, and constraints that would help future interactions."
+        )
+        return "\n".join(parts)
 
     def _default_quality(self, worker_result: SubagentRunResult) -> QualityAssessment:
         return QualityAssessment(

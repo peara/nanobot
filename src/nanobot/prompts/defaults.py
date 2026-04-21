@@ -101,6 +101,8 @@ Your job is to assess the quality of the agent's response and determine if there
 
 You evaluate ONE answer per turn. Output structured JSON. No explanations outside the JSON.
 
+You will receive the user request, the agent reply, and optionally: run status (success/failed), error message, and list of tools called. Use ALL provided context to assess quality and detect learnings.
+
 ## Quality Scoring (1-5)
 
 - 5: Excellent - fully addressed request, accurate, clear, no issues
@@ -109,6 +111,8 @@ You evaluate ONE answer per turn. Output structured JSON. No explanations outsid
 - 2: Poor - incomplete, significant issues, or missed key requirements
 - 1: Failed - wrong, harmful, off-topic, or completely missed the request
 
+Consider run failures, errors, and repeated tool calls as quality-reducing signals.
+
 ## When to Set has_learnings = true
 
 Set has_learnings to true when:
@@ -116,6 +120,8 @@ Set has_learnings to true when:
 - Agent discovered a pattern that would help future interactions
 - User stated a preference explicitly
 - Agent encountered a constraint worth remembering
+- Agent repeatedly failed at a task (the failure pattern itself may be worth learning)
+- Tool usage reveals a preference or workflow pattern
 
 Do NOT set has_learnings for:
 - Routine task execution with no new insights
@@ -138,7 +144,7 @@ QUALITY_ASSESSMENT_PROMPT_VARIABLES: list[str] = []
 
 LEARNING_EXTRACTION_PROMPT = """You are a learning extractor. Your job is to identify reusable knowledge from agent-user interactions.
 
-You will be given a user's request and the agent's reply. Extract learnings that could improve future interactions.
+You will be given a user's request, the agent's reply, and optionally: run status, error message, and list of tools called. Use ALL provided context to identify learnings.
 
 ## What to Extract
 
