@@ -42,13 +42,14 @@ class LearningEvaluator:
         scope: str,
         user_request: str,
         worker_result: SubagentRunResult,
+        scratchpad: dict[str, Any] | None = None,
     ) -> QualityAssessment:
         """Run full evaluation pipeline. Returns quality, may update skills later."""
-        quality = await self.assess_quality(scope, user_request, worker_result)
+        quality = await self.assess_quality(scope, user_request, worker_result, scratchpad)
         self._log_quality(scope, quality)
 
         if quality.has_learnings:
-            extraction = await self.extract_learnings(scope, user_request, worker_result)
+            extraction = await self.extract_learnings(scope, user_request, worker_result, scratchpad)
             self._log_extraction(scope, extraction)
             # Phase 3 (skill lifecycle) will be wired here later
 
@@ -59,10 +60,11 @@ class LearningEvaluator:
         scope: str,
         user_request: str,
         worker_result: SubagentRunResult,
+        scratchpad: dict[str, Any] | None = None,
     ) -> QualityAssessment:
         """Phase 1: Fast quality assessment with learning gate."""
         system_prompt = self._get_prompt("quality_assessment", "QUALITY_ASSESSMENT_PROMPT")
-        user_message = self._build_quality_input(user_request, worker_result)
+        user_message = self._build_quality_input(user_request, worker_result, scratchpad)
 
         response = await self._llm.chat(
             messages=[
@@ -83,10 +85,11 @@ class LearningEvaluator:
         scope: str,
         user_request: str,
         worker_result: SubagentRunResult,
+        scratchpad: dict[str, Any] | None = None,
     ) -> LearningExtraction:
         """Phase 2: Extract learnings with direction for skill lifecycle."""
         system_prompt = self._get_prompt("learning_extraction", "LEARNING_EXTRACTION_PROMPT")
-        user_message = self._build_learning_input(user_request, worker_result)
+        user_message = self._build_learning_input(user_request, worker_result, scratchpad)
 
         response = await self._llm.chat(
             messages=[
@@ -131,10 +134,35 @@ class LearningEvaluator:
             lines.append(f"  ... and {remaining} more tool calls")
         return "\n".join(lines)
 
+    @staticmethod
+    def _summarize_scratchpad(scratchpad: dict[str, Any]) -> str:
+        """Build a compact scratchpad summary."""
+        parts: list[str] = []
+        for key in ("goal", "current_step", "next_step"):
+            val = str(scratchpad.get(key, "")).strip()
+            if val:
+                parts.append(f"  {key}: {val[:200]}")
+        known_facts = scratchpad.get("known_facts", [])
+        if known_facts:
+            facts = [str(f)[:80] for f in known_facts[:5]]
+            parts.append(f"  known_facts: {', '.join(facts)}")
+            remaining_facts = len(known_facts) - 5
+            if remaining_facts > 0:
+                parts[-1] += f" (+{remaining_facts} more)"
+        tool_journal = scratchpad.get("tool_journal", [])
+        if tool_journal:
+            entries = [str(e)[:80] for e in tool_journal[:5]]
+            parts.append(f"  tool_journal: {', '.join(entries)}")
+            remaining_entries = len(tool_journal) - 5
+            if remaining_entries > 0:
+                parts[-1] += f" (+{remaining_entries} more)"
+        return "\n".join(parts) if parts else ""
+
     def _build_quality_input(
         self,
         user_request: str,
         worker_result: SubagentRunResult,
+        scratchpad: dict[str, Any] | None = None,
     ) -> str:
         parts = [
             "User request:",
@@ -143,6 +171,11 @@ class LearningEvaluator:
             "Agent reply:",
             worker_result.reply,
         ]
+
+        if scratchpad:
+            scratchpad_summary = self._summarize_scratchpad(scratchpad)
+            if scratchpad_summary:
+                parts.extend(["", "Agent scratchpad:", scratchpad_summary])
 
         if not worker_result.success:
             parts.extend(["", "Run status: FAILED"])
@@ -162,6 +195,7 @@ class LearningEvaluator:
         self,
         user_request: str,
         worker_result: SubagentRunResult,
+        scratchpad: dict[str, Any] | None = None,
     ) -> str:
         parts = [
             "User request:",
@@ -170,6 +204,11 @@ class LearningEvaluator:
             "Agent reply:",
             worker_result.reply,
         ]
+
+        if scratchpad:
+            scratchpad_summary = self._summarize_scratchpad(scratchpad)
+            if scratchpad_summary:
+                parts.extend(["", "Agent scratchpad:", scratchpad_summary])
 
         if not worker_result.success:
             parts.extend(["", "Run status: FAILED"])

@@ -101,7 +101,7 @@ Your job is to assess the quality of the agent's response and determine if there
 
 You evaluate ONE answer per turn. Output structured JSON. No explanations outside the JSON.
 
-You will receive the user request, the agent reply, and optionally: run status (success/failed), error message, and list of tools called. Use ALL provided context to assess quality and detect learnings.
+You will receive the user request, the agent reply, and optionally: run status (success/failed), error message, agent scratchpad (goal, current step, tool journal), and list of tools called. Use ALL provided context to assess quality and detect learnings.
 
 ## Quality Scoring (1-5)
 
@@ -144,7 +144,7 @@ QUALITY_ASSESSMENT_PROMPT_VARIABLES: list[str] = []
 
 LEARNING_EXTRACTION_PROMPT = """You are a learning extractor. Your job is to identify reusable knowledge from agent-user interactions.
 
-You will be given a user's request, the agent's reply, and optionally: run status, error message, and list of tools called. Use ALL provided context to identify learnings.
+You will be given a user's request, the agent's reply, and optionally: run status, error message, agent scratchpad (goal, current step, tool journal), and list of tools called. Use ALL provided context to identify learnings.
 
 ## What to Extract
 

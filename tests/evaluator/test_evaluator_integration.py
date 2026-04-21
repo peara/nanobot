@@ -89,7 +89,7 @@ class TestEvaluatorIntegration:
 
         with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=quality) as mock_eval:
             await bot._evaluate_turn("telegram:123", "hello", result)
-            mock_eval.assert_called_once_with("telegram:123", "hello", result)
+            mock_eval.assert_called_once_with("telegram:123", "hello", result, scratchpad=None)
 
     @pytest.mark.asyncio
     async def test_evaluate_turn_swallows_exceptions(self) -> None:

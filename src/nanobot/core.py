@@ -298,8 +298,9 @@ class BotCore:
         """Run evaluator on worker result. Non-blocking: failures are logged, not raised."""
         if self.evaluator is None:
             return
+        scratchpad = self.contexts.get("chat", scope, "scratchpad")
         try:
-            await self.evaluator.evaluate(scope, user_request, worker_result)
+            await self.evaluator.evaluate(scope, user_request, worker_result, scratchpad=scratchpad)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Evaluator failed scope=%s", scope)
 
