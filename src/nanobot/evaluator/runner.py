@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from nanobot.evaluator.store import (
     LEARNING_EXTRACTION_SCHEMA,
@@ -109,6 +110,27 @@ class LearningEvaluator:
 
             return getattr(defaults, fallback_name)
 
+    @staticmethod
+    def _summarize_tool_trace(tool_trace: list[dict[str, Any]], max_entries: int = 15) -> str:
+        """Build a compact tool trace summary with args preview."""
+        if not tool_trace:
+            return ""
+        lines: list[str] = []
+        shown = tool_trace[:max_entries]
+        for entry in shown:
+            name = entry.get("name", "?")
+            args = entry.get("args", {})
+            preview = entry.get("result_preview", "")
+            args_summary = json.dumps(args, ensure_ascii=False)[:120]
+            result_tag = ""
+            if preview:
+                result_tag = " -> " + preview[:60].replace("\n", " ")
+            lines.append(f"  - {name}({args_summary}){result_tag}")
+        remaining = len(tool_trace) - max_entries
+        if remaining > 0:
+            lines.append(f"  ... and {remaining} more tool calls")
+        return "\n".join(lines)
+
     def _build_quality_input(
         self,
         user_request: str,
@@ -128,9 +150,9 @@ class LearningEvaluator:
         if worker_result.error:
             parts.extend(["Error:", worker_result.error])
 
-        tool_names = [t.get("name", "?") for t in worker_result.tool_trace]
-        if tool_names:
-            parts.extend(["", f"Tools called ({len(tool_names)}): {', '.join(tool_names)}"])
+        tool_summary = self._summarize_tool_trace(worker_result.tool_trace)
+        if tool_summary:
+            parts.extend(["", f"Tool trace ({len(worker_result.tool_trace)} calls):", tool_summary])
 
         parts.append("")
         parts.append("Assess the quality and determine if there are learnings worth extracting.")
@@ -155,9 +177,9 @@ class LearningEvaluator:
         if worker_result.error:
             parts.extend(["Error:", worker_result.error])
 
-        tool_names = [t.get("name", "?") for t in worker_result.tool_trace]
-        if tool_names:
-            parts.extend(["", f"Tools called ({len(tool_names)}): {', '.join(tool_names)}"])
+        tool_summary = self._summarize_tool_trace(worker_result.tool_trace)
+        if tool_summary:
+            parts.extend(["", f"Tool trace ({len(worker_result.tool_trace)} calls):", tool_summary])
 
         parts.append("")
         parts.append(
