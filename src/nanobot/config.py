@@ -51,6 +51,7 @@ class AppConfig:
     mcp_servers: list[McpServerConfig]
     owner_chat_id: int = 0
     enable_tool_stats: bool = False
+    enable_evaluator: bool = False
     prompt_db_path: str = "./data/prompts.db"
     mem0_config_path: str | None = None
 
@@ -89,6 +90,7 @@ def load_config(config_path: str) -> AppConfig:
         mcp_servers=mcp_cfg,
         owner_chat_id=int(data.get("owner_chat_id", 0)),
         enable_tool_stats=bool(data.get("enable_tool_stats", False)),
+        enable_evaluator=bool(data.get("enable_evaluator", False)),
         prompt_db_path=data.get("prompt_db_path", "./data/prompts.db"),
         mem0_config_path=data.get("mem0_config_path"),
     )

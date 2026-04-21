@@ -21,6 +21,7 @@ from nanobot.core_utils import (
     trim_history_by_chars,
     unscoped_chat_id,
 )
+from nanobot.evaluator import LearningEvaluator
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
@@ -32,6 +33,7 @@ from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
 from nanobot.skills import SkillMem0Store, SkillStore, register_skill_tools
 from nanobot.subagents import SubagentManager
+from nanobot.subagents.manager import SubagentRunResult
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
 from nanobot.vector_store import VectorStore
 
@@ -106,6 +108,10 @@ class BotCore:
             prompts=self.prompts,
             mem0_store=self.mem0_skill_store,
         )
+        self.evaluator: LearningEvaluator | None = None
+        if config.enable_evaluator:
+            self.evaluator = LearningEvaluator(llm=self.llm, prompts=self.prompts)
+            logger.info("LearningEvaluator enabled")
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None
 
@@ -225,6 +231,7 @@ class BotCore:
             metadata={"error": result.error} if result.error else None,
         )
         await self.on_subagent_result(msg)
+        await self._evaluate_turn(scoped_id, prompt, result)
 
     async def _process(self, scope: str, user_text: str) -> None:
         logger.info("Processing message for scope=%s", scope)
@@ -259,6 +266,8 @@ class BotCore:
             self.memory.add_message(scope, "assistant", final_reply)
             self.contexts.put("chat", scope, "last_assistant_message", {"text": final_reply})
             await self._send(scope, final_reply)
+
+            await self._evaluate_turn(scope, user_text, result)
         finally:
             self.active_requests.pop(scope, None)
 
@@ -279,6 +288,20 @@ class BotCore:
 
     def _build_full_context_report(self, scope: str) -> str:
         return build_full_context_report(self, scope)
+
+    async def _evaluate_turn(
+        self,
+        scope: str,
+        user_request: str,
+        worker_result: SubagentRunResult,
+    ) -> None:
+        """Run evaluator on worker result. Non-blocking: failures are logged, not raised."""
+        if self.evaluator is None:
+            return
+        try:
+            await self.evaluator.evaluate(scope, user_request, worker_result)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Evaluator failed scope=%s", scope)
 
     async def _dispatch_after_tool_call(self, event: ToolCallEvent) -> None:
         for hook in self.tool_hooks:
