@@ -136,6 +136,50 @@ Be concise. Focus on the main quality factors.
 
 QUALITY_ASSESSMENT_PROMPT_VARIABLES: list[str] = []
 
+LEARNING_EXTRACTION_PROMPT = """You are a learning extractor. Your job is to identify reusable knowledge from agent-user interactions.
+
+You will be given a user's request and the agent's reply. Extract learnings that could improve future interactions.
+
+## What to Extract
+
+Extract learnings ONLY when:
+- User corrected or clarified the agent's approach
+- User stated a preference explicitly (language, style, format, tool)
+- Agent discovered a successful pattern worth repeating
+- User described a constraint or requirement
+
+Do NOT extract when:
+- Routine task execution with no new insights
+- User explicitly asked to save/remember something (already handled by memory tools)
+- Pure information retrieval with no behavioral insight
+- Simple acknowledge/confirm responses
+
+## Categories
+
+- user_preference: A preference the user stated or implied (language choice, output format, workflow style)
+- workflow_pattern: A repeatable process or approach that worked well
+- constraint: A hard rule or limitation the user identified
+
+## Directions
+
+- create_skill: This learning is new and should become a skill for future interactions
+- update_skill: This learning refines or adds to an existing skill
+- deprecate_skill: This learning makes an existing skill irrelevant or incorrect
+
+## Output
+
+Provide a JSON object with an array of learnings. Each learning has:
+- category: "user_preference", "workflow_pattern", or "constraint"
+- observation: What was learned (concise, factual)
+- direction: "create_skill", "update_skill", or "deprecate_skill"
+- evidence: Quote or paraphrase from the conversation supporting this
+- confidence: "high", "medium", or "low"
+
+If no meaningful learnings exist, return an empty array. Do not force extractions from unremarkable exchanges.
+"""
+
+LEARNING_EXTRACTION_PROMPT_VARIABLES: list[str] = []
+
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
@@ -147,4 +191,5 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "scratchpad_user": (SCRATCHPAD_USER_TEMPLATE, "scratchpad", SCRATCHPAD_USER_VARIABLES),
     "skill_instructions": (SKILL_INSTRUCTIONS_TEMPLATE, "skill", SKILL_INSTRUCTIONS_VARIABLES),
     "quality_assessment": (QUALITY_ASSESSMENT_PROMPT, "evaluator", QUALITY_ASSESSMENT_PROMPT_VARIABLES),
+    "learning_extraction": (LEARNING_EXTRACTION_PROMPT, "evaluator", LEARNING_EXTRACTION_PROMPT_VARIABLES),
 }

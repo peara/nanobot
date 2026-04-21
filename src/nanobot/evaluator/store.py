@@ -73,3 +73,107 @@ def parse_quality_from_json(content: str) -> QualityAssessment:
     """Parse JSON string from LLM response into QualityAssessment."""
     data = json.loads(content)
     return parse_quality_assessment(data)
+
+
+@dataclass(frozen=True)
+class LearningItem:
+    """A single learning extracted from a conversation turn."""
+
+    category: str  # "user_preference" | "workflow_pattern" | "constraint"
+    observation: str
+    direction: str  # "create_skill" | "update_skill" | "deprecate_skill"
+    evidence: str
+    confidence: str  # "high" | "medium" | "low"
+
+
+@dataclass(frozen=True)
+class LearningExtraction:
+    """Phase 2 output: extracted learnings with directions for skill lifecycle."""
+
+    learnings: list[LearningItem]
+
+
+LEARNING_EXTRACTION_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "learning_extraction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "learnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "enum": ["user_preference", "workflow_pattern", "constraint"],
+                                "description": "Type of learning",
+                            },
+                            "observation": {
+                                "type": "string",
+                                "description": "What was learned (raw text)",
+                            },
+                            "direction": {
+                                "type": "string",
+                                "enum": ["create_skill", "update_skill", "deprecate_skill"],
+                                "description": "What should happen with this learning",
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Quote or reference from conversation supporting this learning",
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description": "Confidence in this learning",
+                            },
+                        },
+                        "required": ["category", "observation", "direction", "evidence", "confidence"],
+                        "additionalProperties": False,
+                    },
+                    "description": "List of learnings extracted from the conversation",
+                },
+            },
+            "required": ["learnings"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def parse_learning_item(item: dict[str, Any]) -> LearningItem:
+    """Parse a single learning item dict into LearningItem."""
+    category = str(item["category"])
+    if category not in ("user_preference", "workflow_pattern", "constraint"):
+        raise ValueError(f"invalid category: {category}")
+
+    direction = str(item["direction"])
+    if direction not in ("create_skill", "update_skill", "deprecate_skill"):
+        raise ValueError(f"invalid direction: {direction}")
+
+    confidence = str(item["confidence"])
+    if confidence not in ("high", "medium", "low"):
+        raise ValueError(f"invalid confidence: {confidence}")
+
+    return LearningItem(
+        category=category,
+        observation=str(item["observation"]),
+        direction=direction,
+        evidence=str(item["evidence"]),
+        confidence=confidence,
+    )
+
+
+def parse_learning_extraction(response: dict[str, Any]) -> LearningExtraction:
+    """Parse LLM response dict into LearningExtraction."""
+    raw_learnings = response.get("learnings", [])
+    learnings = [parse_learning_item(item) for item in raw_learnings]
+    return LearningExtraction(learnings=learnings)
+
+
+def parse_learning_from_json(content: str) -> LearningExtraction:
+    """Parse JSON string from LLM response into LearningExtraction."""
+    data = json.loads(content)
+    return parse_learning_extraction(data)
