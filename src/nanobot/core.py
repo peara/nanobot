@@ -299,8 +299,11 @@ class BotCore:
         if self.evaluator is None:
             return
         scratchpad = self.contexts.get("chat", scope, "scratchpad")
+        active_skills = self.skills.list_active()
         try:
-            await self.evaluator.evaluate(scope, user_request, worker_result, scratchpad=scratchpad)
+            await self.evaluator.evaluate(
+                scope, user_request, worker_result, scratchpad=scratchpad, active_skills=active_skills
+            )
         except Exception:  # pylint: disable=broad-except
             logger.exception("Evaluator failed scope=%s", scope)
 

@@ -16,6 +16,7 @@ from nanobot.evaluator.store import (
 if TYPE_CHECKING:
     from nanobot.llm import LlmClient
     from nanobot.prompts import PromptStore
+    from nanobot.skills.models import Skill
     from nanobot.subagents.manager import SubagentRunResult
 
 logger = logging.getLogger(__name__)
@@ -43,13 +44,14 @@ class LearningEvaluator:
         user_request: str,
         worker_result: SubagentRunResult,
         scratchpad: dict[str, Any] | None = None,
+        active_skills: list[Skill] | None = None,
     ) -> QualityAssessment:
         """Run full evaluation pipeline. Returns quality, may update skills later."""
         quality = await self.assess_quality(scope, user_request, worker_result, scratchpad)
         self._log_quality(scope, quality)
 
         if quality.has_learnings:
-            extraction = await self.extract_learnings(scope, user_request, worker_result, scratchpad)
+            extraction = await self.extract_learnings(scope, user_request, worker_result, scratchpad, active_skills)
             self._log_extraction(scope, extraction)
             # Phase 3 (skill lifecycle) will be wired here later
 
@@ -86,10 +88,11 @@ class LearningEvaluator:
         user_request: str,
         worker_result: SubagentRunResult,
         scratchpad: dict[str, Any] | None = None,
+        active_skills: list[Skill] | None = None,
     ) -> LearningExtraction:
         """Phase 2: Extract learnings with direction for skill lifecycle."""
         system_prompt = self._get_prompt("learning_extraction", "LEARNING_EXTRACTION_PROMPT")
-        user_message = self._build_learning_input(user_request, worker_result, scratchpad)
+        user_message = self._build_learning_input(user_request, worker_result, scratchpad, active_skills)
 
         response = await self._llm.chat(
             messages=[
@@ -158,6 +161,17 @@ class LearningEvaluator:
                 parts[-1] += f" (+{remaining_entries} more)"
         return "\n".join(parts) if parts else ""
 
+    @staticmethod
+    def _summarize_active_skills(skills: list[Skill]) -> str:
+        """Build a compact active skills summary."""
+        if not skills:
+            return "  (none)"
+        lines: list[str] = []
+        for skill in skills:
+            desc = skill.description[:80].replace("\n", " ")
+            lines.append(f"  - {skill.name}: {desc}")
+        return "\n".join(lines)
+
     def _build_quality_input(
         self,
         user_request: str,
@@ -196,6 +210,7 @@ class LearningEvaluator:
         user_request: str,
         worker_result: SubagentRunResult,
         scratchpad: dict[str, Any] | None = None,
+        active_skills: list[Skill] | None = None,
     ) -> str:
         parts = [
             "User request:",
@@ -204,6 +219,10 @@ class LearningEvaluator:
             "Agent reply:",
             worker_result.reply,
         ]
+
+        if active_skills:
+            skills_summary = self._summarize_active_skills(active_skills)
+            parts.extend(["", "Existing active skills:", skills_summary])
 
         if scratchpad:
             scratchpad_summary = self._summarize_scratchpad(scratchpad)

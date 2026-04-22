@@ -144,7 +144,14 @@ QUALITY_ASSESSMENT_PROMPT_VARIABLES: list[str] = []
 
 LEARNING_EXTRACTION_PROMPT = """You are a learning extractor. Your job is to identify reusable knowledge from agent-user interactions.
 
-You will be given a user's request, the agent's reply, and optionally: run status, error message, agent scratchpad (goal, current step, tool journal), and list of tools called. Use ALL provided context to identify learnings.
+You will be given a user's request, the agent's reply, and optionally: run status, error message, agent scratchpad (goal, current step, tool journal), list of tools called, and a list of existing active skills. Use ALL provided context to identify learnings.
+
+## Existing Skills
+
+If existing active skills are listed:
+- Do NOT propose create_skill for knowledge already covered by an existing skill
+- Use update_skill to refine or extend an existing skill when the learning adds to it
+- Only propose create_skill for genuinely new knowledge not covered by existing skills
 
 ## What to Extract
 
