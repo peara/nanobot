@@ -34,8 +34,18 @@ class SkillMem0Store:
         logger.debug("Stored skill in mem0: %s", skill.name)
 
     def remove_skill(self, skill_name: str) -> None:
-        self._memories.delete(agent_id=self.AGENT_ID, metadata={"skill_name": skill_name})
-        logger.debug("Removed skill from mem0: %s", skill_name)
+        """Remove a skill's vectors from mem0 by searching and deleting by ID."""
+        results = self._memories.search(query=skill_name, agent_id=self.AGENT_ID, limit=10)
+        if isinstance(results, dict):
+            results = results.get("results", [])
+        for result in results:
+            if isinstance(result, dict):
+                metadata = result.get("metadata", {})
+                name = metadata.get("skill_name")
+                memory_id = result.get("id")
+                if name == skill_name and memory_id:
+                    self._memories.delete(memory_id)
+                    logger.debug("Removed mem0 vector %s for skill: %s", memory_id, skill_name)
 
     def search_skills(self, query: str, limit: int = 3) -> list[str]:
         results = self._memories.search(query=query, agent_id=self.AGENT_ID, limit=limit)

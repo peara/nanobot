@@ -39,6 +39,12 @@ class TestSkillMem0Store:
 
     def test_remove_skill_deletes_from_mem0(self) -> None:
         mock_memory = MagicMock()
+        mock_memory.search.return_value = {
+            "results": [
+                {"id": "mem-1", "memory": "old-skill: desc", "metadata": {"skill_name": "old-skill"}},
+                {"id": "mem-2", "memory": "other-skill: desc", "metadata": {"skill_name": "other-skill"}},
+            ]
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"
@@ -50,9 +56,7 @@ class TestSkillMem0Store:
 
                 mem0_store.remove_skill("old-skill")
 
-                mock_memory.delete.assert_called_once()
-                call_args = mock_memory.delete.call_args
-                assert call_args[1]["metadata"]["skill_name"] == "old-skill"
+                mock_memory.delete.assert_called_once_with("mem-1")
 
     def test_search_skills_returns_skill_names(self) -> None:
         mock_memory = MagicMock()
