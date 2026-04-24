@@ -277,6 +277,7 @@ class SkillUpdateTool(Tool):
         effective_mode = new_trigger_mode or existing.trigger_mode
         if effective_mode == "intelligent" and self._mem0:
             try:
+                self._mem0.remove_skill(name)
                 self._mem0.store_skill(updated)
                 logger.info("Synced updated skill '%s' to mem0", name)
             except Exception:
