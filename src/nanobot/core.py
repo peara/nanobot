@@ -31,7 +31,7 @@ from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
-from nanobot.skills import SkillMem0Store, SkillStore, register_skill_tools
+from nanobot.skills import SkillStore, SkillVectorStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.subagents.manager import SubagentRunResult
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
@@ -77,12 +77,12 @@ class BotCore:
         self.prompts = PromptStore(config.prompt_db_path)
         register_plan_tools(self.tools, self.plan_store)
         self.vector_store: VectorStore | None = None
-        self.mem0_skill_store: SkillMem0Store | None = None
+        self.mem0_skill_store: SkillVectorStore | None = None
         if config.mem0_config_path:
             vs_path = Path(config.mem0_config_path)
             if vs_path.exists():
                 self.vector_store = VectorStore(str(vs_path))
-                self.mem0_skill_store = SkillMem0Store(self.vector_store)
+                self.mem0_skill_store = SkillVectorStore(self.vector_store)
                 register_memory_tools(self.tools, self.vector_store)
                 logger.info("VectorStore initialized from %s", config.mem0_config_path)
             else:

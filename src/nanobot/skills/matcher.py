@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from nanobot.skills.models import Skill
 
 if TYPE_CHECKING:
-    from nanobot.skills.mem0_integration import SkillMem0Store
+    from nanobot.skills.skill_vector_store import SkillVectorStore
     from nanobot.skills.store import SkillStore
 
 
@@ -19,7 +19,7 @@ class SkillMatcher:
     def __init__(
         self,
         skill_store: SkillStore,
-        mem0_store: SkillMem0Store | None = None,
+        mem0_store: SkillVectorStore | None = None,
         max_skills: int = 5,
     ) -> None:
         self._store = skill_store

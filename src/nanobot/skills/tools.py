@@ -8,13 +8,13 @@ from nanobot.skills.store import SkillStore
 from nanobot.tools.base import Tool
 
 if TYPE_CHECKING:
-    from nanobot.skills.mem0_integration import SkillMem0Store
+    from nanobot.skills.skill_vector_store import SkillVectorStore
 
 logger = logging.getLogger(__name__)
 
 
 class SkillListTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -64,7 +64,7 @@ class SkillListTool(Tool):
 
 
 class SkillGetTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -110,7 +110,7 @@ class SkillGetTool(Tool):
 
 
 class SkillCreateTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -196,7 +196,7 @@ class SkillCreateTool(Tool):
 
 
 class SkillUpdateTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -287,7 +287,7 @@ class SkillUpdateTool(Tool):
 
 
 class SkillActivateTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -339,7 +339,7 @@ class SkillActivateTool(Tool):
 
 
 class SkillDeleteTool(Tool):
-    def __init__(self, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+    def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
         self._mem0 = mem0_store
 
@@ -387,7 +387,7 @@ class SkillDeleteTool(Tool):
         return json.dumps({"ok": True, "deleted": name}, ensure_ascii=True)
 
 
-def register_skill_tools(registry: Any, skill_store: SkillStore, mem0_store: SkillMem0Store | None = None) -> None:
+def register_skill_tools(registry: Any, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
     registry.register(SkillListTool(skill_store, mem0_store))
     registry.register(SkillGetTool(skill_store, mem0_store))
     registry.register(SkillCreateTool(skill_store, mem0_store))

@@ -8,6 +8,8 @@ from typing import Any
 from nanobot.config import AppConfig, load_config
 from nanobot.hooks import HookDebugCommand, build_default_tool_hooks
 from nanobot.plans import PlanStore
+from nanobot.skills import SkillStore, SkillVectorStore
+from nanobot.vector_store import VectorStore
 
 PLACEHOLDER_SCOPES = {"12345", "123456789", "1234567890", "<current_chat_id>", "current_chat_id", "default"}
 
@@ -335,6 +337,33 @@ def _plans_show(config: AppConfig, plan_id: int) -> None:
             print(f"    {i}. {step}")
 
 
+def _skills_resync(config: AppConfig) -> None:
+    if not config.mem0_config_path:
+        raise SystemExit("No mem0_config_path configured. Set it in config.yaml to enable skill resync.")
+
+    skill_store = SkillStore(config.skill_db_path)
+    vector_store = VectorStore(config.mem0_config_path)
+    mem0_store = SkillVectorStore(vector_store)
+
+    skills = skill_store.list_all()
+    intelligent_skills = [s for s in skills if s.trigger_mode == "intelligent"]
+
+    if not intelligent_skills:
+        print("No intelligent skills found in SQLite.")
+        return
+
+    print(f"Resyncing {len(intelligent_skills)} intelligent skills to mem0...")
+    for skill in intelligent_skills:
+        try:
+            mem0_store.remove_skill(skill.name)
+            mem0_store.store_skill(skill)
+            print(f"  [OK] {skill.name}")
+        except Exception as exc:
+            print(f"  [FAIL] {skill.name}: {exc}")
+
+    print("Done.")
+
+
 def main() -> None:
     hook_commands: dict[str, HookDebugCommand] = {}
     parser = argparse.ArgumentParser(description="nanobot debug CLI")
@@ -378,6 +407,8 @@ def main() -> None:
     plans_list.add_argument("--limit", type=int, default=20, help="Number of plans to show")
     plans_show = plans_sub.add_parser("show", help="Show plan details")
     plans_show.add_argument("id", type=int, help="Plan ID")
+
+    sub.add_parser("skills-resync", help="Resync intelligent skills to mem0 (remove + re-store)")
 
     for hook in build_default_tool_hooks():
         debug_commands = getattr(hook, "debug_commands", None)
@@ -438,6 +469,10 @@ def main() -> None:
         if args.plans_cmd == "show":
             _plans_show(config, args.id)
             return
+
+    if args.cmd == "skills-resync":
+        _skills_resync(config)
+        return
 
     if args.cmd in hook_commands:
         hook_commands[args.cmd].run(args, config.database_path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,44 +33,73 @@ class TestVectorStoreInit:
     def test_init_valid_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.yaml"
-            config_path.write_text("""
+            qdrant_path = Path(tmpdir) / "qdrant"
+            config_path.write_text(f"""
 llm:
   provider: openai
   config:
     model: gpt-4
+embedder:
+  provider: openai
+  config:
+    model: text-embedding-3-small
 vector_store:
   provider: qdrant
   config:
-    path: ./data/test
+    path: {qdrant_path}
+    collection_name: test
+    embedding_model_dims: 1536
+""")
+
+            mock_embedder = MagicMock()
+            with patch("nanobot.vector_store.store.EmbedderFactory.create", return_value=mock_embedder):
+                vs = VectorStore(str(config_path))
+                assert vs._source == f"config_file:{config_path}"
+
+    def test_init_requires_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text("""
+llm:
+  provider: openai
+embedder:
+  provider: openai
+vector_store:
+  provider: qdrant
+  config:
     collection_name: test
 """)
-            vs = VectorStore(str(config_path))
-            assert vs._source == f"config_file:{config_path}"
+            mock_embedder = MagicMock()
+            with patch("nanobot.vector_store.store.EmbedderFactory.create", return_value=mock_embedder):
+                with pytest.raises(ValueError, match="path is required"):
+                    VectorStore(str(config_path))
 
 
 class TestVectorStoreCollection:
-    def test_get_collection_caches_instance(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("llm: {provider: test}")
+    def test_collection_name_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            qdrant_path = Path(tmpdir) / "qdrant"
+            config_path.write_text(f"""
+llm:
+  provider: openai
+embedder:
+  provider: openai
+  config:
+    model: text-embedding-3-small
+vector_store:
+  provider: qdrant
+  config:
+    path: {qdrant_path}
+    collection_name: test
+    embedding_model_dims: 1536
+""")
+            mock_embedder = MagicMock()
+            with patch("nanobot.vector_store.store.EmbedderFactory.create", return_value=mock_embedder):
+                vs = VectorStore(str(config_path))
 
-        vs = VectorStore(str(config_path))
-        assert not vs.has_collection("test_collection")
-
-        config = vs._clone_config_with_collection("test_collection")
-        assert "collection_name" in config["vector_store"]["config"]
-        assert vs.has_collection("test_collection") is False
-
-    def test_collection_name_prefix(self, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("llm: {provider: test}")
-
-        vs = VectorStore(str(config_path))
-        config = vs._clone_config_with_collection("memories")
-
-        assert config["vector_store"]["config"]["collection_name"] == "nanobot_memories"
-
-        config2 = vs._clone_config_with_collection("skills")
-        assert config2["vector_store"]["config"]["collection_name"] == "nanobot_skills"
+                assert vs._get_collection_name("memories") == "nanobot_memories"
+                assert vs._get_collection_name("skills") == "nanobot_skills"
 
 
 class TestConstants:
