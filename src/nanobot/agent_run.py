@@ -27,6 +27,29 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
 )
 
 
+def _finalize_response_message(host: Any, scope: str) -> dict[str, str] | None:
+    scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
+    goal = str(scratchpad.get("goal", ""))
+    context = str(scratchpad.get("context", ""))
+    current_step = str(scratchpad.get("current_step", ""))
+    known_facts = scratchpad.get("known_facts", [])
+    tool_journal = scratchpad.get("tool_journal", [])
+    summary_parts: list[str] = []
+    if context:
+        summary_parts.append(context)
+    if current_step:
+        summary_parts.append(f"Current step: {current_step}")
+    if known_facts:
+        facts_text = "\n".join(f"- {f}" for f in known_facts[:15])
+        summary_parts.append(f"Key findings:\n{facts_text}")
+    if tool_journal:
+        journal_text = "\n".join(f"- {j}" for j in tool_journal[:10])
+        summary_parts.append(f"Actions taken:\n{journal_text}")
+    summary = "\n\n".join(summary_parts) if summary_parts else "No summary available."
+    content = host.prompts.render("finalize_response", goal=goal, summary=summary)
+    return {"role": "user", "content": content}
+
+
 def trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
     """Keep only the last round of tool use (assistant with tool_calls + its tool results)."""
     prefix_end = 0
@@ -249,7 +272,15 @@ class AgentRun:
             if round_used_external_tool:
                 include_scratchpad_prompt = True
             elif round_finalized_scratchpad:
-                include_scratchpad_prompt = False
+                finalize_msg = _finalize_response_message(self._host, scope_for_tools)
+                to_send = messages + ([finalize_msg] if finalize_msg else [])
+                prepared_messages = prepare_messages_for_chat(to_send)
+                final_message = await self._host.llm.chat(
+                    messages=prepared_messages,
+                    tools=[],
+                )
+                reply = final_message.get("content") or "I could not generate a response."
+                return reply, tool_trace
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
                 scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None

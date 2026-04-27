@@ -222,10 +222,10 @@ def test_agent_run_does_not_repeat_finalize_scratchpad_calls() -> None:
     asyncio.run(_go())
 
     assert len(llm.calls_messages) == 3
-    assert not any("Internal scratchpad state" in str(message.get("content", "")) for message in llm.calls_messages[-1])
-    assert [str(tool.get("function", {}).get("name", "")) for tool in llm.calls_tools[-1]] == [
-        "scheduler__schedule_task"
-    ]
+    final_tools = llm.calls_tools[-1]
+    assert final_tools == []
+    final_messages = llm.calls_messages[-1]
+    assert any("completed your research" in str(m.get("content", "")) for m in final_messages)
 
 
 def test_agent_run_normalizes_numeric_schedule_chat_id_to_current_scope() -> None:
@@ -341,3 +341,51 @@ def test_agent_run_aborts_after_tool_call_limit() -> None:
         assert len(trace) == 30
 
     asyncio.run(_go())
+
+
+def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": SCRATCHPAD_TOOL_NAME,
+                            "arguments": json.dumps(
+                                {
+                                    "mode": "finalize",
+                                    "goal": "Find info",
+                                    "current_step": "Done",
+                                    "known_facts": ["fact1", "fact2"],
+                                    "tool_journal": ["searched web"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Here is the info you requested.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "find info"}],
+            tools=[{"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}}],
+        )
+        assert text == "Here is the info you requested."
+        assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME]
+
+    asyncio.run(_go())
+
+    assert len(llm.calls_messages) == 2
+    final_tools = llm.calls_tools[-1]
+    assert final_tools == []
+    final_messages = llm.calls_messages[-1]
+    assert any("completed your research" in str(m.get("content", "")) for m in final_messages)

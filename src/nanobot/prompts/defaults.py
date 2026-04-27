@@ -89,6 +89,15 @@ SCRATCHPAD_USER_TEMPLATE = (
 
 SCRATCHPAD_USER_VARIABLES = ["state_json"]
 
+FINALIZE_RESPONSE_TEMPLATE = (
+    "You have completed your research and task planning. Your scratchpad has been finalized.\n"
+    "Based on the information below, write a clear, concise response to the user.\n"
+    "Do NOT call any tools. Just write your final answer directly.\n\n"
+    "## Your Goal\n{goal}\n\n"
+    "## What You Found\n{summary}"
+)
+FINALIZE_RESPONSE_VARIABLES = ["goal", "summary"]
+
 SKILL_INSTRUCTIONS_TEMPLATE = """[Skill: {skill_name}]
 {skill_description}
 
@@ -244,6 +253,7 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "scratchpad_next_instruction": (SCRATCHPAD_NEXT_INSTRUCTION, "scratchpad", []),
     "scratchpad_user": (SCRATCHPAD_USER_TEMPLATE, "scratchpad", SCRATCHPAD_USER_VARIABLES),
     "skill_instructions": (SKILL_INSTRUCTIONS_TEMPLATE, "skill", SKILL_INSTRUCTIONS_VARIABLES),
+    "finalize_response": (FINALIZE_RESPONSE_TEMPLATE, "scratchpad", FINALIZE_RESPONSE_VARIABLES),
     "quality_assessment": (QUALITY_ASSESSMENT_PROMPT, "evaluator", QUALITY_ASSESSMENT_PROMPT_VARIABLES),
     "learning_extraction": (LEARNING_EXTRACTION_PROMPT, "evaluator", LEARNING_EXTRACTION_PROMPT_VARIABLES),
     "skill_lifecycle": (SKILL_LIFECYCLE_PROMPT, "evaluator", SKILL_LIFECYCLE_PROMPT_VARIABLES),

@@ -193,6 +193,7 @@ class TestPromptStoreSeedDefaults:
             "scratchpad_next_instruction",
             "scratchpad_user",
             "skill_instructions",
+            "finalize_response",
             "quality_assessment",
             "learning_extraction",
             "skill_lifecycle",
