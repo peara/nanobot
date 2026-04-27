@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -177,3 +177,122 @@ def parse_learning_from_json(content: str) -> LearningExtraction:
     """Parse JSON string from LLM response into LearningExtraction."""
     data = json.loads(content)
     return parse_learning_extraction(data)
+
+
+@dataclass(frozen=True)
+class SkillOperation:
+    """Phase 3 output: a skill lifecycle operation to create, update, or skip."""
+
+    action: str  # "create" | "update" | "skip"
+    name: str
+    description: str
+    instructions: str
+    trigger_mode: str  # "always" | "pattern" | "intelligent"
+    source_confidence: str  # "high" | "medium" | "low"
+    reason: str
+
+
+@dataclass
+class EvaluationResult:
+    """Complete evaluation result with quality assessment and skill decisions."""
+
+    quality: QualityAssessment
+    decisions: list[SkillOperation] = field(default_factory=list)
+
+
+SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "skill_lifecycle",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["create", "update", "skip"],
+                                "description": "Whether to create, update, or skip",
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Skill name",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Skill description",
+                            },
+                            "instructions": {
+                                "type": "string",
+                                "description": "Skill instructions",
+                            },
+                            "trigger_mode": {
+                                "type": "string",
+                                "enum": ["always", "pattern", "intelligent"],
+                                "description": "How this skill should be triggered",
+                            },
+                            "source_confidence": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description": "Confidence in the source material",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Reason for this operation",
+                            },
+                        },
+                        "required": [
+                            "action",
+                            "name",
+                            "description",
+                            "instructions",
+                            "trigger_mode",
+                            "source_confidence",
+                            "reason",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    "description": "List of skill lifecycle operations",
+                },
+            },
+            "required": ["operations"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
+    """Parse a single skill operation dict into SkillOperation."""
+    action = str(item["action"])
+    if action not in ("create", "update", "skip"):
+        raise ValueError(f"invalid action: {action}")
+
+    trigger_mode = str(item["trigger_mode"])
+    if trigger_mode not in ("always", "pattern", "intelligent"):
+        raise ValueError(f"invalid trigger_mode: {trigger_mode}")
+
+    source_confidence = str(item["source_confidence"])
+    if source_confidence not in ("high", "medium", "low"):
+        raise ValueError(f"invalid source_confidence: {source_confidence}")
+
+    return SkillOperation(
+        action=action,
+        name=str(item["name"]),
+        description=str(item["description"]),
+        instructions=str(item["instructions"]),
+        trigger_mode=trigger_mode,
+        source_confidence=source_confidence,
+        reason=str(item["reason"]),
+    )
+
+
+def parse_lifecycle_from_json(content: str) -> list[SkillOperation]:
+    """Parse JSON string from LLM response into list of SkillOperation."""
+    data = json.loads(content)
+    raw_operations = data.get("operations", [])
+    return [parse_skill_operation(item) for item in raw_operations]

@@ -8,7 +8,7 @@ import pytest
 
 from nanobot.config import AppConfig, ModelConfig
 from nanobot.core import BotCore
-from nanobot.evaluator.store import QualityAssessment
+from nanobot.evaluator.store import EvaluationResult, QualityAssessment, SkillOperation
 from nanobot.subagents.manager import SubagentRunResult
 
 
@@ -80,6 +80,7 @@ class TestEvaluatorIntegration:
             has_learnings=False,
             confidence="high",
         )
+        eval_result = EvaluationResult(quality=quality)
         result = SubagentRunResult(
             run_id="test-run",
             success=True,
@@ -87,7 +88,7 @@ class TestEvaluatorIntegration:
             tool_trace=[],
         )
 
-        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=quality) as mock_eval:
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result) as mock_eval:
             await bot._evaluate_turn("telegram:123", "hello", result)
             call_kwargs = mock_eval.call_args
             assert call_kwargs[0][0] == "telegram:123"
@@ -95,6 +96,122 @@ class TestEvaluatorIntegration:
             assert call_kwargs[0][2] == result
             assert call_kwargs[1].get("scratchpad") is None
             assert isinstance(call_kwargs[1].get("active_skills"), list)
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_executes_skill_decisions(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Learned preference",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="create",
+                name="test_skill_pref",
+                description="User prefers X",
+                instructions="Use X by default",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="User explicitly requested X",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            created_skill = bot.skills.get_by_name("test_skill_pref")
+            assert created_skill is not None
+            assert created_skill.description == "User prefers X"
+            assert created_skill.trigger_mode == "intelligent"
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_skips_existing_skill(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Learned preference",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="create",
+                name="duplicate_skill",
+                description="Should not be created",
+                instructions="Should not happen",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="Test duplicate",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        bot.skills.create(
+            name="duplicate_skill",
+            description="Already exists",
+            instructions="Original",
+            trigger_mode="pattern",
+        )
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            existing = bot.skills.get_by_name("duplicate_skill")
+            assert existing is not None
+            assert existing.description == "Already exists"
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_logs_warning_for_missing_update(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Learned preference",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="update",
+                name="nonexistent_skill",
+                description="Cannot update",
+                instructions="Does not exist",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="Test missing update",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
 
     @pytest.mark.asyncio
     async def test_evaluate_turn_swallows_exceptions(self) -> None:

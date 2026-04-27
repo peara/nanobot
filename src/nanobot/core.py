@@ -21,7 +21,7 @@ from nanobot.core_utils import (
     trim_history_by_chars,
     unscoped_chat_id,
 )
-from nanobot.evaluator import LearningEvaluator
+from nanobot.evaluator import EvaluationResult, LearningEvaluator
 from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
@@ -301,11 +301,60 @@ class BotCore:
         scratchpad = self.contexts.get("chat", scope, "scratchpad")
         active_skills = self.skills.list_active()
         try:
-            await self.evaluator.evaluate(
+            result = await self.evaluator.evaluate(
                 scope, user_request, worker_result, scratchpad=scratchpad, active_skills=active_skills
             )
+            self._execute_skill_decisions(scope, result)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Evaluator failed scope=%s", scope)
+
+    def _execute_skill_decisions(self, scope: str, result: EvaluationResult) -> None:
+        """Execute skill decisions from evaluator. Each operation is independent and fault-tolerant."""
+        for op in result.decisions:
+            if op.action == "skip":
+                logger.info("Evaluator skipped skill name=%s reason=%s", op.name, op.reason[:80])
+                continue
+            try:
+                if op.action == "create":
+                    existing = self.skills.get_by_name(op.name)
+                    if existing is not None:
+                        logger.warning("Evaluator tried to create existing skill name=%s, skipping", op.name)
+                        continue
+                    skill = self.skills.create(
+                        name=op.name,
+                        description=op.description,
+                        instructions=op.instructions,
+                        trigger_mode=op.trigger_mode,
+                        is_active=True,
+                    )
+                    if op.trigger_mode == "intelligent" and self.mem0_skill_store:
+                        try:
+                            self.mem0_skill_store.store_skill(skill)
+                        except Exception:  # pylint: disable=broad-except
+                            logger.exception("Failed to sync skill '%s' to mem0", op.name)
+                    logger.info("Evaluator created skill name=%s trigger_mode=%s", op.name, op.trigger_mode)
+                elif op.action == "update":
+                    existing = self.skills.get_by_name(op.name)
+                    if existing is None:
+                        logger.warning("Evaluator tried to update non-existent skill name=%s", op.name)
+                        continue
+                    update_kwargs: dict[str, Any] = {}
+                    if op.description:
+                        update_kwargs["description"] = op.description
+                    if op.instructions:
+                        update_kwargs["instructions"] = op.instructions
+                    if op.trigger_mode:
+                        update_kwargs["trigger_mode"] = op.trigger_mode
+                    updated = self.skills.update(existing.id, **update_kwargs)
+                    if updated and updated.trigger_mode == "intelligent" and self.mem0_skill_store:
+                        try:
+                            self.mem0_skill_store.remove_skill(op.name)
+                            self.mem0_skill_store.store_skill(updated)
+                        except Exception:  # pylint: disable=broad-except
+                            logger.exception("Failed to sync updated skill '%s' to mem0", op.name)
+                    logger.info("Evaluator updated skill name=%s", op.name)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Evaluator skill operation failed action=%s name=%s", op.action, op.name)
 
     async def _dispatch_after_tool_call(self, event: ToolCallEvent) -> None:
         for hook in self.tool_hooks:

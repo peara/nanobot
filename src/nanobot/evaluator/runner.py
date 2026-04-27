@@ -7,9 +7,14 @@ from typing import TYPE_CHECKING, Any
 from nanobot.evaluator.store import (
     LEARNING_EXTRACTION_SCHEMA,
     QUALITY_ASSESSMENT_SCHEMA,
+    SKILL_LIFECYCLE_SCHEMA,
+    EvaluationResult,
     LearningExtraction,
+    LearningItem,
     QualityAssessment,
+    SkillOperation,
     parse_learning_from_json,
+    parse_lifecycle_from_json,
     parse_quality_from_json,
 )
 
@@ -45,17 +50,29 @@ class LearningEvaluator:
         worker_result: SubagentRunResult,
         scratchpad: dict[str, Any] | None = None,
         active_skills: list[Skill] | None = None,
-    ) -> QualityAssessment:
-        """Run full evaluation pipeline. Returns quality, may update skills later."""
+    ) -> EvaluationResult:
+        """Run full evaluation pipeline. Returns quality assessment and skill decisions."""
         quality = await self.assess_quality(scope, user_request, worker_result, scratchpad)
         self._log_quality(scope, quality)
 
-        if quality.has_learnings:
-            extraction = await self.extract_learnings(scope, user_request, worker_result, scratchpad, active_skills)
-            self._log_extraction(scope, extraction)
-            # Phase 3 (skill lifecycle) will be wired here later
+        if not quality.has_learnings:
+            return EvaluationResult(quality=quality)
 
-        return quality
+        extraction = await self.extract_learnings(scope, user_request, worker_result, scratchpad, active_skills)
+        self._log_extraction(scope, extraction)
+
+        if not extraction.learnings:
+            return EvaluationResult(quality=quality)
+
+        # Filter low-confidence learnings — only high/medium warrant skill operations
+        actionable = [item for item in extraction.learnings if item.confidence != "low"]
+        if not actionable:
+            return EvaluationResult(quality=quality)
+
+        decisions = await self._decide_lifecycle(scope, actionable, active_skills or [])
+        self._log_decisions(scope, decisions)
+
+        return EvaluationResult(quality=quality, decisions=decisions)
 
     async def assess_quality(
         self,
@@ -107,6 +124,50 @@ class LearningEvaluator:
         if not content:
             return LearningExtraction(learnings=[])
         return parse_learning_from_json(content)
+
+    async def _decide_lifecycle(
+        self,
+        scope: str,
+        learnings: list[LearningItem],
+        active_skills: list[Skill],
+    ) -> list[SkillOperation]:
+        """Phase 3: Decide what skill operations to perform from extracted learnings."""
+        system_prompt = self._get_prompt("skill_lifecycle", "SKILL_LIFECYCLE_PROMPT")
+        user_message = self._build_lifecycle_input(learnings, active_skills)
+
+        response = await self._llm.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            tools=[],
+            response_format=SKILL_LIFECYCLE_SCHEMA,
+        )
+
+        content = response.get("content") or '{"operations": []}'
+        if not content:
+            return []
+        return parse_lifecycle_from_json(content)
+
+    @staticmethod
+    def _build_lifecycle_input(
+        learnings: list[LearningItem],
+        active_skills: list[Skill],
+    ) -> str:
+        parts = [
+            "Extracted learnings:",
+        ]
+        for item in learnings:
+            parts.append(f"  - category={item.category} direction={item.direction} confidence={item.confidence}")
+            parts.append(f"    observation: {item.observation}")
+            parts.append(f"    evidence: {item.evidence}")
+
+        skills_summary = LearningEvaluator._summarize_active_skills(active_skills)
+        parts.extend(["", "Existing active skills:", skills_summary])
+
+        parts.append("")
+        parts.append("Decide which learnings warrant skill creation or update. Output operations.")
+        return "\n".join(parts)
 
     def _get_prompt(self, key: str, fallback_name: str) -> str:
         try:
@@ -274,4 +335,17 @@ patterns, and constraints that would help future interactions."
                 item.direction,
                 item.confidence,
                 item.observation[:80],
+            )
+
+    def _log_decisions(self, scope: str, decisions: list[SkillOperation]) -> None:
+        if not decisions:
+            return
+        for op in decisions:
+            logger.info(
+                "Skill decision scope=%s action=%s name=%s trigger_mode=%s reason=%s",
+                scope,
+                op.action,
+                op.name,
+                op.trigger_mode,
+                op.reason[:80],
             )

@@ -111,23 +111,26 @@ You will receive the user request, the agent reply, and optionally: run status (
 - 2: Poor - incomplete, significant issues, or missed key requirements
 - 1: Failed - wrong, harmful, off-topic, or completely missed the request
 
-Consider run failures, errors, and repeated tool calls as quality-reducing signals.
+Score quality based on how well the user's request was addressed, regardless of whether learnings exist. A score of 1-2 does NOT mean no learnings — failed attempts often reveal important patterns.
 
 ## When to Set has_learnings = true
 
-Set has_learnings to true when:
+Set has_learnings to true when ANY of these apply:
 - User corrected or clarified the agent's approach
-- Agent discovered a pattern that would help future interactions
-- User stated a preference explicitly
+- Agent discovered a working pattern (even if the overall task failed)
+- User stated a preference explicitly or implicitly
 - Agent encountered a constraint worth remembering
-- Agent repeatedly failed at a task (the failure pattern itself may be worth learning)
-- Tool usage reveals a preference or workflow pattern
+- Agent repeatedly failed at a task with tools (the failure pattern and any partial success are learnings)
+- Tool usage reveals site-specific interaction patterns (selectors, element names, workflows)
+- Agent found a working approach partway through but couldn't complete the full task
 
 Do NOT set has_learnings for:
 - Routine task execution with no new insights
 - User explicitly requested to save/remember something (worker already handled via memory tools)
 - Pure information retrieval with no preference/behavior insight
 - Simple acknowledge/confirm responses
+
+IMPORTANT: Failed tool interactions often contain valuable learnings — which selectors worked, which didn't, what site-specific patterns apply. When in doubt, set has_learnings to true.
 
 ## Output
 
@@ -155,11 +158,18 @@ If existing active skills are listed:
 
 ## What to Extract
 
-Extract learnings ONLY when:
+Extract learnings when:
 - User corrected or clarified the agent's approach
-- User stated a preference explicitly (language, style, format, tool)
-- Agent discovered a successful pattern worth repeating
+- User stated a preference explicitly or implicitly (language, style, format, tool)
+- Agent discovered a successful pattern worth repeating (even in a failed overall task)
+- Agent found site-specific interaction patterns from tool usage (which selectors worked, which didn't, element names, workflows)
 - User described a constraint or requirement
+- Agent repeatedly failed with some approaches but succeeded with others (the working approach is a learning)
+
+ESPECIALLY extract learnings from tool interactions:
+- Which CSS selectors, element names, or targets worked vs. failed
+- Site-specific workflows (e.g., "on site X, use selector Y for search, then click Z")
+- Interaction patterns that could be reused for similar sites or tasks
 
 Do NOT extract when:
 - Routine task execution with no new insights
@@ -170,7 +180,7 @@ Do NOT extract when:
 ## Categories
 
 - user_preference: A preference the user stated or implied (language choice, output format, workflow style)
-- workflow_pattern: A repeatable process or approach that worked well
+- workflow_pattern: A repeatable process or approach that worked — including site-specific interaction patterns discovered through tool usage
 - constraint: A hard rule or limitation the user identified
 
 ## Directions
@@ -193,6 +203,37 @@ If no meaningful learnings exist, return an empty array. Do not force extraction
 
 LEARNING_EXTRACTION_PROMPT_VARIABLES: list[str] = []
 
+SKILL_LIFECYCLE_PROMPT = """You are a skill lifecycle manager. You decide what skill operations to perform based on extracted learnings.
+
+You receive a list of extracted learnings (category, observation, direction, evidence, confidence) and a list of existing active skills.
+
+## Decision Rules
+
+For each learning, decide: "create" (new skill), "update" (existing skill), or "skip" (no action).
+
+- Default trigger_mode to "intelligent" for new skills (semantic matching via vector search)
+- Use "pattern" for specific command triggers (e.g., match on "/test" or "debug this")
+- Use "always" only for critical context that should apply to every turn
+- Be conservative: only create skills for persistent, reusable preferences/workflows/constraints
+- Check existing skills — if a similar skill exists, update it instead of creating a duplicate
+- Skip low-confidence learnings (they are filtered out, but be cautious)
+- Provide a brief reason for each decision
+
+## Output
+
+Provide a JSON object with an "operations" array. Each item has:
+
+- action: "create", "update", or "skip"
+- name: short snake_case identifier (e.g., "user_pref_typescript")
+- description: brief sentence for semantic matching
+- instructions: content to inject when the skill activates
+- trigger_mode: "intelligent" (default), "pattern", or "always"
+- source_confidence: the confidence from the input learning
+- reason: brief explanation of the decision
+"""
+
+SKILL_LIFECYCLE_PROMPT_VARIABLES: list[str] = []
+
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
@@ -205,4 +246,5 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "skill_instructions": (SKILL_INSTRUCTIONS_TEMPLATE, "skill", SKILL_INSTRUCTIONS_VARIABLES),
     "quality_assessment": (QUALITY_ASSESSMENT_PROMPT, "evaluator", QUALITY_ASSESSMENT_PROMPT_VARIABLES),
     "learning_extraction": (LEARNING_EXTRACTION_PROMPT, "evaluator", LEARNING_EXTRACTION_PROMPT_VARIABLES),
+    "skill_lifecycle": (SKILL_LIFECYCLE_PROMPT, "evaluator", SKILL_LIFECYCLE_PROMPT_VARIABLES),
 }

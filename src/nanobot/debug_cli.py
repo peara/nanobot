@@ -8,6 +8,7 @@ from typing import Any
 from nanobot.config import AppConfig, load_config
 from nanobot.hooks import HookDebugCommand, build_default_tool_hooks
 from nanobot.plans import PlanStore
+from nanobot.prompts import PromptStore
 from nanobot.skills import SkillStore, SkillVectorStore
 from nanobot.vector_store import VectorStore
 
@@ -205,7 +206,8 @@ def _show_context(config: AppConfig, scope: str, full: bool, tail: int) -> None:
             "messages": [
                 {
                     "role": "system",
-                    "content": config.system_prompt_template.format(
+                    "content": PromptStore(config.prompt_db_path).render(
+                        "orchestrator_main",
                         assistant_name=config.assistant_name,
                         working_timezone=config.working_timezone,
                         current_time="(debug context time unavailable)",

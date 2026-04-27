@@ -193,5 +193,8 @@ class TestPromptStoreSeedDefaults:
             "scratchpad_next_instruction",
             "scratchpad_user",
             "skill_instructions",
+            "quality_assessment",
+            "learning_extraction",
+            "skill_lifecycle",
         }
         assert names == expected
