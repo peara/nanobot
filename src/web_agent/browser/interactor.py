@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,11 @@ from ..utils import is_selector_target, normalize_text_block, normalize_whitespa
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
+
+logger = logging.getLogger(__name__)
+
+# How long to wait for a new tab/popup after a click before assuming same-page navigation.
+_POPUP_TIMEOUT_MS = 2000
 
 
 class SafeActionError(RuntimeError):
@@ -30,6 +36,9 @@ class BrowserInteractor:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self.page: Page | None = None
+        # Compressed summaries of background tabs (not the active page).
+        # Each entry: {"url": str, "title": str}
+        self._background_tabs: list[dict[str, str]] = []
 
     async def __aenter__(self) -> BrowserInteractor:
         self._playwright = await async_playwright().start()
@@ -112,8 +121,47 @@ class BrowserInteractor:
     async def click(self, target: str) -> str:
         locator = await self.resolve_target(target)
         await self.ensure_safe(locator, target)
-        await locator.click()
-        return f"click:{target}"
+        assert self.page is not None
+        assert self._context is not None
+
+        try:
+            async with self._context.expect_page(timeout=_POPUP_TIMEOUT_MS) as new_page_info:
+                await locator.click()
+            new_page = await new_page_info.value
+            self._background_tabs.append(await self._compress_page(self.page))
+            self.page = new_page
+            self.page.set_default_timeout(12000)
+            await self.page.wait_for_load_state("domcontentloaded", timeout=12000)
+            return f"click:{target} [new tab: {self.page.url}]"
+        except PlaywrightError:
+            await locator.click()
+            return f"click:{target}"
+
+    async def switch_tab(self, index: int) -> str:
+        assert self._context is not None
+        pages = self._context.pages
+        if index < 0 or index >= len(pages):
+            raise LookupError(f"Tab index {index} out of range (0-{len(pages) - 1})")
+        target_page = pages[index]
+        if target_page is self.page:
+            return f"switch_tab:{index} [already active]"
+        assert self.page is not None
+        self._background_tabs.append(await self._compress_page(self.page))
+        self.page = target_page
+        self.page.set_default_timeout(12000)
+        await self.page.bring_to_front()
+        return f"switch_tab:{index} [{self.page.url}]"
+
+    @property
+    def background_tabs(self) -> list[dict[str, str]]:
+        return list(self._background_tabs)
+
+    async def _compress_page(self, page: Page) -> dict[str, str]:
+        try:
+            title = await page.title() if not page.is_closed() else ""
+        except PlaywrightError:
+            title = ""
+        return {"url": page.url, "title": title}
 
     async def type(self, target: str, text: str) -> str:
         locator = await self.resolve_target(target)

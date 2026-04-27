@@ -58,6 +58,7 @@ class WebAgentTool:
         outputs_dir = ensure_outputs_dir()
         stem = build_output_stem(url)
         screenshot_path = outputs_dir / f"{stem}.png"
+        background_tabs: list[dict[str, str]] = []
         try:
             async with BrowserInteractor(headless=self.headless) as browser:
                 await browser.open(url)
@@ -79,6 +80,8 @@ class WebAgentTool:
                             network_idle=bool(step.get("network_idle")),
                         )
                         actions_taken.append("wait_for")
+                    elif action_name == "switch_tab":
+                        actions_taken.append(await browser.switch_tab(step["index"]))
                     elif action_name == "snapshot":
                         actions_taken.append("snapshot")
                     elif action_name == "screenshot":
@@ -92,7 +95,9 @@ class WebAgentTool:
                 if expansion_actions:
                     snapshots.append(asdict(await browser.snapshot()))
                 html = await browser.extract_html()
+                final_url = browser.page.url if browser.page else url
                 title = await browser.page.title() if browser.page else url
+                background_tabs = browser.background_tabs
                 await browser.screenshot(screenshot_path)
         except BrowserUnavailableError as exc:
             return {
@@ -100,22 +105,29 @@ class WebAgentTool:
                 "page_type": "unknown",
                 "title": "",
                 "content": "",
-                "visible_text": "",
                 "links": [],
                 "items": [],
                 "actions_taken": actions_taken,
                 "quality_score": 0.0,
                 "strategy": "playwright",
                 "fallback_used": True,
-                "flow_steps": [],
-                "markdown": "",
-                "interaction_snapshots": snapshots,
                 "screenshot_path": None,
+                "background_tabs": [],
                 "error": f"browser_unavailable: {exc}",
             }
-        flow = await self.run_read_flow(url, starting_html=html, starting_title=title, force_browser_fetch=False)
+        flow = await self.run_read_flow(final_url, starting_html=html, starting_title=title, force_browser_fetch=False)
+        # Build compact step summary and final interactive elements from snapshots
+        # instead of sending full interaction_snapshots (which bloats the LLM context)
+        final_snapshot = snapshots[-1] if snapshots else {}
+        compact_steps: list[dict[str, str]] = []
+        for snap in snapshots:
+            compact_steps.append({"url": snap.get("url", ""), "title": snap.get("title", "")})
         payload = self._final_payload(flow, actions_taken=actions_taken)
-        payload["interaction_snapshots"] = snapshots
+        payload["step_urls"] = compact_steps
+        payload["buttons"] = final_snapshot.get("buttons", [])
+        payload["inputs"] = final_snapshot.get("inputs", [])
+        payload["candidate_actions"] = final_snapshot.get("candidate_actions", [])
+        payload["background_tabs"] = background_tabs
         payload["screenshot_path"] = str(screenshot_path)
         return payload
 
@@ -298,11 +310,15 @@ class WebAgentTool:
             result.markdown.splitlines()[0].lstrip("# ").strip() if result else flow.fetch.title or flow.fetch.final_url
         )
         content = result.content if result else ""
-        if result:
-            markdown = result.markdown
-        else:
-            markdown = f"# {title}\n\n## Content\n{content.strip()}".strip()
         ok, error, message, warnings = self._evaluate_read_result(flow, result, title, content)
+
+        # Trimmed: removed markdown (duplicates content), flow_steps (debugging trace),
+        # and visible_text (duplicates content) from payload to reduce LLM context bloat.
+        # Re-enable if needed for debugging.
+        _markdown = result.markdown if result else f"# {title}\n\n## Content\n{content.strip()}".strip()
+        _flow_steps = flow.steps
+        _visible_text = result.visible_text if result else ""
+
         return {
             "ok": ok,
             "error": error,
@@ -315,15 +331,19 @@ class WebAgentTool:
             "page_type": result.page_type if result else flow.page_type,
             "title": title,
             "content": content,
-            "visible_text": result.visible_text if result else "",
+            # "visible_text": _visible_text,  # trimmed: duplicates content
             "links": result.links if result else [],
             "items": result.items if result else [],
             "actions_taken": actions_taken,
             "quality_score": result.quality_score if result else 0.0,
             "strategy": result.strategy if result else "best_effort",
             "fallback_used": flow.fallback_used,
-            "flow_steps": flow.steps,
-            "markdown": markdown,
+            # "flow_steps": _flow_steps,  # trimmed: internal pipeline trace, not useful for LLM
+            # "markdown": _markdown,  # trimmed: duplicates content
+            # Saved for debug: uncomment markdown and flow_steps if needed
+            "_markdown": _markdown,
+            "_flow_steps": _flow_steps,
+            "_visible_text": _visible_text,
         }
 
     @staticmethod
@@ -438,7 +458,7 @@ def save_result_payload(command: str, url: str, payload: dict[str, Any]) -> dict
     stem = build_output_stem(url)
     json_path = save_json_output(payload, stem=f"{stem}-{command}", output_dir=outputs_dir)
     markdown_path = outputs_dir / f"{stem}-{command}.md"
-    markdown_path.write_text(payload.get("markdown", ""), encoding="utf-8")
+    markdown_path.write_text(payload.get("_markdown", payload.get("markdown", "")), encoding="utf-8")
     return {"json_path": str(json_path), "markdown_path": str(markdown_path)}
 
 

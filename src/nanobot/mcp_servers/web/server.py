@@ -186,11 +186,12 @@ async def interact_page(
     Steps format: [{"action": "...", ...fields...}]
     Each action requires specific fields:
 
-    - click:  {"action": "click", "target": "..."}
+    - click:  {"action": "click", "target": "..."} — clicks an element; auto-detects new tabs
     - type:   {"action": "type", "target": "...", "text": "..."}
     - select: {"action": "select", "target": "...", "value": "..."}
     - scroll: {"action": "scroll", "amount": 500} OR {"action": "scroll", "until_text": "..."}
     - wait_for: {"action": "wait_for", "selector": "..."} OR {"action": "wait_for", "text": "..."}
+    - switch_tab: {"action": "switch_tab", "index": N} — switch to background tab by index
 
     "target" can be:
     - CSS selector: "#search", ".btn-primary", "input[name='q']"
@@ -198,8 +199,9 @@ async def interact_page(
     - Placeholder text from snapshot: "探す"
     - Input name attribute: use CSS "[name='p']" or the placeholder text
 
-    Example steps:
-    [{"action": "type", "target": "探す", "text": "search query"}, {"action": "click", "target": "検索"}]
+    When a click opens a new tab (e.g. target="_blank"), the browser automatically
+    switches to it and the old tab is saved in background_tabs. Use switch_tab to
+    return to a previous tab (index 0 = first background tab).
 
     Use snapshot_page first to discover available targets from buttons[], inputs[], and candidate_actions.
     """
