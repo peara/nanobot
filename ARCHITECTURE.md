@@ -43,7 +43,7 @@ flowchart LR
 
     subgraph sidecar["Sidecars"]
         SCH[Scheduler]
-        BR[Browser — Playwright MCP]
+        BR[Browser — Playwright + multi-tab]
     end
 
     TG --> O
@@ -67,7 +67,7 @@ flowchart LR
 - **Scratchpad + context policy**: bounded chat history, explicit working notes, and rules for what gets promoted to long-term memory or kept only in-session.
 - **Two memory modes**: **SQLite** for **exact** replay and structured data (messages, scheduler rows, anything that must not be fuzzy); **mem0** (via the memory MCP) for **associative** long-term recall.
 - **Scheduler** alongside the agent: time-based nudges and jobs without blocking the chat loop.
-- **Browser** as a first-class capability through **Playwright MCP**, not as “random shell access.”
+- **Browser** as a first-class capability through **Playwright MCP with multi-tab support** — clicks that open new tabs are auto-detected and switched to; background tabs (url+title) are tracked for return navigation.
 
 ---
 
@@ -91,7 +91,7 @@ Efficiency means **aggressive budgeting** (what goes into the prompt, how often,
 | **Channels** | Telegram (extensible pattern) | `Channel` + `set_handler` → `BotCore.on_incoming` |
 | **Scratchpad** | Working memory in context store | Plan/scratchpad commands; injected as system-side context |
 | **MCP hub** | Tools (browser, memory, …) | Namespaced tools; `McpHub.call_tool` in the agent loop |
-| **Browser** | Playwright MCP | Browse hooks record traces into context |
+| **Browser** | Playwright MCP + multi-tab | Auto-popup detection; `switch_tab` for background tabs; browse hooks record traces |
 | **Scheduler** | Due tasks → core callback | `SchedulerStore` + `SchedulerRunner` |
 | **SQLite** | `ConversationStore`, `ContextStore`, scheduler | Exact history and blobs |
 | **mem0** | Long-term memory MCP | Optional; configured via mem0 config + MCP server |
@@ -142,7 +142,7 @@ flowchart TD
 3. **`_process`** — Persists user message, clears scratchpad, builds messages with history.
 4. **`SubagentManager.spawn`** — Creates `SubagentRun` record in SQLite (`subagent_runs` table).
 5. **`SubagentManager.execute`** — Calls `AgentRun.run()` with messages and tools, records completion.
-6. **`AgentRun.run`** — LLM chat loop; tool calls through `ToolRegistry.call()` (records to `tool_calls` with `run_id`).
+6. **`AgentRun.run`** — LLM chat loop; tool calls through `ToolRegistry.call()` (records to `tool_calls` with `run_id`). When scratchpad is finalized, the loop breaks and makes one explicit no-tools LLM call with the `finalize_response` prompt to produce the final answer.
 7. **After turn** — Persist assistant message, update context, send reply via `_send`.
 
 **Slash commands bypass SubagentManager** — they execute directly without creating run records.
@@ -172,6 +172,26 @@ flowchart TD
 **Hook event fields** (`after_tool_call`): `scope`, `call_id`, `tool_name`, `args`, `result`, `result_preview`, `ok`, `error`, `at`.
 
 **Policy**: Hook failures are isolated; a failing hook must not break the tool loop or the user turn.
+
+### Agent loop exit paths (`AgentRun.run`)
+
+The tool-calling loop has three exit conditions:
+
+1. **Implicit text response** — Model returns no `tool_calls`; loop exits with the text reply.
+2. **Scratchpad finalize** — When `scratchpad_write(mode=finalize)` is called, the loop breaks immediately and makes one explicit LLM call with **no tools** and the `finalize_response` prompt (goal + summary from scratchpad state). The model must return a plain text answer.
+3. **Abort** — `MAX_TOOL_CALLS_PER_TURN` (30) or `MAX_IDENTICAL_TOOL_CALL_REPEATS` (3) exceeded returns a fixed error reply.
+
+The finalize path is critical for local/smaller models: without an explicit no-tools call, models tend to hallucinate `scratchpad_write(init)` after finalize, which wipes all accumulated state.
+
+### Browser multi-tab (`web_agent/browser/interactor.py`)
+
+`BrowserInteractor.click()` uses `context.expect_page()` to detect new tabs opened by `target="_blank"` links. When detected:
+
+1. The old page is compressed to `{url, title}` and stored in `_background_tabs`.
+2. `self.page` switches to the new tab automatically.
+3. `switch_tab(index)` returns to a background tab by `context.pages` index.
+
+The `interact_page` MCP tool reports `background_tabs` (url+title for each) and `step_urls` (compact step summary) so the LLM knows what tabs are available.
 
 ### Future hooks (suggested, not contracted)
 

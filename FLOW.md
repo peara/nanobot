@@ -49,6 +49,21 @@ Current loop:
 3. When no more tool calls:
    - Return assistant text reply + in-memory `tool_trace`.
 
+**Scratchpad finalize path:**
+
+When `scratchpad_write(mode=finalize)` is called, the loop does **not** continue to another round. Instead:
+
+1. Build a `finalize_response` prompt from the scratchpad state (goal, context, known_facts, tool_journal).
+2. Call the model **with no tools** (`tools=[]`) so it can only produce a text response.
+3. Return that text as the final reply.
+
+This prevents local/smaller models from hallucinating `scratchpad_write(init)` after finalize, which would wipe all accumulated context.
+
+**Abort paths:**
+
+- `MAX_TOOL_CALLS_PER_TURN` (30) exceeded → fixed error reply.
+- `MAX_IDENTICAL_TOOL_CALL_REPEATS` (3) exceeded → fixed error reply.
+
 Important behavior:
 
 - Tool outputs are only in-memory for the current loop iteration.
@@ -66,6 +81,17 @@ From MCP hub:
   - full YAML accessibility snapshot
 - These payloads can be very large (tens to hundreds of KB) and are appended as `role="tool"` content for the current turn.
 
+**Multi-tab support:**
+
+When a click opens a new tab (e.g. `target="_blank"`):
+
+- `BrowserInteractor.click()` uses `context.expect_page()` to detect the popup.
+- Old page is compressed to `{url, title}` and saved in `background_tabs`.
+- `self.page` switches to the new tab automatically.
+- The `interact_page` response includes `background_tabs` (list of compressed tab summaries) and `step_urls` (compact URL+title per navigation step).
+
+The `switch_tab` action lets the LLM return to a background tab by index.
+
 Implication:
 
 - Model can become context-heavy/noisy within the current loop.
@@ -79,6 +105,14 @@ Current scratchpad design:
 - Storage key: `contexts(scope_type="chat", key="scratchpad")`
 - Injection: `_scratchpad_system_message(scope)` is added to prompt before history.
 - Reset behavior: `/reset` clears chat history and sets scratchpad empty.
+
+**Modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `init` | Resets scratchpad to empty state — goal and context only. Clears all accumulated facts and tool journal. |
+| `append` | Adds to scratchpad without reset. Preserves existing state. |
+| `finalize` | Marks scratchpad as finalized. Triggers explicit no-tools LLM call with `finalize_response` prompt to produce the final answer. Loop exits immediately after. |
 
 Current limitation:
 

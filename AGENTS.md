@@ -17,17 +17,21 @@ nanobot/
 │   ├── config.py          # Config loading (load_config, AppConfig)
 │   ├── mcp_hub.py         # MCP server connections
 │   ├── memory.py          # SQLite conversation history
-│   ├── agent_run.py       # AgentRun - LLM chat loop with tools
+│   ├── agent_run.py       # AgentRun - LLM chat loop with tools + finalize path
 │   ├── subagents/         # SubagentManager + SubagentRunStore
 │   ├── channels/          # Telegram/GitHub channel implementations
 │   ├── mcp_servers/       # timer, memory, scheduler, web MCP servers
 │   ├── core_commands/     # Built-in commands (session, status, reset)
 │   ├── plans/             # Plan storage and management
 │   └── tools/             # ToolRegistry + ToolStatsStore
+├── src/web_agent/         # Web browsing agent (Playwright-based)
+│   ├── browser/           # BrowserInteractor - page interaction, multi-tab, snapshot
+│   ├── service.py         # WebAgentTool - read/interact web pages
+│   └── ...                # classifiers, extractors, fetchers, scorers
 ├── tests/                 # Pytest tests (mirrors src structure)
 │   ├── agent_run/         # Tests for agent_run.py
 │   ├── core_commands/     # Tests for core_commands/
-│   ├── mcp_servers/       # Tests for mcp_servers/
+│   ├── mcp_servers/       # Tests for mcp_servers/ (incl. test_interactor_tabs.py)
 │   ├── plans/             # Tests for plans/
 │   ├── scheduler/         # Tests for scheduler_store.py
 │   ├── subagents/         # Tests for subagents/
@@ -43,7 +47,10 @@ nanobot/
 | Add MCP tool | `src/nanobot/mcp_servers/` | Create server.py in subpackage |
 | Add built-in command | `src/nanobot/core_commands/commands/` | Register in command_manager.py |
 | Modify message flow | `src/nanobot/core.py` | `_process()`, SubagentManager |
-| Modify agent loop | `src/nanobot/agent_run.py` | `AgentRun.run()` - tool calling |
+| Modify agent loop | `src/nanobot/agent_run.py` | `AgentRun.run()` - tool calling, finalize exit path |
+| Modify scratchpad finalize | `src/nanobot/agent_run.py` | `_finalize_response_message()` builds no-tools prompt |
+| Add browser interaction | `src/web_agent/browser/interactor.py` | `BrowserInteractor` - click, switch_tab, multi-tab |
+| Add web read/interact flow | `src/web_agent/service.py` | `WebAgentTool` - interact_page, read flow |
 | Add run tracking | `src/nanobot/subagents/` | SubagentManager, SubagentRunStore |
 | Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
 | Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |

@@ -13,7 +13,7 @@ Minimal personal assistant bot with:
 
 - `nanobot.core` - BotCore orchestrator: message queue, command dispatch, SubagentManager integration
 - `nanobot.subagents` - SubagentManager (spawn/execute) + SubagentRunStore (run tracking)
-- `nanobot.agent_run` - AgentRun: LLM chat loop with tool calling and scratchpad protocol
+- `nanobot.agent_run` - AgentRun: LLM chat loop with tool calling, scratchpad protocol, and finalize exit path
 - `nanobot.channels` - Channel abstraction (`Channel`) + Telegram implementation
 - `nanobot.tools` - ToolRegistry + McpToolSource + ToolStatsStore (tool call statistics)
 - `nanobot.mcp_hub` - Connects to configured MCP servers and routes tool calls
@@ -154,6 +154,30 @@ Persistence notes:
 - Browser profile, cookies, login state, and history are kept in `./data/playwright/profile`.
 - Session artifacts are saved in `./data/playwright/output`.
 - Do not use `--isolated` if you want profile/history to persist between runs.
+
+## Web agent (built-in browser interaction)
+
+The web agent (`src/web_agent/`) provides a built-in `interact_page` MCP tool for structured page interaction with multi-tab support. It wraps `BrowserInteractor` for Playwright-based navigation, snapshot, and extraction.
+
+### Multi-tab support
+
+When a click opens a new tab (e.g., `target="_blank"`):
+
+- The browser auto-detects the popup via `context.expect_page()`.
+- The old tab is compressed to `{url, title}` and saved in `background_tabs`.
+- Active page switches to the new tab.
+- `switch_tab(index)` action lets the LLM return to a background tab.
+
+Actions available from `interact_page` steps:
+
+| Action | Fields | Notes |
+|--------|--------|-------|
+| `click` | `target` | Auto-detects new tabs |
+| `type` | `target`, `text` | |
+| `select` | `target`, `value` | |
+| `scroll` | `amount` or `until_text` | |
+| `wait_for` | `selector` or `text` | |
+| `switch_tab` | `index` | Return to a background tab by index |
 
 ## Memory (mem0 OSS)
 
