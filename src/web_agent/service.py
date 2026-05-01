@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from .cache import Cache
 from .config import DEFAULT_QUALITY_THRESHOLD
 from .dependencies import INTERACT_REQUIRED, READ_REQUIRED, SNAPSHOT_REQUIRED, missing_dependencies
 from .models import FetchResult, FlowState
@@ -15,10 +16,82 @@ from .output_utils import build_output_stem, ensure_outputs_dir, save_json_outpu
 from .utils import extract_title_from_html, word_count
 
 
+class DomainChromeCache:
+    """Per-domain cache of navigation chrome (repeated items/links).
+
+    On first call to a domain, all items/links are stored as the chrome baseline.
+    On subsequent calls, items/links matching the baseline are split out as "chrome"
+    and excluded from the main payload (kept in debug fields for recovery).
+    """
+
+    def __init__(self, cache: Cache | None = None) -> None:
+        self._cache = cache if cache is not None else Cache(max_entries=50)
+
+    @staticmethod
+    def domain_from_url(url: str) -> str:
+        parsed = urlparse(url)
+        return parsed.netloc.lower()
+
+    def split_chrome(
+        self, domain: str, items: list[dict], links: list[dict]
+    ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+        """Split items/links into (content_items, chrome_items, content_links, chrome_links).
+
+        First call for a domain stores the baseline and returns everything as content.
+        Subsequent calls split matching entries into chrome.
+        """
+        baseline = self._cache.get(domain)
+        if baseline is None:
+            self._cache.set(domain, {"items": list(items), "links": list(links)})
+            return items, [], links, []
+
+        baseline_item_keys = {(i.get("title", ""), i.get("link", "")) for i in baseline["items"]}
+        baseline_link_keys = {(lk.get("text", ""), lk.get("href", "")) for lk in baseline["links"]}
+
+        content_items: list[dict] = []
+        chrome_items: list[dict] = []
+        for item in items:
+            key = (item.get("title", ""), item.get("link", ""))
+            if key in baseline_item_keys:
+                chrome_items.append(item)
+            else:
+                content_items.append(item)
+
+        content_links: list[dict] = []
+        chrome_links: list[dict] = []
+        for link in links:
+            key = (link.get("text", ""), link.get("href", ""))
+            if key in baseline_link_keys:
+                chrome_links.append(link)
+            else:
+                content_links.append(link)
+
+        return content_items, chrome_items, content_links, chrome_links
+
+    def get_baseline(self, domain: str) -> dict[str, list] | None:
+        return self._cache.get(domain)
+
+    def clear(self, domain: str | None = None) -> None:
+        if domain is None:
+            self._cache.clear()
+        else:
+            self._cache.delete(domain)
+
+    @property
+    def cached_domains(self) -> list[str]:
+        return self._cache.keys()
+
+
 class WebAgentTool:
-    def __init__(self, quality_threshold: float = DEFAULT_QUALITY_THRESHOLD, headless: bool = True):
+    def __init__(
+        self,
+        quality_threshold: float = DEFAULT_QUALITY_THRESHOLD,
+        headless: bool = True,
+        chrome_cache: DomainChromeCache | None = None,
+    ) -> None:
         self.quality_threshold = quality_threshold
         self.headless = headless
+        self.chrome_cache = chrome_cache
 
     async def read(self, url: str) -> dict[str, Any]:
         if missing := missing_dependencies(READ_REQUIRED):
@@ -312,6 +385,9 @@ class WebAgentTool:
         content = result.content if result else ""
         ok, error, message, warnings = self._evaluate_read_result(flow, result, title, content)
 
+        all_items = result.items if result else []
+        all_links = result.links if result else []
+
         # Trimmed: removed markdown (duplicates content), flow_steps (debugging trace),
         # and visible_text (duplicates content) from payload to reduce LLM context bloat.
         # Re-enable if needed for debugging.
@@ -319,7 +395,26 @@ class WebAgentTool:
         _flow_steps = flow.steps
         _visible_text = result.visible_text if result else ""
 
-        return {
+        # Domain chrome dedup: split repeated nav/header items and links
+        result_items: list[dict] = all_items
+        result_links: list[dict] = all_links
+        chrome_omitted: dict[str, Any] | None = None
+        if self.chrome_cache and result:
+            domain = self.chrome_cache.domain_from_url(flow.fetch.final_url)
+            content_items, chrome_items, content_links, chrome_links = self.chrome_cache.split_chrome(
+                domain, all_items, all_links
+            )
+            if chrome_items or chrome_links:
+                chrome_omitted = {
+                    "items": len(chrome_items),
+                    "links": len(chrome_links),
+                    "domain": domain,
+                    "retrieve_with": "web__domain_chrome",
+                }
+                result_items = content_items
+                result_links = content_links
+
+        payload: dict[str, Any] = {
             "ok": ok,
             "error": error,
             "message": message,
@@ -331,20 +426,21 @@ class WebAgentTool:
             "page_type": result.page_type if result else flow.page_type,
             "title": title,
             "content": content,
-            # "visible_text": _visible_text,  # trimmed: duplicates content
-            "links": result.links if result else [],
-            "items": result.items if result else [],
+            "links": result_links,
+            "items": result_items,
             "actions_taken": actions_taken,
             "quality_score": result.quality_score if result else 0.0,
             "strategy": result.strategy if result else "best_effort",
             "fallback_used": flow.fallback_used,
-            # "flow_steps": _flow_steps,  # trimmed: internal pipeline trace, not useful for LLM
-            # "markdown": _markdown,  # trimmed: duplicates content
-            # Saved for debug: uncomment markdown and flow_steps if needed
             "_markdown": _markdown,
             "_flow_steps": _flow_steps,
             "_visible_text": _visible_text,
+            "_items_all": all_items,
+            "_links_all": all_links,
         }
+        if chrome_omitted is not None:
+            payload["chrome_omitted"] = chrome_omitted
+        return payload
 
     @staticmethod
     def _missing_dependency_payload(operation: str, url: str, missing: list[str]) -> dict[str, Any]:

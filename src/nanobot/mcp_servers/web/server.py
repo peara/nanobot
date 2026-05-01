@@ -6,15 +6,18 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from web_agent.cache import Cache
 from web_agent.config import DEFAULT_QUALITY_THRESHOLD
 from web_agent.dependencies import capabilities
 from web_agent.search import search_google
 from web_agent.search import search_web as search_web_impl
-from web_agent.service import WebAgentTool, save_result_payload
+from web_agent.service import DomainChromeCache, WebAgentTool, save_result_payload
 
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("nanobot-web")
+
+_chrome_cache = DomainChromeCache(cache=Cache(max_entries=50))
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -47,14 +50,17 @@ def _build_tool(*, quality_threshold: float | None, headless: bool | None) -> We
     return WebAgentTool(
         quality_threshold=quality_threshold if quality_threshold is not None else _default_quality_threshold(),
         headless=_default_headless() if headless is None else headless,
+        chrome_cache=_chrome_cache,
     )
 
 
-def _normalize_payload(payload: Any) -> dict[str, Any]:
+def _normalize_payload(payload: Any, *, strip_debug: bool = False) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"ok": True, "result": payload}
     normalized = dict(payload)
     normalized.setdefault("ok", "error" not in normalized)
+    if strip_debug:
+        normalized = {k: v for k, v in normalized.items() if not k.startswith("_")}
     return normalized
 
 
@@ -143,12 +149,9 @@ async def read_page(
     try:
         tool = _build_tool(quality_threshold=quality_threshold, headless=headless)
         payload = _normalize_payload(await tool.read(url))
-        return _attach_saved_outputs(
-            payload,
-            operation="read",
-            url=url,
-            save_outputs=_default_save_outputs() if save_outputs is None else save_outputs,
-        )
+        do_save = _default_save_outputs() if save_outputs is None else save_outputs
+        payload = _attach_saved_outputs(payload, operation="read", url=url, save_outputs=do_save)
+        return _normalize_payload(payload, strip_debug=True)
     except Exception as exc:  # pylint: disable=broad-except
         return _failure_payload("read", url, exc)
 
@@ -208,14 +211,39 @@ async def interact_page(
     try:
         tool = _build_tool(quality_threshold=quality_threshold, headless=headless)
         payload = _normalize_payload(await tool.interact(url, steps=steps))
-        return _attach_saved_outputs(
-            payload,
-            operation="interact",
-            url=url,
-            save_outputs=_default_save_outputs() if save_outputs is None else save_outputs,
-        )
+        do_save = _default_save_outputs() if save_outputs is None else save_outputs
+        payload = _attach_saved_outputs(payload, operation="interact", url=url, save_outputs=do_save)
+        return _normalize_payload(payload, strip_debug=True)
     except Exception as exc:  # pylint: disable=broad-except
         return _failure_payload("interact", url, exc)
+
+
+@mcp.tool()
+def domain_chrome(domain: str) -> dict[str, Any]:
+    """Retrieve the stored navigation chrome (header items and links) for a domain.
+
+    When web tools detect repeated navigation elements across calls to the same domain,
+    they are removed from the main payload and noted in 'chrome_omitted'. Use this tool
+    to retrieve them if needed (e.g., to navigate, log in, or browse categories).
+
+    Args:
+        domain: The domain to retrieve chrome for (e.g. "auctions.yahoo.co.jp").
+    """
+    baseline = _chrome_cache.get_baseline(domain)
+    if baseline is None:
+        return {
+            "ok": False,
+            "domain": domain,
+            "error": "not_found",
+            "message": f"No chrome baseline stored for domain '{domain}'. "
+            f"Cached domains: {_chrome_cache.cached_domains}",
+        }
+    return {
+        "ok": True,
+        "domain": domain,
+        "items": baseline["items"],
+        "links": baseline["links"],
+    }
 
 
 if __name__ == "__main__":
