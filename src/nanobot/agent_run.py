@@ -67,6 +67,30 @@ def trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
     return [*messages[:prefix_end], *messages[last_assistant_idx:]]
 
 
+def _normalize_roles(messages: list[dict]) -> list[dict]:
+    """Merge consecutive same-role messages.
+
+    Some models may produce consecutive user/user or assistant/assistant
+    messages during message construction. This normalizes them by merging
+    content, keeping the structure semantically correct.
+    """
+    if not messages:
+        return messages
+    normalized: list[dict] = [messages[0]]
+    for msg in messages[1:]:
+        prev = normalized[-1]
+        prev_role = str(prev.get("role", ""))
+        cur_role = str(msg.get("role", ""))
+        if prev_role == cur_role and prev_role not in ("system", "tool"):
+            prev_content = prev.get("content") or ""
+            cur_content = msg.get("content") or ""
+            merged_content = "\n\n".join(part for part in [prev_content, cur_content] if part)
+            normalized[-1] = {**prev, "content": merged_content}
+        else:
+            normalized.append(msg)
+    return normalized
+
+
 def prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
     system_contents: list[str] = []
     non_system: list[dict] = []
@@ -81,6 +105,7 @@ def prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
                 system_contents.append(text)
             continue
         non_system.append(message)
+    non_system = _normalize_roles(non_system)
     if not system_contents:
         return non_system
     merged_system = {"role": "system", "content": "\n\n".join(system_contents)}
@@ -273,7 +298,8 @@ class AgentRun:
                 include_scratchpad_prompt = True
             elif round_finalized_scratchpad:
                 finalize_msg = _finalize_response_message(self._host, scope_for_tools)
-                to_send = messages + ([finalize_msg] if finalize_msg else [])
+                trimmed = trim_to_last_tool_round(messages)
+                to_send = trimmed + ([finalize_msg] if finalize_msg else [])
                 prepared_messages = prepare_messages_for_chat(to_send)
                 final_message = await self._host.llm.chat(
                     messages=prepared_messages,

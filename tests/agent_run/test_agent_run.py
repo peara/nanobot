@@ -9,6 +9,7 @@ from nanobot.agent_run import (
     REPEATED_TOOL_CALL_ABORT_REPLY,
     TOOL_CALL_LIMIT_ABORT_REPLY,
     AgentRun,
+    _normalize_roles,
     prepare_messages_for_chat,
 )
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
@@ -139,6 +140,91 @@ def test_prepare_messages_for_chat_merges_system_roles() -> None:
     assert merged[0]["role"] == "system"
     assert merged[0]["content"] == "A\n\nB"
     assert merged[1] == {"role": "user", "content": "hi"}
+
+
+def test_normalize_roles_merges_consecutive_user_messages() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "world"},
+        ]
+    )
+    assert len(result) == 1
+    assert result[0]["role"] == "user"
+    assert result[0]["content"] == "hello\n\nworld"
+
+
+def test_normalize_roles_merges_consecutive_assistant_messages() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "assistant", "content": "part 1"},
+            {"role": "assistant", "content": "part 2"},
+        ]
+    )
+    assert len(result) == 1
+    assert result[0]["role"] == "assistant"
+    assert result[0]["content"] == "part 1\n\npart 2"
+
+
+def test_normalize_roles_does_not_merge_tool_messages() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "tool", "tool_call_id": "c1", "content": "result1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "result2"},
+        ]
+    )
+    assert len(result) == 2
+
+
+def test_normalize_roles_does_not_merge_across_alternation() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+        ]
+    )
+    assert len(result) == 3
+
+
+def test_normalize_roles_preserves_tool_calls_on_assistant_merge() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+    assert len(result) == 1
+    assert result[0]["tool_calls"] == [{"id": "c1"}]
+    assert result[0]["content"] == "done"
+
+
+def test_normalize_roles_empty_and_none_content_merged() -> None:
+    result = _normalize_roles(
+        [
+            {"role": "user", "content": ""},
+            {"role": "user", "content": "actual"},
+            {"role": "user", "content": None},
+            {"role": "user", "content": "more"},
+        ]
+    )
+    assert len(result) == 1
+    assert result[0]["content"] == "actual\n\nmore"
+
+
+def test_prepare_messages_for_chat_normalizes_non_system_roles() -> None:
+    merged = prepare_messages_for_chat(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg1"},
+            {"role": "user", "content": "msg2"},
+            {"role": "assistant", "content": "reply"},
+        ]
+    )
+    assert len(merged) == 3
+    assert merged[0]["role"] == "system"
+    assert merged[1] == {"role": "user", "content": "msg1\n\nmsg2"}
+    assert merged[2] == {"role": "assistant", "content": "reply"}
 
 
 def test_agent_run_without_tools_returns_llm_content() -> None:
