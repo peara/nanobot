@@ -27,6 +27,29 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
 )
 
 
+def _tool_call_limit_finalize_message(host: Any, scope: str) -> dict[str, str] | None:
+    scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
+    goal = str(scratchpad.get("goal", ""))
+    context = str(scratchpad.get("context", ""))
+    current_step = str(scratchpad.get("current_step", ""))
+    known_facts = scratchpad.get("known_facts", [])
+    tool_journal = scratchpad.get("tool_journal", [])
+    summary_parts: list[str] = []
+    if context:
+        summary_parts.append(context)
+    if current_step:
+        summary_parts.append(f"Current step: {current_step}")
+    if known_facts:
+        facts_text = "\n".join(f"- {f}" for f in known_facts[:15])
+        summary_parts.append(f"Key findings:\n{facts_text}")
+    if tool_journal:
+        journal_text = "\n".join(f"- {j}" for j in tool_journal[:10])
+        summary_parts.append(f"Actions taken:\n{journal_text}")
+    summary = "\n\n".join(summary_parts) if summary_parts else "No partial results available."
+    content = host.prompts.render("tool_call_limit_finalize", goal=goal, summary=summary)
+    return {"role": "user", "content": content}
+
+
 def _finalize_response_message(host: Any, scope: str) -> dict[str, str] | None:
     scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
     goal = str(scratchpad.get("goal", ""))
@@ -220,7 +243,16 @@ class AgentRun:
                         scope_for_tools,
                         total_tool_calls,
                     )
-                    return TOOL_CALL_LIMIT_ABORT_REPLY, tool_trace
+                    finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools)
+                    trimmed = trim_to_last_tool_round(messages)
+                    to_send = trimmed + ([finalize_msg] if finalize_msg else [])
+                    prepared_messages = prepare_messages_for_chat(to_send)
+                    final_message = await self._host.llm.chat(
+                        messages=prepared_messages,
+                        tools=[],
+                    )
+                    reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
+                    return reply, tool_trace
                 fn_name = tool_call["function"]["name"]
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)

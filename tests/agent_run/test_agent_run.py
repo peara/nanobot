@@ -7,7 +7,6 @@ from typing import Any
 
 from nanobot.agent_run import (
     REPEATED_TOOL_CALL_ABORT_REPLY,
-    TOOL_CALL_LIMIT_ABORT_REPLY,
     AgentRun,
     _normalize_roles,
     prepare_messages_for_chat,
@@ -395,8 +394,8 @@ def test_agent_run_aborts_on_repeated_identical_tool_calls() -> None:
 
 
 def test_agent_run_aborts_after_tool_call_limit() -> None:
-    replies = []
-    for idx in range(35):
+    replies: list[dict[str, Any]] = []
+    for idx in range(31):
         replies.append(
             {
                 "content": "",
@@ -412,9 +411,20 @@ def test_agent_run_aborts_after_tool_call_limit() -> None:
                 ],
             }
         )
-    llm = _FakeLlm(replies)
+    replies.append({"content": "Partial progress: I checked several timezones.", "tool_calls": None})
+    llm = _RecordingFakeLlm(replies)
     host = _FakeHost(llm)
     host.tools.register(_FakeTool("timer__time_now"))
+    host.contexts.put(
+        "chat",
+        "telegram:1",
+        "scratchpad",
+        {
+            "goal": "Check timezones",
+            "known_facts": ["Time in UTC+0 is noon"],
+            "tool_journal": ["called timer__time_now 30 times"],
+        },
+    )
     run = AgentRun(host)
 
     async def _go() -> None:
@@ -423,10 +433,15 @@ def test_agent_run_aborts_after_tool_call_limit() -> None:
             messages=[{"role": "user", "content": "loop tools"}],
             tools=[{"type": "function", "function": {"name": "timer__time_now"}}],
         )
-        assert text == TOOL_CALL_LIMIT_ABORT_REPLY
+        assert text == "Partial progress: I checked several timezones."
         assert len(trace) == 30
 
     asyncio.run(_go())
+
+    final_messages = llm.calls_messages[-1]
+    assert any("tool call limit" in str(m.get("content", "")).lower() for m in final_messages)
+    final_tools = llm.calls_tools[-1]
+    assert final_tools == []
 
 
 def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
