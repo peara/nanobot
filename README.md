@@ -14,7 +14,7 @@ Minimal personal assistant bot with:
 - `nanobot.core` - BotCore orchestrator: message queue, command dispatch, SubagentManager integration
 - `nanobot.subagents` - SubagentManager (spawn/execute) + SubagentRunStore (run tracking)
 - `nanobot.agent_run` - AgentRun: LLM chat loop with tool calling, scratchpad protocol, and finalize exit path
-- `nanobot.channels` - Channel abstraction (`Channel`) + Telegram implementation
+- `nanobot.channels` - Channel abstraction (`Channel`) + Telegram, GitHub, File implementations
 - `nanobot.tools` - ToolRegistry + McpToolSource + ToolStatsStore (tool call statistics)
 - `nanobot.mcp_hub` - Connects to configured MCP servers and routes tool calls
 - `nanobot.mcp_servers.timer.server` - MCP timer server (read-only time tools)

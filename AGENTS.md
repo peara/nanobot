@@ -1,7 +1,7 @@
 # NanoBot Agent Guidelines
 
-**Generated:** 2026-04-11
-**Commit:** 9062d3b
+**Generated:** 2026-05-02
+**Commit:** 2a294b3
 **Branch:** main
 
 ## Overview
@@ -19,23 +19,38 @@ nanobot/
 │   ├── memory.py          # SQLite conversation history
 │   ├── agent_run.py       # AgentRun - LLM chat loop with tools + finalize path
 │   ├── subagents/         # SubagentManager + SubagentRunStore
-│   ├── channels/          # Telegram/GitHub channel implementations
+│   ├── channels/          # Telegram, GitHub, File channel implementations
 │   ├── mcp_servers/       # timer, memory, scheduler, web MCP servers
 │   ├── core_commands/     # Built-in commands (session, status, reset)
 │   ├── plans/             # Plan storage and management
-│   └── tools/             # ToolRegistry + ToolStatsStore
+│   ├── tools/             # ToolRegistry + ToolStatsStore
+│   ├── evaluator/         # LearningEvaluator - skill learning extraction
+│   ├── prompts/           # PromptStore - centralized prompt management
+│   ├── memstore/          # Memstore tools for key-value storage
+│   ├── skills/            # Skill injection and matching (mem0-backed)
+│   ├── vector_store/      # Native vector store with multi-collection support
+│   └── hooks/             # Tool event hooks (FileTraceHook, etc.)
 ├── src/web_agent/         # Web browsing agent (Playwright-based)
 │   ├── browser/           # BrowserInteractor - page interaction, multi-tab, snapshot
 │   ├── service.py         # WebAgentTool - read/interact web pages
 │   └── ...                # classifiers, extractors, fetchers, scorers
+├── scripts/               # Utility scripts
+│   ├── eval/              # Prompt testing toolkit for evaluator iteration
+│   └── file_channel_test.py  # FileChannel integration test
 ├── tests/                 # Pytest tests (mirrors src structure)
 │   ├── agent_run/         # Tests for agent_run.py
+│   ├── channels/          # Tests for channels/
 │   ├── core_commands/     # Tests for core_commands/
+│   ├── evaluator/         # Tests for evaluator/
 │   ├── mcp_servers/       # Tests for mcp_servers/ (incl. test_interactor_tabs.py)
+│   ├── memstore/          # Tests for memstore/
 │   ├── plans/             # Tests for plans/
+│   ├── prompts/           # Tests for prompts/
 │   ├── scheduler/         # Tests for scheduler_store.py
+│   ├── skills/            # Tests for skills/
 │   ├── subagents/         # Tests for subagents/
 │   ├── tools/             # Tests for tools/
+│   ├── vector_store/      # Tests for vector_store/
 │   └── test_*.py          # Top-level module tests
 └── config.yaml            # Bot configuration
 ```
@@ -54,6 +69,12 @@ nanobot/
 | Add run tracking | `src/nanobot/subagents/` | SubagentManager, SubagentRunStore |
 | Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
 | Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |
+| Skill learning extraction | `src/nanobot/evaluator/` | LearningEvaluator - evaluates agent turns for learnings |
+| Prompt management | `src/nanobot/prompts/` | PromptStore - centralized prompt templates |
+| Key-value storage | `src/nanobot/memstore/` | Memstore tools for context/state |
+| Skill matching/injection | `src/nanobot/skills/` | SkillMatcher, skill tools (mem0-backed) |
+| Vector embeddings | `src/nanobot/vector_store/` | Native vector store with multi-collection support |
+| Tool event hooks | `src/nanobot/hooks/` | FileTraceHook, tool event handlers |
 
 ### Test Location Convention
 Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go in `tests/subagents/test_manager.py`.
@@ -61,11 +82,17 @@ Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go 
 | Source | Tests |
 |--------|-------|
 | `src/nanobot/agent_run.py` | `tests/agent_run/test_agent_run.py` |
+| `src/nanobot/channels/` | `tests/channels/` |
 | `src/nanobot/core_commands/` | `tests/core_commands/` |
+| `src/nanobot/evaluator/` | `tests/evaluator/` |
 | `src/nanobot/mcp_servers/` | `tests/mcp_servers/` |
+| `src/nanobot/memstore/` | `tests/memstore/` |
 | `src/nanobot/plans/` | `tests/plans/` |
+| `src/nanobot/prompts/` | `tests/prompts/` |
+| `src/nanobot/skills/` | `tests/skills/` |
 | `src/nanobot/subagents/` | `tests/subagents/` |
 | `src/nanobot/tools/` | `tests/tools/` |
+| `src/nanobot/vector_store/` | `tests/vector_store/` |
 | Top-level modules (core.py, etc.) | `tests/test_*.py` (top-level) |
 
 ## Commands
