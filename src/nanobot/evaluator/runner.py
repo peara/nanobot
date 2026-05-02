@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from nanobot.evaluator.store import (
@@ -26,6 +28,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_eval_logger: logging.Logger | None = None
+
+
+def _get_eval_logger() -> logging.Logger:
+    """Return a dedicated logger that writes evaluator LLM I/O to data/evaluator.log."""
+    global _eval_logger
+    if _eval_logger is not None:
+        return _eval_logger
+
+    _eval_logger = logging.getLogger("nanobot.evaluator.io")
+    _eval_logger.setLevel(logging.DEBUG)
+    _eval_logger.propagate = False
+
+    log_dir = Path("data")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "evaluator.log"
+    handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+    _eval_logger.addHandler(handler)
+    return _eval_logger
+
 
 class LearningEvaluator:
     """Three-phase skill lifecycle evaluator.
@@ -42,6 +65,16 @@ class LearningEvaluator:
     ) -> None:
         self._llm = llm
         self._prompts = prompts
+        self._eval_log = _get_eval_logger()
+
+    def _log_phase(self, scope: str, phase: str, user_message: str, raw_response: str) -> None:
+        self._eval_log.debug(
+            "scope=%s phase=%s\n--- INPUT ---\n%s\n--- RESPONSE ---\n%s\n--- END ---",
+            scope,
+            phase,
+            user_message,
+            raw_response,
+        )
 
     async def evaluate(
         self,
@@ -95,6 +128,7 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or "{}"
+        self._log_phase(scope, "quality_assessment", user_message, content)
         if not content or content == "{}":
             return self._default_quality(worker_result)
         return parse_quality_from_json(content)
@@ -121,6 +155,7 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or '{"learnings": []}'
+        self._log_phase(scope, "learning_extraction", user_message, content)
         if not content:
             return LearningExtraction(learnings=[])
         return parse_learning_from_json(content)
@@ -145,6 +180,7 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or '{"operations": []}'
+        self._log_phase(scope, "skill_lifecycle", user_message, content)
         if not content:
             return []
         return parse_lifecycle_from_json(content)
@@ -178,48 +214,54 @@ class LearningEvaluator:
             return getattr(defaults, fallback_name)
 
     @staticmethod
-    def _summarize_tool_trace(tool_trace: list[dict[str, Any]], max_entries: int = 15) -> str:
-        """Build a compact tool trace summary with args preview."""
+    def _summarize_tool_trace(tool_trace: list[dict[str, Any]]) -> str:
+        """Build a detailed tool trace summary for evaluator context.
+
+        Skips session__scratchpad_write entries since the scratchpad state
+        (context, tool_journal, known_facts) is included separately via
+        _summarize_scratchpad. Shows full args and longer result previews
+        to expose failure/success patterns and site-specific interactions.
+        """
         if not tool_trace:
             return ""
         lines: list[str] = []
-        shown = tool_trace[:max_entries]
-        for entry in shown:
+        for entry in tool_trace:
             name = entry.get("name", "?")
+            # Scratchpad writes are redundant — their data is in the scratchpad summary
+            if name == "session__scratchpad_write":
+                continue
             args = entry.get("args", {})
             preview = entry.get("result_preview", "")
-            args_summary = json.dumps(args, ensure_ascii=False)[:120]
+            args_summary = json.dumps(args, ensure_ascii=False)
             result_tag = ""
             if preview:
-                result_tag = " -> " + preview[:60].replace("\n", " ")
+                result_tag = " -> " + preview[:200].replace("\n", " ")
             lines.append(f"  - {name}({args_summary}){result_tag}")
-        remaining = len(tool_trace) - max_entries
-        if remaining > 0:
-            lines.append(f"  ... and {remaining} more tool calls")
         return "\n".join(lines)
 
     @staticmethod
     def _summarize_scratchpad(scratchpad: dict[str, Any]) -> str:
-        """Build a compact scratchpad summary."""
+        """Build a detailed scratchpad summary for evaluator context.
+
+        Includes the agent's reasoning context, full tool journal, and full
+        known facts — these are critical for detecting within-run learning
+        (e.g., approach X failed, then approach Y worked).
+        """
         parts: list[str] = []
-        for key in ("goal", "current_step", "next_step"):
+        for key in ("goal", "context", "current_step", "next_step"):
             val = str(scratchpad.get(key, "")).strip()
             if val:
-                parts.append(f"  {key}: {val[:200]}")
+                parts.append(f"  {key}: {val}")
         known_facts = scratchpad.get("known_facts", [])
         if known_facts:
-            facts = [str(f)[:80] for f in known_facts[:5]]
-            parts.append(f"  known_facts: {', '.join(facts)}")
-            remaining_facts = len(known_facts) - 5
-            if remaining_facts > 0:
-                parts[-1] += f" (+{remaining_facts} more)"
+            parts.append(f"  known_facts ({len(known_facts)} items):")
+            for fact in known_facts:
+                parts.append(f"    - {fact}")
         tool_journal = scratchpad.get("tool_journal", [])
         if tool_journal:
-            entries = [str(e)[:80] for e in tool_journal[:5]]
-            parts.append(f"  tool_journal: {', '.join(entries)}")
-            remaining_entries = len(tool_journal) - 5
-            if remaining_entries > 0:
-                parts[-1] += f" (+{remaining_entries} more)"
+            parts.append(f"  tool_journal ({len(tool_journal)} items):")
+            for entry in tool_journal:
+                parts.append(f"    - {entry}")
         return "\n".join(parts) if parts else ""
 
     @staticmethod

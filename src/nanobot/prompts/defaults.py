@@ -125,24 +125,35 @@ You will receive the user request, the agent reply, and optionally: run status (
 
 ## Quality Scoring (1-5)
 
-- 5: Excellent - fully addressed request, accurate, clear, no issues
-- 4: Good - addressed request with minor gaps or minor clarifications needed
-- 3: Acceptable - partially addressed, some uncertainty, room for improvement
+- 5: Excellent - fully addressed request, accurate, clear, efficient path (no wasted discovery turns)
+- 4: Good - addressed request, but the agent wasted turns discovering something it should have known
+- 3: Acceptable - partially addressed, significant wasted effort, room for improvement
 - 2: Poor - incomplete, significant issues, or missed key requirements
 - 1: Failed - wrong, harmful, off-topic, or completely missed the request
 
-Score quality based on how well the user's request was addressed, regardless of whether learnings exist. A score of 1-2 does NOT mean no learnings — failed attempts often reveal important patterns.
+SCORE AND HAS_LEARNINGS ARE INDEPENDENT. A score of 5 can have has_learnings=true if the agent succeeded but discovered working patterns along the way. A score of 1 can have has_learnings=true because the failures reveal what should work.
 
-## When to Set has_learnings = true
+When scoring quality, consider both the final answer AND how efficiently the agent reached it. A score of 1-2 does NOT mean no learnings — failed attempts often reveal important patterns.
 
-Set has_learnings to true when ANY of these apply:
+## has_learnings Decision
+
+This is the most important part of your evaluation. Many evaluators set has_learnings=false because the final answer looks good — this is WRONG.
+
+A skill is prior knowledge the agent could have had BEFORE this run. If the agent could have avoided early failures by knowing something in advance, then there ARE learnings.
+
+STEP 1 — Scan the tool journal and known_facts for FAILURE→SUCCESS sequences. Look for:
+- Tool calls that returned errors, 404s, "not found", "page not found", wrong redirects, failed selectors
+- Then LATER tool calls that succeeded on the same type of task
+- known_facts entries like "X failed", "X does not work", "Had to try Y instead"
+
+STEP 2 — If you found ANY failure→success sequence, ask: "Could knowing the working approach from the start have prevented the failures?" 
+- If YES → has_learnings MUST be true. Period. The specific thing the agent discovered mid-run (the correct URL, selector, workflow, etc.) IS the learning.
+- If NO (failures were unavoidable, no pattern to extract) → has_learnings can be false.
+
+STEP 3 — Also set has_learnings=true if:
 - User corrected or clarified the agent's approach
-- Agent discovered a working pattern (even if the overall task failed)
 - User stated a preference explicitly or implicitly
-- Agent encountered a constraint worth remembering
-- Agent repeatedly failed at a task with tools (the failure pattern and any partial success are learnings)
-- Tool usage reveals site-specific interaction patterns (selectors, element names, workflows)
-- Agent found a working approach partway through but couldn't complete the full task
+- Tool usage reveals site-specific interaction patterns (selectors, element names, URL formats, workflows)
 
 Do NOT set has_learnings for:
 - Routine task execution with no new insights
@@ -150,7 +161,7 @@ Do NOT set has_learnings for:
 - Pure information retrieval with no preference/behavior insight
 - Simple acknowledge/confirm responses
 
-IMPORTANT: Failed tool interactions often contain valuable learnings — which selectors worked, which didn't, what site-specific patterns apply. When in doubt, set has_learnings to true.
+CRITICAL: A "good final answer" does NOT mean has_learnings=false. The quality of the outcome is irrelevant to has_learnings. What matters is whether the agent's TRAJECTORY contained discoveries that a skill could preserve.
 
 ## Output
 
