@@ -33,8 +33,9 @@ def setup_logging() -> None:
     root.addHandler(console_handler)
 
 
-def build_channels(config) -> dict[str, Channel]:
+def build_channels(config) -> tuple[dict[str, Channel], list]:
     channels: dict[str, Channel] = {}
+    extra_hooks: list = []
     for cfg in config.channels:
         if cfg.type == "telegram":
             if not cfg.token:
@@ -60,19 +61,38 @@ def build_channels(config) -> dict[str, Channel]:
                 telegram_channel=channels.get("telegram"),
             )
             continue
+        if cfg.type == "file":
+            opts = cfg.options or {}
+            capture_tool_calls = opts.get("capture_tool_calls", False)
+            from nanobot.channels.file import FileChannel, FileTraceHook
+
+            file_channel = FileChannel(
+                sessions_dir=opts.get("sessions_dir", "./data/chat/sessions"),
+                session_id=opts.get("session_id"),
+                capture_tool_calls=capture_tool_calls,
+                poll_interval=opts.get("poll_interval", 0.5),
+                user_id=opts.get("user_id", "file_user"),
+            )
+            channels["file"] = file_channel
+            if capture_tool_calls:
+                extra_hooks.append(FileTraceHook(out_file=file_channel._out_file))
+            continue
         raise ValueError(f"Unsupported channel type: {cfg.type}")
-    return channels
+    return channels, extra_hooks
 
 
 async def run(config_path: str) -> None:
     config = load_config(config_path)
-    channels = build_channels(config)
+    channels, extra_hooks = build_channels(config)
     core = BotCore(config, channels)
 
     for ch in channels.values():
         ch.set_handler(core.on_incoming)
 
     await core.start()
+    # Register any extra hooks (e.g. FileTraceHook) with the core after startup
+    for hook in extra_hooks:
+        core.tool_hooks.append(hook)
     for ch in channels.values():
         await ch.start()
 
