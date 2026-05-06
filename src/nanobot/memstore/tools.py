@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 from nanobot.tools.base import Tool
@@ -25,7 +26,25 @@ def _parse_json(raw: str | None) -> dict[str, Any]:
     return value
 
 
-def _search_with_compat(mem: Memory, query: str, user_id: str, limit: int) -> dict[str, Any]:
+def _search_with_compat(
+    mem: Memory, query: str, user_id: str, limit: int, filters: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Internal compatibility wrapper for mem.search with optional filters.
+
+    Keeps backward compatibility with older mem.search signatures while
+    supporting the new filters-based API used by MEM0 v3.
+    """
+    # If explicit filters are provided, try the new API path first
+    if filters:
+        try:
+            return mem.search(query=query, filters=filters, top_k=limit)  # type: ignore[call-arg]
+        except TypeError:
+            try:
+                return mem.search(query=query, filters=filters, limit=limit)  # type: ignore[call-arg]
+            except TypeError:
+                # Fallback to a minimal signature preserving user_id
+                return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
+    # No advanced filters provided; fallback to traditional signature
     try:
         return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
     except TypeError:
@@ -62,6 +81,24 @@ class MemorySearchTool(Tool):
                     "description": "Max results (default: 5)",
                     "default": 5,
                 },
+                # MEM0 v3 enhancements
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent/task namespace (optional)",
+                },
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by categories (optional)",
+                },
+                "created_after": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD) for delta filtering (optional)",
+                },
+                "filters_json": {
+                    "type": "string",
+                    "description": "Raw JSON filters object for advanced queries (optional)",
+                },
             },
             "required": ["query", "user_id"],
         }
@@ -72,7 +109,32 @@ class MemorySearchTool(Tool):
         limit = int(args.get("limit", 5))
         safe_limit = max(1, min(limit, 20))
 
-        result = _search_with_compat(self._memories, query=query, user_id=user_id, limit=safe_limit)
+        # Build base and optional filters according to MEM0 v3 API
+        filters: dict[str, Any] = {"user_id": user_id}
+
+        agent_id = args.get("agent_id")
+        if agent_id:
+            filters["agent_id"] = str(agent_id)
+
+        categories = args.get("categories")
+        if isinstance(categories, list) and categories:
+            filters["categories"] = {"in": categories}
+
+        created_after = args.get("created_after")
+        if isinstance(created_after, str) and created_after:
+            filters["created_at"] = {"gte": created_after}
+
+        # Merge raw JSON filters, if provided
+        filters_json = args.get("filters_json")
+        if isinstance(filters_json, str) and filters_json:
+            parsed = _parse_json(filters_json)
+            # Merge/overlay without mutating existing structure unexpectedly
+            for k, v in parsed.items():
+                filters[k] = v
+
+        logger.debug("MemorySearchTool filters being used: %s", filters)
+
+        result = _search_with_compat(self._memories, query=query, user_id=user_id, limit=safe_limit, filters=filters)
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"results": result}, ensure_ascii=True)
@@ -112,6 +174,23 @@ class MemorySaveTool(Tool):
                     "type": "string",
                     "description": "Optional JSON metadata to attach",
                 },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent/task namespace (optional)",
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "Session/run identifier (optional)",
+                },
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Memory categories for organization (optional)",
+                },
+                "expiration_days": {
+                    "type": "integer",
+                    "description": "Days until auto-cleanup (optional)",
+                },
             },
             "required": ["text", "user_id"],
         }
@@ -122,8 +201,27 @@ class MemorySaveTool(Tool):
         role = str(args.get("role", "user"))
         metadata = _parse_json(args.get("metadata_json"))
 
+        agent_id = args.get("agent_id")
+        run_id = args.get("run_id")
+        categories = args.get("categories")
+        expiration_days = args.get("expiration_days")
+        expiration_date: str | None = None
+        if isinstance(expiration_days, int):
+            expiration_date = (date.today() + timedelta(days=expiration_days)).isoformat()
+
         messages = [{"role": role, "content": text}]
-        result = self._memories.add(messages, user_id=user_id, metadata=metadata)  # type: ignore[call-arg]
+        add_kwargs: dict[str, Any] = {"user_id": user_id, "metadata": metadata}
+        if agent_id is not None:
+            add_kwargs["agent_id"] = agent_id
+        if run_id is not None:
+            add_kwargs["run_id"] = run_id
+        if expiration_date is not None:
+            add_kwargs["expiration_date"] = expiration_date
+        if isinstance(categories, list) and categories:
+            add_kwargs["categories"] = categories
+
+        logger.debug("MemorySaveTool add parameters: %s", add_kwargs)
+        result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=True)
@@ -162,6 +260,19 @@ class MemorySaveTurnTool(Tool):
                     "type": "string",
                     "description": "Optional JSON metadata to attach",
                 },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent/task namespace (optional)",
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "Session/run identifier (optional)",
+                },
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Memory categories for organization (optional)",
+                },
             },
             "required": ["user_id", "user_text", "assistant_text"],
         }
@@ -172,11 +283,25 @@ class MemorySaveTurnTool(Tool):
         assistant_text = str(args.get("assistant_text", ""))
         metadata = _parse_json(args.get("metadata_json"))
 
+        # Optional MEM0 v3 fields
+        agent_id = args.get("agent_id")
+        run_id = args.get("run_id")
+        categories = args.get("categories")
+
         messages = [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": assistant_text},
         ]
-        result = self._memories.add(messages, user_id=user_id, metadata=metadata)  # type: ignore[call-arg]
+        add_kwargs: dict[str, Any] = {"user_id": user_id, "metadata": metadata}
+        if agent_id is not None:
+            add_kwargs["agent_id"] = agent_id
+        if run_id is not None:
+            add_kwargs["run_id"] = run_id
+        if isinstance(categories, list) and categories:
+            add_kwargs["categories"] = categories
+
+        logger.debug("MemorySaveTurnTool add parameters: %s", add_kwargs)
+        result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=True)

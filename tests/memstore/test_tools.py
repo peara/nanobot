@@ -43,6 +43,35 @@ class TestMemorySearchTool:
         await tool.call({"query": "test", "user_id": "user1", "limit": 10})
         mock_memory.search.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_search_with_agent_id(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.search.return_value = {"results": []}
+
+        tool = MemorySearchTool(mock_vs)
+        await tool.call({"query": "test", "user_id": "user1", "agent_id": "agent-42"})
+        mock_memory.search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_search_with_categories(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.search.return_value = {"results": []}
+
+        tool = MemorySearchTool(mock_vs)
+        await tool.call({"query": "test", "user_id": "user1", "categories": ["billing", "support"]})
+
+        mock_memory.search.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_search_with_created_after(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.search.return_value = {"results": []}
+
+        tool = MemorySearchTool(mock_vs)
+        await tool.call({"query": "test", "user_id": "user1", "created_after": "2024-01-01"})
+
+        mock_memory.search.assert_called_once()
+
 
 class TestMemorySaveTool:
     @pytest.mark.asyncio
@@ -61,6 +90,33 @@ class TestMemorySaveTool:
         data = json.loads(result)
         assert data["id"] == "mem1"
 
+    @pytest.mark.asyncio
+    async def test_save_with_agent_id(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.add.return_value = {"id": "mem1"}
+
+        tool = MemorySaveTool(mock_vs)
+        await tool.call({"text": "test", "user_id": "user1", "agent_id": "agent-42"})
+        mock_memory.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_save_with_expiration_days(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.add.return_value = {"id": "mem1"}
+
+        tool = MemorySaveTool(mock_vs)
+        await tool.call({"text": "test", "user_id": "user1", "expiration_days": 30})
+        mock_memory.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_save_with_categories(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.add.return_value = {"id": "mem1"}
+
+        tool = MemorySaveTool(mock_vs)
+        await tool.call({"text": "test", "user_id": "user1", "categories": ["billing"]})
+        mock_memory.add.assert_called_once()
+
 
 class TestMemorySaveTurnTool:
     @pytest.mark.asyncio
@@ -78,6 +134,38 @@ class TestMemorySaveTurnTool:
         )
         data = json.loads(result)
         assert "ok" in data or "id" in data
+
+    @pytest.mark.asyncio
+    async def test_save_turn_with_agent_id(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.add.return_value = [{"id": "mem2"}]
+
+        tool = MemorySaveTurnTool(mock_vs)
+        await tool.call(
+            {
+                "user_id": "user1",
+                "user_text": "hello",
+                "assistant_text": "hi",
+                "agent_id": "agent-42",
+            }
+        )
+        mock_memory.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_save_turn_with_categories(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.add.return_value = [{"id": "mem2"}]
+
+        tool = MemorySaveTurnTool(mock_vs)
+        await tool.call(
+            {
+                "user_id": "user1",
+                "user_text": "hello",
+                "assistant_text": "hi",
+                "categories": ["greeting"],
+            }
+        )
+        mock_memory.add.assert_called_once()
 
 
 class TestMemoryHealthTool:
