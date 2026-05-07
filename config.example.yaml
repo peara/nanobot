@@ -1,4 +1,5 @@
 assistant_name: "Nano"
+owner_chat_id: 0
 database_path: "./data/nanobot.db"
 scheduler_db_path: "./data/scheduler.db"
 plan_db_path: "./data/plans.db"
@@ -9,6 +10,8 @@ poll_interval_seconds: 20
 history_message_limit: 24
 history_char_limit: 12000
 working_timezone: "Asia/Ho_Chi_Minh"
+enable_tool_stats: false
+enable_evaluator: false
 
 model:
   base_url: "http://localhost:11434/v1"
@@ -35,6 +38,14 @@ channels:
   #     opencode_username: "opencode"
   #     opencode_password: "${OPENCODE_SERVER_PASSWORD}"
   #     notification_chat_id: 123456789  # Telegram chat ID for notifications (defaults to owner_chat_id)
+
+  # File channel for CLI-based conversations (useful for debugging/testing)
+  # - type: "file"
+  #   options:
+  #     sessions_dir: "./data/chat/sessions"  # Directory for session files
+  #     capture_tool_calls: true  # Include tool calls in conversation history
+  #     poll_interval: 0.5  # Seconds between file polls
+  #     user_id: "user"  # Default user ID for sessions
 
 mcp_servers:
   - name: "timer"

@@ -29,3 +29,4 @@ vector_store:
     path: "./data/mem0/qdrant"
     collection_name: "nanobot_memories"
     embedding_model_dims: 1024
+    on_disk: true
