@@ -29,14 +29,14 @@ def _parse_json(raw: str | None) -> dict[str, Any]:
 def _search_with_compat(
     mem: Memory, query: str, user_id: str, limit: int, filters: dict[str, Any] | None = None
 ) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"query": query, "user_id": user_id, "limit": limit}
     if filters:
-        try:
-            return mem.search(query=query, filters=filters, top_k=limit)  # type: ignore[call-arg]
-        except TypeError:
-            try:
-                return mem.search(query=query, filters=filters, limit=limit)  # type: ignore[call-arg]
-            except TypeError:
-                return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
+        kwargs["filters"] = filters
+    try:
+        return mem.search(**kwargs)  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    kwargs.pop("filters", None)
     try:
         return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
     except TypeError:

@@ -36,6 +36,8 @@ class TestMemorySearchTool:
         result = await tool.call({"query": "test", "user_id": "user1"})
         data = json.loads(result)
         assert "results" in data
+        call_kwargs = mock_memory.search.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
 
     @pytest.mark.asyncio
     async def test_search_with_limit(self) -> None:
@@ -45,6 +47,9 @@ class TestMemorySearchTool:
         tool = MemorySearchTool(mock_vs)
         await tool.call({"query": "test", "user_id": "user1", "limit": 10})
         mock_memory.search.assert_called_once()
+        call_kwargs = mock_memory.search.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
+        assert call_kwargs.kwargs.get("limit") == 10
 
     @pytest.mark.asyncio
     async def test_search_with_agent_id(self) -> None:
@@ -54,6 +59,9 @@ class TestMemorySearchTool:
         tool = MemorySearchTool(mock_vs)
         await tool.call({"query": "test", "user_id": "user1", "agent_id": "agent-42"})
         mock_memory.search.assert_called_once()
+        call_kwargs = mock_memory.search.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
+        assert call_kwargs.kwargs.get("filters", {}).get("agent_id") == "agent-42"
 
     @pytest.mark.asyncio
     async def test_search_with_filters_json_passthrough(self) -> None:
