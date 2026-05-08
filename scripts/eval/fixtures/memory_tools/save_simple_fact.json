@@ -1,0 +1,16 @@
+{
+  "name": "save_simple_fact",
+  "phase": "memory_tool_selection",
+  "description": "User asks to save a simple fact to memory",
+  "scenario": "Remember that my birthday is July 15",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__save",
+      "required_args": {
+        "text": "*",
+        "user_id": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": []
+}

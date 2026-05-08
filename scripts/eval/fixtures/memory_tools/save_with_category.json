@@ -1,0 +1,17 @@
+{
+  "name": "save_with_category",
+  "phase": "memory_tool_selection",
+  "description": "User asks to save a fact with a category/domain tag",
+  "scenario": "Save this under work category: the project deadline is March 1st",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__save",
+      "required_args": {
+        "text": "*",
+        "user_id": "*",
+        "metadata_json": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": []
+}

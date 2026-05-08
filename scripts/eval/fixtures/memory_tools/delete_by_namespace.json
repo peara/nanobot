@@ -1,0 +1,15 @@
+{
+  "name": "delete_by_namespace",
+  "phase": "memory_tool_selection",
+  "description": "User asks to clear all memories from a specific task/agent namespace",
+  "scenario": "Delete all memories from the old research task",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__delete",
+      "required_args": {
+        "agent_id": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": []
+}

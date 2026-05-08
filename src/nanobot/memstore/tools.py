@@ -338,7 +338,17 @@ class MemoryListTool(Tool):
 
         logger.debug("MemoryListTool get_all filters: %s", filters)
 
-        result = self._memories.get_all(filters=filters, limit=safe_limit)  # type: ignore[call-arg]
+        get_all_kwargs: dict[str, Any] = {"limit": safe_limit}
+        if user_id:
+            get_all_kwargs["user_id"] = user_id
+        if agent_id:
+            get_all_kwargs["agent_id"] = str(agent_id)
+        if run_id:
+            get_all_kwargs["run_id"] = str(run_id)
+        if filters:
+            get_all_kwargs["filters"] = filters
+
+        result = self._memories.get_all(**get_all_kwargs)  # type: ignore[call-arg]
 
         results_list: list[dict[str, Any]]
         if isinstance(result, dict) and "results" in result:

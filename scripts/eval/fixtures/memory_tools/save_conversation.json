@@ -1,0 +1,17 @@
+{
+  "name": "save_conversation",
+  "phase": "memory_tool_selection",
+  "description": "User wants to save a conversation turn context",
+  "scenario": "I had a productive meeting with the client about the new feature request. They want us to prioritize the search functionality.",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__save_turn",
+      "required_args": {
+        "user_id": "*",
+        "user_text": "*",
+        "assistant_text": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": ["memory__save"]
+}

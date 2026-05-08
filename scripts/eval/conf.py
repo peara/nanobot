@@ -76,13 +76,51 @@ LEARNING_EXTRACTION_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_TOOL_SELECTION_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "memory_tool_selection",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool_name": {"type": "string"},
+                            "arguments": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                            },
+                        },
+                        "required": ["tool_name", "arguments"],
+                        "additionalProperties": False,
+                    },
+                },
+                "reasoning": {"type": "string"},
+            },
+            "required": ["tool_calls", "reasoning"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 PHASE_SCHEMAS = {
     "quality_assessment": QUALITY_ASSESSMENT_SCHEMA,
     "learning_extraction": LEARNING_EXTRACTION_SCHEMA,
+    "memory_tool_selection": MEMORY_TOOL_SELECTION_SCHEMA,
+    "memory_tool_production": None,
 }
 
 
 def load_prompt_from_defaults(phase: str) -> str:
+    if phase == "memory_tool_selection":
+        prompt_path = PROMPTS_DIR / "memory_tool_selection.txt"
+        if prompt_path.exists():
+            return prompt_path.read_text()
+        raise ValueError(f"Prompt file not found: {prompt_path}")
     prompt_name = {
         "quality_assessment": "QUALITY_ASSESSMENT_PROMPT",
         "learning_extraction": "LEARNING_EXTRACTION_PROMPT",
@@ -99,17 +137,33 @@ def load_prompt_from_file(path: Path) -> str:
     return path.read_text()
 
 
-def list_fixtures() -> list[str]:
+def list_fixtures(phase: str | None = None) -> list[str]:
+    """List fixture names, optionally filtered by phase. Searches flat files and phase subdirectories."""
     if not FIXTURES_DIR.exists():
         return []
-    return sorted(p.stem for p in FIXTURES_DIR.glob("*.json"))
+    names: list[str] = []
+    for p in FIXTURES_DIR.glob("*.json"):
+        data = json.loads(p.read_text())
+        if phase is None or data.get("phase") == phase:
+            names.append(p.stem)
+    for p in FIXTURES_DIR.rglob("*.json"):
+        if p.parent == FIXTURES_DIR:
+            continue
+        data = json.loads(p.read_text())
+        if phase is None or data.get("phase") == phase:
+            names.append(p.stem)
+    return sorted(set(names))
 
 
 def load_fixture(name: str) -> dict[str, Any]:
-    path = FIXTURES_DIR / f"{name}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"Fixture not found: {path}")
-    return json.loads(path.read_text())
+    """Load a fixture by name, searching flat files then subdirectories."""
+    flat_path = FIXTURES_DIR / f"{name}.json"
+    if flat_path.exists():
+        return json.loads(flat_path.read_text())
+    for p in FIXTURES_DIR.rglob(f"{name}.json"):
+        if p != flat_path:
+            return json.loads(p.read_text())
+    raise FileNotFoundError(f"Fixture not found: {name}")
 
 
 def list_prompts() -> list[str]:

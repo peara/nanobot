@@ -1,0 +1,19 @@
+{
+  "name": "search_filtered",
+  "phase": "memory_tool_selection",
+  "description": "User asks to search memories with a domain/category filter",
+  "scenario": "Search my work memories about deadlines",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__search",
+      "required_args": {
+        "query": "*",
+        "user_id": "*"
+      },
+      "optional_args": {
+        "filters_json": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": []
+}

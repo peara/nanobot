@@ -1,0 +1,15 @@
+{
+  "name": "delete_by_id",
+  "phase": "memory_tool_selection",
+  "description": "User asks to delete a specific memory by its ID",
+  "scenario": "Delete memory abc123",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__delete",
+      "required_args": {
+        "memory_id": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": []
+}

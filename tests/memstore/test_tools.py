@@ -149,6 +149,8 @@ class TestMemoryListTool:
         data = json.loads(result)
         assert "results" in data
         mock_memory.get_all.assert_called_once()
+        call_kwargs = mock_memory.get_all.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
 
     @pytest.mark.asyncio
     async def test_list_with_agent_id(self) -> None:
@@ -158,6 +160,8 @@ class TestMemoryListTool:
         tool = MemoryListTool(mock_vs)
         await tool.call({"user_id": "user1", "agent_id": "agent-42"})
         call_kwargs = mock_memory.get_all.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
+        assert call_kwargs.kwargs.get("agent_id") == "agent-42"
         assert call_kwargs.kwargs.get("filters", {}).get("agent_id") == "agent-42"
 
     @pytest.mark.asyncio
@@ -168,6 +172,8 @@ class TestMemoryListTool:
         tool = MemoryListTool(mock_vs)
         await tool.call({"user_id": "user1", "run_id": "run-99"})
         call_kwargs = mock_memory.get_all.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
+        assert call_kwargs.kwargs.get("run_id") == "run-99"
         assert call_kwargs.kwargs.get("filters", {}).get("run_id") == "run-99"
 
     @pytest.mark.asyncio
@@ -179,6 +185,7 @@ class TestMemoryListTool:
         filters = {"category": {"in": ["billing"]}}
         await tool.call({"user_id": "user1", "filters_json": json.dumps(filters)})
         call_kwargs = mock_memory.get_all.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
         assert "category" in call_kwargs.kwargs.get("filters", {})
 
     @pytest.mark.asyncio
@@ -189,6 +196,7 @@ class TestMemoryListTool:
         tool = MemoryListTool(mock_vs)
         await tool.call({"user_id": "user1", "limit": 100})
         call_kwargs = mock_memory.get_all.call_args
+        assert call_kwargs.kwargs.get("user_id") == "user1"
         assert call_kwargs.kwargs.get("limit") == 100
 
 

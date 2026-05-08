@@ -1,0 +1,15 @@
+{
+  "name": "list_all",
+  "phase": "memory_tool_selection",
+  "description": "User asks to browse all their memories",
+  "scenario": "Show me all my memories",
+  "expected_tool_calls": [
+    {
+      "tool_name": "memory__list",
+      "required_args": {
+        "user_id": "*"
+      }
+    }
+  ],
+  "acceptable_alternatives": ["memory__search"]
+}
