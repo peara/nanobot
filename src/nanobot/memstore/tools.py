@@ -29,12 +29,6 @@ def _parse_json(raw: str | None) -> dict[str, Any]:
 def _search_with_compat(
     mem: Memory, query: str, user_id: str, limit: int, filters: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Internal compatibility wrapper for mem.search with optional filters.
-
-    Keeps backward compatibility with older mem.search signatures while
-    supporting the new filters-based API used by MEM0 v3.
-    """
-    # If explicit filters are provided, try the new API path first
     if filters:
         try:
             return mem.search(query=query, filters=filters, top_k=limit)  # type: ignore[call-arg]
@@ -42,9 +36,7 @@ def _search_with_compat(
             try:
                 return mem.search(query=query, filters=filters, limit=limit)  # type: ignore[call-arg]
             except TypeError:
-                # Fallback to a minimal signature preserving user_id
                 return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
-    # No advanced filters provided; fallback to traditional signature
     try:
         return mem.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
     except TypeError:
@@ -61,7 +53,7 @@ class MemorySearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Search relevant long-term memories for a user."
+        return "Semantic search over long-term memories. Returns the most relevant memories for a query."
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -70,7 +62,7 @@ class MemorySearchTool(Tool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query",
+                    "description": "What to search for",
                 },
                 "user_id": {
                     "type": "string",
@@ -81,23 +73,19 @@ class MemorySearchTool(Tool):
                     "description": "Max results (default: 5)",
                     "default": 5,
                 },
-                # MEM0 v3 enhancements
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent/task namespace (optional)",
-                },
-                "categories": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Filter by categories (optional)",
-                },
-                "created_after": {
-                    "type": "string",
-                    "description": "ISO date (YYYY-MM-DD) for delta filtering (optional)",
+                    "description": "Restrict to memories saved under this agent/task namespace (optional)",
                 },
                 "filters_json": {
                     "type": "string",
-                    "description": "Raw JSON filters object for advanced queries (optional)",
+                    "description": (
+                        "Advanced mem0 filters as JSON string (optional). "
+                        'Equality: {"category":"work"}. '
+                        'Operators: {"priority":{"gte":5}}, {"category":{"in":["work","personal"]}}. '
+                        'Logic: {"AND":[{"user_id":"alice"},{"category":"work"}]}. '
+                        "user_id and agent_id params are merged in unless already present in filters."
+                    ),
                 },
             },
             "required": ["query", "user_id"],
@@ -109,30 +97,20 @@ class MemorySearchTool(Tool):
         limit = int(args.get("limit", 5))
         safe_limit = max(1, min(limit, 20))
 
-        # Build base and optional filters according to MEM0 v3 API
-        filters: dict[str, Any] = {"user_id": user_id}
-
-        agent_id = args.get("agent_id")
-        if agent_id:
-            filters["agent_id"] = str(agent_id)
-
-        categories = args.get("categories")
-        if isinstance(categories, list) and categories:
-            filters["categories"] = {"in": categories}
-
-        created_after = args.get("created_after")
-        if isinstance(created_after, str) and created_after:
-            filters["created_at"] = {"gte": created_after}
-
-        # Merge raw JSON filters, if provided
         filters_json = args.get("filters_json")
         if isinstance(filters_json, str) and filters_json:
-            parsed = _parse_json(filters_json)
-            # Merge/overlay without mutating existing structure unexpectedly
-            for k, v in parsed.items():
-                filters[k] = v
+            filters = _parse_json(filters_json)
+            if "user_id" not in filters:
+                filters["user_id"] = user_id
+            if args.get("agent_id") and "agent_id" not in filters:
+                filters["agent_id"] = str(args["agent_id"])
+        else:
+            filters = {"user_id": user_id}
+            agent_id = args.get("agent_id")
+            if agent_id:
+                filters["agent_id"] = str(agent_id)
 
-        logger.debug("MemorySearchTool filters being used: %s", filters)
+        logger.debug("MemorySearchTool filters: %s", filters)
 
         result = _search_with_compat(self._memories, query=query, user_id=user_id, limit=safe_limit, filters=filters)
         if isinstance(result, dict):
@@ -150,7 +128,7 @@ class MemorySaveTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Save a single memory candidate as a chat message."
+        return "Save a fact or observation to long-term memory. mem0 deduplicates and extracts key info automatically."
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -167,25 +145,20 @@ class MemorySaveTool(Tool):
                 },
                 "role": {
                     "type": "string",
-                    "description": "Role of the message (default: 'user')",
+                    "description": "Message role (default: 'user')",
                     "default": "user",
                 },
                 "metadata_json": {
                     "type": "string",
-                    "description": "Optional JSON metadata to attach",
+                    "description": "JSON metadata to attach (optional)",
                 },
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent/task namespace (optional)",
+                    "description": "Agent/task namespace — isolates memories to a specific task (optional)",
                 },
                 "run_id": {
                     "type": "string",
                     "description": "Session/run identifier (optional)",
-                },
-                "categories": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Memory categories for organization (optional)",
                 },
                 "expiration_days": {
                     "type": "integer",
@@ -203,7 +176,6 @@ class MemorySaveTool(Tool):
 
         agent_id = args.get("agent_id")
         run_id = args.get("run_id")
-        categories = args.get("categories")
         expiration_days = args.get("expiration_days")
         expiration_date: str | None = None
         if isinstance(expiration_days, int):
@@ -217,8 +189,6 @@ class MemorySaveTool(Tool):
             add_kwargs["run_id"] = run_id
         if expiration_date is not None:
             add_kwargs["expiration_date"] = expiration_date
-        if isinstance(categories, list) and categories:
-            add_kwargs["categories"] = categories
 
         logger.debug("MemorySaveTool add parameters: %s", add_kwargs)
         result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
@@ -237,7 +207,7 @@ class MemorySaveTurnTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Save a user+assistant turn so mem0 can extract durable facts."
+        return "Save a conversation turn (user + assistant) so mem0 can extract durable facts from it."
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -258,20 +228,15 @@ class MemorySaveTurnTool(Tool):
                 },
                 "metadata_json": {
                     "type": "string",
-                    "description": "Optional JSON metadata to attach",
+                    "description": "JSON metadata to attach (optional)",
                 },
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent/task namespace (optional)",
+                    "description": "Agent/task namespace — isolates memories to a specific task (optional)",
                 },
                 "run_id": {
                     "type": "string",
                     "description": "Session/run identifier (optional)",
-                },
-                "categories": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Memory categories for organization (optional)",
                 },
             },
             "required": ["user_id", "user_text", "assistant_text"],
@@ -283,10 +248,8 @@ class MemorySaveTurnTool(Tool):
         assistant_text = str(args.get("assistant_text", ""))
         metadata = _parse_json(args.get("metadata_json"))
 
-        # Optional MEM0 v3 fields
         agent_id = args.get("agent_id")
         run_id = args.get("run_id")
-        categories = args.get("categories")
 
         messages = [
             {"role": "user", "content": user_text},
@@ -297,14 +260,203 @@ class MemorySaveTurnTool(Tool):
             add_kwargs["agent_id"] = agent_id
         if run_id is not None:
             add_kwargs["run_id"] = run_id
-        if isinstance(categories, list) and categories:
-            add_kwargs["categories"] = categories
 
         logger.debug("MemorySaveTurnTool add parameters: %s", add_kwargs)
         result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=True)
+
+
+class MemoryListTool(Tool):
+    def __init__(self, vector_store: VectorStore) -> None:
+        self._memories = vector_store.get_collection(COLLECTION_MEMORIES)
+
+    @property
+    def name(self) -> str:
+        return "memory__list"
+
+    @property
+    def description(self) -> str:
+        return "List all memories in a namespace. No semantic search — returns everything matching the given filters."
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "User ID (e.g., 'telegram:123')",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Restrict to memories saved under this agent/task namespace (optional)",
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "Restrict to memories from this session/run (optional)",
+                },
+                "filters_json": {
+                    "type": "string",
+                    "description": (
+                        "Advanced mem0 filters as JSON string (optional). "
+                        'Equality: {"category":"work"}. '
+                        'Operators: {"priority":{"gte":5}}, {"category":{"in":["work","personal"]}}. '
+                        'Logic: {"AND":[{"user_id":"alice"},{"category":"work"}]}. '
+                        "user_id, agent_id, run_id params are merged in unless already present in filters."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default: 50)",
+                    "default": 50,
+                },
+            },
+            "required": ["user_id"],
+        }
+
+    async def call(self, args: dict[str, Any]) -> str:
+        user_id = str(args.get("user_id", ""))
+        limit = int(args.get("limit", 50))
+        safe_limit = max(1, min(limit, 200))
+
+        filters_json = args.get("filters_json")
+        if isinstance(filters_json, str) and filters_json:
+            filters = _parse_json(filters_json)
+            if "user_id" not in filters:
+                filters["user_id"] = user_id
+        else:
+            filters = {"user_id": user_id}
+
+        agent_id = args.get("agent_id")
+        if agent_id and "agent_id" not in filters:
+            filters["agent_id"] = str(agent_id)
+        run_id = args.get("run_id")
+        if run_id and "run_id" not in filters:
+            filters["run_id"] = str(run_id)
+
+        logger.debug("MemoryListTool get_all filters: %s", filters)
+
+        result = self._memories.get_all(filters=filters, limit=safe_limit)  # type: ignore[call-arg]
+
+        results_list: list[dict[str, Any]]
+        if isinstance(result, dict) and "results" in result:
+            results_list = result["results"]
+        elif isinstance(result, list):
+            results_list = result
+        else:
+            results_list = []
+
+        return json.dumps({"results": results_list}, ensure_ascii=True)
+
+
+class MemoryDeleteTool(Tool):
+    def __init__(self, vector_store: VectorStore) -> None:
+        self._memories = vector_store.get_collection(COLLECTION_MEMORIES)
+
+    @property
+    def name(self) -> str:
+        return "memory__delete"
+
+    @property
+    def description(self) -> str:
+        return "Delete a memory by ID, or delete all memories in a namespace (user_id/agent_id/run_id)."
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Delete one memory by its ID (ignores other params)",
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Delete all memories for this user (optional)",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Delete all memories for this agent namespace (optional)",
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "Delete all memories for this run (optional)",
+                },
+            },
+        }
+
+    async def call(self, args: dict[str, Any]) -> str:
+        memory_id = args.get("memory_id")
+        user_id = args.get("user_id")
+        agent_id = args.get("agent_id")
+        run_id = args.get("run_id")
+
+        if memory_id:
+            logger.debug("MemoryDeleteTool: deleting memory_id=%s", memory_id)
+            result = self._memories.delete(str(memory_id))  # type: ignore[call-arg]
+            payload = result if isinstance(result, dict) else {"ok": True, "deleted": str(memory_id)}
+            return json.dumps(payload, ensure_ascii=True)
+
+        namespace_kwargs: dict[str, str] = {}
+        if user_id:
+            namespace_kwargs["user_id"] = str(user_id)
+        if agent_id:
+            namespace_kwargs["agent_id"] = str(agent_id)
+        if run_id:
+            namespace_kwargs["run_id"] = str(run_id)
+
+        if not namespace_kwargs:
+            return json.dumps(
+                {"error": "Provide memory_id or at least one of user_id/agent_id/run_id"},
+                ensure_ascii=True,
+            )
+
+        logger.debug("MemoryDeleteTool: delete_all with %s", namespace_kwargs)
+        result = self._memories.delete_all(**namespace_kwargs)  # type: ignore[call-arg]
+        return json.dumps(result if isinstance(result, dict) else {"ok": True}, ensure_ascii=True)
+
+
+class MemoryUpdateTool(Tool):
+    def __init__(self, vector_store: VectorStore) -> None:
+        self._memories = vector_store.get_collection(COLLECTION_MEMORIES)
+
+    @property
+    def name(self) -> str:
+        return "memory__update"
+
+    @property
+    def description(self) -> str:
+        return "Update the content of an existing memory. The memory is re-embedded with the new text."
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "ID of the memory to update",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "New content for the memory",
+                },
+            },
+            "required": ["memory_id", "text"],
+        }
+
+    async def call(self, args: dict[str, Any]) -> str:
+        memory_id = str(args.get("memory_id", ""))
+        text = str(args.get("text", ""))
+
+        if not memory_id or not text:
+            return json.dumps({"error": "Both memory_id and text are required"}, ensure_ascii=True)
+
+        logger.debug("MemoryUpdateTool: updating memory_id=%s", memory_id)
+        result = self._memories.update(memory_id, text)  # type: ignore[call-arg]
+        return json.dumps(result if isinstance(result, dict) else {"ok": True, "updated": memory_id}, ensure_ascii=True)
 
 
 class MemoryHealthTool(Tool):
@@ -317,7 +469,7 @@ class MemoryHealthTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Return memory backend health and config source."
+        return "Check if the memory backend (Qdrant) is reachable and configured."
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -335,4 +487,7 @@ def register_memory_tools(registry: Any, vector_store: VectorStore) -> None:
     registry.register(MemorySearchTool(vector_store))
     registry.register(MemorySaveTool(vector_store))
     registry.register(MemorySaveTurnTool(vector_store))
+    registry.register(MemoryListTool(vector_store))
+    registry.register(MemoryDeleteTool(vector_store))
+    registry.register(MemoryUpdateTool(vector_store))
     registry.register(MemoryHealthTool(vector_store))
