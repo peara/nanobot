@@ -296,8 +296,13 @@ def print_results(results: list[FixtureResult], verbose: bool = False) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Test memory tool selection via FileChannel")
     parser.add_argument("fixtures", nargs="*", help="Specific fixture names to run (default: all)")
+    parser.add_argument(
+        "--sessions-dir",
+        type=Path,
+        default=DEFAULT_SESSIONS_DIR,
+        help="Path to sessions directory",
+    )
     parser.add_argument("--timeout", type=float, default=120, help="Seconds to wait for bot response per fixture")
-    parser.add_argument("--timeout", type=float, default=60, help="Seconds to wait for bot response per fixture")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show bot reply and tool args")
     parser.add_argument("--tool-names-only", action="store_true", help="Only validate tool names, not arguments")
     parser.add_argument("--list", action="store_true", help="List available fixtures and exit")
