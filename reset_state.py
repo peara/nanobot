@@ -94,6 +94,27 @@ def _reset_mem0(config_path: Path, dry_run: bool) -> dict[str, Any]:
     return {"attempted": True, "ok": False, "reason": "no supported mem0 clear method found"}
 
 
+def _ensure_qdrant_collections(config_path: Path, dry_run: bool) -> dict[str, Any]:
+    """Ensure Qdrant collections exist after mem0 reset wipes them."""
+    if not config_path.exists():
+        return {"attempted": False, "ok": False, "reason": f"config not found: {config_path}"}
+    if dry_run:
+        return {"attempted": True, "ok": True, "method": "dry-run"}
+
+    try:
+        from nanobot.vector_store import COLLECTION_SKILLS, VectorStore
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"attempted": True, "ok": False, "reason": f"VectorStore import failed: {exc}"}
+
+    try:
+        vector_store = VectorStore(str(config_path))
+        vector_store.ensure_collection(COLLECTION_SKILLS)
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"attempted": True, "ok": False, "reason": f"collection init failed: {exc}"}
+
+    return {"attempted": True, "ok": True, "collections": ["nanobot_skills"]}
+
+
 def _print_report(title: str, payload: dict[str, Any]) -> None:
     print(f"\n[{title}]")
     for key, value in payload.items():
@@ -126,11 +147,18 @@ def main() -> None:
     else:
         mem0_result = _reset_mem0(Path(args.mem0_config), dry_run=dry_run)
 
+    qdrant_result: dict[str, Any]
+    if args.skip_mem0:
+        qdrant_result = {"attempted": False, "ok": True, "reason": "skipped by flag"}
+    else:
+        qdrant_result = _ensure_qdrant_collections(Path(args.mem0_config), dry_run=dry_run)
+
     mode = "DRY RUN" if dry_run else "RESET COMPLETE"
     print(f"nanobot state reset - {mode}")
     _print_report("local-db", main_result)
     _print_report("scheduler-db", scheduler_result)
     _print_report("mem0", mem0_result)
+    _print_report("qdrant-collections", qdrant_result)
 
 
 if __name__ == "__main__":

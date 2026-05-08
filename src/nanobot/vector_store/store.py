@@ -75,7 +75,7 @@ class VectorStore:
     def _get_collection_name(self, name: str) -> str:
         return f"nanobot_{name}"
 
-    def _ensure_collection(self, name: str) -> None:
+    def ensure_collection(self, name: str) -> None:
         collection_name = self._get_collection_name(name)
         vs_config = self._config.get("vector_store", {}).get("config", {})
         dims = vs_config.get("embedding_model_dims", 1024)
@@ -102,8 +102,6 @@ class VectorStore:
         return self._memories_instance
 
     def add_text(self, collection: str, text: str, metadata: dict[str, Any] | None = None) -> str:
-        self._ensure_collection(collection)
-
         embedding = self._embedder.embed(text, "add")
         point_id = str(uuid.uuid4())
 

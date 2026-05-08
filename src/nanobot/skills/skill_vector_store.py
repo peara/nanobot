@@ -13,6 +13,7 @@ class SkillVectorStore:
 
     def __init__(self, vector_store: VectorStore) -> None:
         self._store = vector_store
+        self._store.ensure_collection(COLLECTION_SKILLS)
 
     def store_skill(self, skill: Skill) -> None:
         text = f"{skill.name}: {skill.description}"

@@ -198,6 +198,13 @@ Recommended local embedding model:
 - `mxbai-embed-large` (best quality)
 - `nomic-embed-text` (lighter/faster fallback)
 
+The mem0 config also configures the local Qdrant vector store used for both memory and skill embeddings. Collections are auto-created on startup:
+
+- `nanobot_memories` — created by mem0 on first use
+- `nanobot_skills` — created by `SkillVectorStore` on init
+
+After a full reset, the `nanobot_skills` collection is recreated automatically by `reset_state.py`. To repopulate skill embeddings for intelligent matching, run `skills-resync` (see Debug CLI below).
+
 ## Web search provider setup
 
 The built-in web MCP server exposes `web__search_web` for structured search before `web__read_page`.
@@ -235,6 +242,12 @@ If you need to frequently clear scheduler + local history/context + mem0 memory,
 uv run python reset_state.py
 ```
 
+This also recreates any missing Qdrant collections (e.g. `nanobot_skills`). After a reset, re-index your intelligent skills:
+
+```bash
+uv run python -m nanobot.debug_cli --config config.yaml skills-resync
+```
+
 Useful options:
 
 ```bash
@@ -261,4 +274,5 @@ uv run python -m nanobot.debug_cli --config config.yaml browse --scope telegram:
 uv run python -m nanobot.debug_cli --config config.yaml browse --latest --full
 uv run python -m nanobot.debug_cli --config config.yaml tools --latest --limit 20
 uv run python -m nanobot.debug_cli --config config.yaml tools --scope telegram:500506690 --full
+uv run python -m nanobot.debug_cli --config config.yaml skills-resync
 ```
