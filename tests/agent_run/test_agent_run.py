@@ -128,17 +128,18 @@ class _FakeHost:
         self.events.append(event)
 
 
-def test_prepare_messages_for_chat_merges_system_roles() -> None:
-    merged = prepare_messages_for_chat(
+def test_prepare_messages_for_chat_preserves_system_roles() -> None:
+    result = prepare_messages_for_chat(
         [
             {"role": "system", "content": "A"},
             {"role": "system", "content": "B"},
             {"role": "user", "content": "hi"},
         ]
     )
-    assert merged[0]["role"] == "system"
-    assert merged[0]["content"] == "A\n\nB"
-    assert merged[1] == {"role": "user", "content": "hi"}
+    assert len(result) == 3
+    assert result[0] == {"role": "system", "content": "A"}
+    assert result[1] == {"role": "system", "content": "B"}
+    assert result[2] == {"role": "user", "content": "hi"}
 
 
 def test_normalize_roles_merges_consecutive_user_messages() -> None:

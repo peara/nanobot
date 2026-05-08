@@ -38,7 +38,7 @@ def build_full_context_report(bot: Any, scope: str) -> str:
     history = bot.memory.get_recent_messages(scope, limit=bot.config.history_message_limit)
     history = attach_human_timestamps(history, timezone_name=bot.config.working_timezone)
     trimmed = trim_history_by_chars(history, bot.config.history_char_limit)
-    messages = [bot._base_system_message()]
+    messages = list(bot._system_messages())
     messages.extend(trimmed)
     scratchpad_message = bot._scratchpad_assistant_message(scope)
     if scratchpad_message is not None:

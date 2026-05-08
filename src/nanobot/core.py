@@ -248,7 +248,7 @@ class BotCore:
             history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
             history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
             history = trim_history_by_chars(history, self.config.history_char_limit)
-            messages = [self._base_system_message()]
+            messages = self._system_messages()
             messages.extend(history)
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
@@ -271,14 +271,25 @@ class BotCore:
         finally:
             self.active_requests.pop(scope, None)
 
-    def _base_system_message(self) -> dict[str, str]:
-        content = self.prompts.render(
+    def _system_messages(self) -> list[dict[str, str]]:
+        """Build the ordered list of system messages for prompt caching.
+
+        Returns separate system messages so the static prefix (orchestrator_main)
+        can be cached across requests while the dynamic time block changes per-request.
+        """
+        static_content = self.prompts.render(
             "orchestrator_main",
             assistant_name=self.config.assistant_name,
+        )
+        time_content = self.prompts.render(
+            "orchestrator_main_time",
             working_timezone=self.config.working_timezone,
             current_time=human_now(self.config.working_timezone),
         )
-        return {"role": "system", "content": content}
+        return [
+            {"role": "system", "content": static_content},
+            {"role": "system", "content": time_content},
+        ]
 
     def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]

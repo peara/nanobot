@@ -198,6 +198,7 @@ def _show_context(config: AppConfig, scope: str, full: bool, tail: int) -> None:
     recent = [{"role": role, "content": content} for role, content in rows]
     trimmed = _trim_history_by_chars(recent, config.history_char_limit)
 
+    prompts = PromptStore(config.prompt_db_path)
     if full:
         payload = {
             "model": config.model.model,
@@ -206,9 +207,15 @@ def _show_context(config: AppConfig, scope: str, full: bool, tail: int) -> None:
             "messages": [
                 {
                     "role": "system",
-                    "content": PromptStore(config.prompt_db_path).render(
+                    "content": prompts.render(
                         "orchestrator_main",
                         assistant_name=config.assistant_name,
+                    ),
+                },
+                {
+                    "role": "system",
+                    "content": prompts.render(
+                        "orchestrator_main_time",
                         working_timezone=config.working_timezone,
                         current_time="(debug context time unavailable)",
                     ),

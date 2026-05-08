@@ -168,7 +168,7 @@ class TestPromptStoreSeedDefaults:
         prompt = seeded_store.get_active("orchestrator_main")
         assert prompt is not None
         assert "orchestrator" == prompt.role
-        assert len(prompt.variables) == 3
+        assert len(prompt.variables) == 1
 
     def test_seed_defaults_idempotent(self, tmp_path: Path) -> None:
         db_path = str(tmp_path / "prompts.db")
@@ -185,6 +185,7 @@ class TestPromptStoreSeedDefaults:
         names = {p.name for p in prompts}
         expected = {
             "orchestrator_main",
+            "orchestrator_main_time",
             "subagent_default",
             "plan_brief_extractor",
             "plan_execution_agent",

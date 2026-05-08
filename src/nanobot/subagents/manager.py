@@ -103,7 +103,13 @@ class SubagentManager:
                 if skill_messages:
                     logger.info("Injecting %d skill messages for run_id=%s", len(skill_messages), run.id)
 
-        enhanced_messages = skill_messages + messages
+        # Insert skill messages after only the first system message (static prompt)
+        # so they sit between the cacheable static prefix and the dynamic time block.
+        if skill_messages and messages:
+            insert_at = 1 if str(messages[0].get("role", "")) == "system" else 0
+            enhanced_messages = messages[:insert_at] + skill_messages + messages[insert_at:]
+        else:
+            enhanced_messages = messages
 
         success = True
         error: str | None = None

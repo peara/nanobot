@@ -115,7 +115,7 @@ def _normalize_roles(messages: list[dict]) -> list[dict]:
 
 
 def prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
-    system_contents: list[str] = []
+    system_messages: list[dict] = []
     non_system: list[dict] = []
     for message in messages:
         role = str(message.get("role", ""))
@@ -125,14 +125,13 @@ def prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
                 continue
             text = str(content).strip()
             if text:
-                system_contents.append(text)
+                system_messages.append({"role": "system", "content": text})
             continue
         non_system.append(message)
     non_system = _normalize_roles(non_system)
-    if not system_contents:
+    if not system_messages:
         return non_system
-    merged_system = {"role": "system", "content": "\n\n".join(system_contents)}
-    return [merged_system, *non_system]
+    return [*system_messages, *non_system]
 
 
 class AgentRun:
@@ -337,7 +336,15 @@ class AgentRun:
                     messages=prepared_messages,
                     tools=[],
                 )
-                reply = final_message.get("content") or "I could not generate a response."
+                finish_reason = final_message.get("finish_reason")
+                reply = final_message.get("content") or ""
+                if not reply.strip():
+                    logger.warning(
+                        "LLM returned empty reply in finalize path scope=%s finish_reason=%s",
+                        scope_for_tools,
+                        finish_reason,
+                    )
+                    reply = "I could not generate a response."
                 return reply, tool_trace
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
@@ -350,5 +357,13 @@ class AgentRun:
                 tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
                 response_format=response_format,
             )
-        reply = assistant_message.get("content") or "I could not generate a response."
+        finish_reason = assistant_message.get("finish_reason")
+        reply = assistant_message.get("content") or ""
+        if not reply.strip():
+            logger.warning(
+                "LLM returned empty reply in main loop scope=%s finish_reason=%s",
+                scope_for_tools,
+                finish_reason,
+            )
+            reply = "I could not generate a response."
         return reply, tool_trace

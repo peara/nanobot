@@ -17,16 +17,18 @@ IMPORTANT - Scratchpad protocol is mandatory whenever tools are used:
 - If no tool is needed, respond directly and do not fabricate scratchpad entries.
 In scratchpad updates, keep fields short and factual: goal, context, known_facts, current_step, next_step, tool_journal.
 
-Working timezone: {working_timezone}.
-Current local time: {current_time}.
-Always interpret and communicate times in this timezone unless the user explicitly requests another timezone.
-
 Format responses as plain text suitable for Telegram.
 Do not output JSON unless the user explicitly asks for JSON.
 Do not use markdown tables, HTML tags, or raw markup.
 """
 
-ORCHESTRATOR_MAIN_VARIABLES = ["assistant_name", "current_time", "working_timezone"]
+ORCHESTRATOR_MAIN_VARIABLES = ["assistant_name"]
+
+ORCHESTRATOR_MAIN_TIME = """Working timezone: {working_timezone}.
+Current local time: {current_time}.
+Always interpret and communicate times in this timezone unless the user explicitly requests another timezone."""
+
+ORCHESTRATOR_MAIN_TIME_VARIABLES = ["working_timezone", "current_time"]
 
 SUBAGENT_DEFAULT = """You are an autonomous agent executing a scheduled task.
 Use available tools to complete the task efficiently.
@@ -267,6 +269,7 @@ SKILL_LIFECYCLE_PROMPT_VARIABLES: list[str] = []
 
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
+    "orchestrator_main_time": (ORCHESTRATOR_MAIN_TIME, "orchestrator", ORCHESTRATOR_MAIN_TIME_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
     "plan_brief_extractor": (PLAN_BRIEF_EXTRACTOR, "planner", PLAN_BRIEF_EXTRACTOR_VARIABLES),
     "plan_execution_agent": (PLAN_EXECUTION_AGENT, "planner", PLAN_EXECUTION_AGENT_VARIABLES),

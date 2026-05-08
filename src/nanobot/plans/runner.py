@@ -28,7 +28,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     bot.contexts.put("plan_run", run_id, "status", {"value": "created"})
 
     intake_messages = [
-        bot._base_system_message(),
+        *bot._system_messages(),
         {"role": "system", "content": bot.prompts.render("plan_brief_extractor")},
         {"role": "user", "content": request_text},
     ]
@@ -86,7 +86,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
                 "tool_trace_preview": tool_trace[:8],
             }
             recovery_messages = [
-                bot._base_system_message(),
+                *bot._system_messages(),
                 {"role": "system", "content": bot.prompts.render("plan_recovery")},
                 {"role": "user", "content": json.dumps(recovery_payload, ensure_ascii=True)},
             ]
