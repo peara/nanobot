@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from nanobot.skills.models import Skill
@@ -7,6 +8,8 @@ from nanobot.skills.models import Skill
 if TYPE_CHECKING:
     from nanobot.skills.skill_vector_store import SkillVectorStore
     from nanobot.skills.store import SkillStore
+
+logger = logging.getLogger(__name__)
 
 
 class SkillMatcher:
@@ -47,7 +50,11 @@ class SkillMatcher:
     def find_by_intelligent(self, goal: str) -> list[Skill]:
         if not self._mem0:
             return []
-        skill_names = self._mem0.search_skills(goal, limit=self._max_skills)
+        try:
+            skill_names = self._mem0.search_skills(goal, limit=self._max_skills)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Intelligent skill matching failed goal=%s", goal)
+            return []
         skills: list[Skill] = []
         for name in skill_names:
             skill = self._store.get_by_name(name)

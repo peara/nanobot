@@ -175,7 +175,12 @@ def parse_learning_extraction(response: dict[str, Any]) -> LearningExtraction:
 
 def parse_learning_from_json(content: str) -> LearningExtraction:
     """Parse JSON string from LLM response into LearningExtraction."""
-    data = json.loads(content)
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return LearningExtraction(learnings=[])
+    if not isinstance(data, dict):
+        return LearningExtraction(learnings=[])
     return parse_learning_extraction(data)
 
 

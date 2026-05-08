@@ -39,6 +39,42 @@ from nanobot.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
+PROCEDURAL_WEB_STRATEGY = "procedural_web"
+GENERAL_STRATEGY = "general"
+BLOCKED_PROCEDURAL_TOOLS = {"web__search_web", "web__search_google_web"}
+CREATE_SCRIPT_INTENT = "create_script"
+DEFAULT_INTENT = "default"
+PROCEDURAL_KEYWORDS = {
+    "nanoscript",
+    "selector",
+    "pagination",
+    "extract",
+    "scrape",
+    "crawl",
+    "issues",
+    "trending",
+    "web automation",
+    "invoke script",
+    "test script",
+    "repair script",
+    "create script",
+}
+PROCEDURAL_WEB_POLICY = (
+    "For web extraction/automation tasks, default to NanoScript procedural memory. "
+    "Use this order first: web__search_scripts, web__invoke_script, web__test_script, web__repair_script. "
+    "Only use generic web browsing tools if no reliable script is found or explicit fallback is needed."
+)
+CREATE_SCRIPT_POLICY = (
+    "The user is explicitly asking to create a reusable NanoScript. "
+    "Do not ask for generic clarification unless required fields are truly missing. "
+    "Call web__create_script in this turn with a best-effort complete payload "
+    "(name, description, code, params_schema, output_schema, selector_manifest, embedding_text, created_by). "
+    "If selector details are uncertain, still provide a reasonable fallback selector_manifest instead of null. "
+    "Generate code that passes NanoScript AST constraints: avoid while True, "
+    "use browser.loop_guard(...) in while conditions, "
+    "and prefer x = x + 1 over augmented assignment operators like +=."
+)
+
 
 @dataclass
 class ActiveRequest:
@@ -248,11 +284,23 @@ class BotCore:
             history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
             history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
             history = trim_history_by_chars(history, self.config.history_char_limit)
+            strategy = self._execution_strategy_for_request(user_text)
+            self.contexts.put("chat", scope, "execution_strategy", {"value": strategy})
+            intent = self._intent_for_request(user_text, strategy)
+            self.contexts.put("chat", scope, "execution_intent", {"value": intent})
             messages = self._system_messages(user_id=user_id)
+            policy_message = self._strategy_policy_message(strategy)
+            if policy_message is not None:
+                messages.append(policy_message)
+            intent_message = self._intent_policy_message(intent)
+            if intent_message is not None:
+                messages.append(intent_message)
             messages.extend(history)
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
-            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
+            tools = self._filter_tools_for_strategy(self._list_openai_tools(), strategy)
+            tools = self._filter_tools_for_intent(tools, intent)
+            result = await self.subagent_manager.execute(run, messages, tools)
 
             final_reply = str(result.reply or "")
             if not final_reply.strip():
@@ -277,14 +325,17 @@ class BotCore:
         Returns separate system messages so the static prefix (orchestrator_main)
         can be cached across requests while the dynamic time block changes per-request.
         """
+        current_time = human_now(self.config.working_timezone)
         static_content = self.prompts.render(
             "orchestrator_main",
             assistant_name=self.config.assistant_name,
+            working_timezone=self.config.working_timezone,
+            current_time=current_time,
         )
         time_content = self.prompts.render(
             "orchestrator_main_time",
             working_timezone=self.config.working_timezone,
-            current_time=human_now(self.config.working_timezone),
+            current_time=current_time,
         )
         messages = [
             {"role": "system", "content": static_content},
@@ -300,6 +351,81 @@ class BotCore:
 
     def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]
+
+    @staticmethod
+    def _execution_strategy_for_request(user_text: str) -> str:
+        text = user_text.strip().lower()
+        if not text:
+            return GENERAL_STRATEGY
+        has_url = "http://" in text or "https://" in text or "www." in text
+        has_procedural_hint = any(keyword in text for keyword in PROCEDURAL_KEYWORDS)
+        if has_procedural_hint and (has_url or "github" in text):
+            return PROCEDURAL_WEB_STRATEGY
+        if "nanoscript" in text or "script version" in text:
+            return PROCEDURAL_WEB_STRATEGY
+        return GENERAL_STRATEGY
+
+    @staticmethod
+    def _strategy_policy_message(strategy: str) -> dict[str, str] | None:
+        if strategy != PROCEDURAL_WEB_STRATEGY:
+            return None
+        return {"role": "system", "content": PROCEDURAL_WEB_POLICY}
+
+    @staticmethod
+    def _intent_for_request(user_text: str, strategy: str) -> str:
+        text = user_text.strip().lower()
+        if strategy != PROCEDURAL_WEB_STRATEGY:
+            return DEFAULT_INTENT
+        if not text:
+            return DEFAULT_INTENT
+        create_markers = (
+            "create script",
+            "create a script",
+            "create nanoscript",
+            "build a script",
+            "save it for reuse",
+            "reusable nanoscript",
+            "reusable workflow",
+            "reusable browser workflow",
+            "workflow i can reuse",
+        )
+        has_create_marker = any(marker in text for marker in create_markers)
+        if has_create_marker and ("script" in text or "nanoscript" in text or "workflow" in text):
+            return CREATE_SCRIPT_INTENT
+        if "github issues" in text and "reusable" in text and "workflow" in text:
+            return CREATE_SCRIPT_INTENT
+        return DEFAULT_INTENT
+
+    @staticmethod
+    def _intent_policy_message(intent: str) -> dict[str, str] | None:
+        if intent == CREATE_SCRIPT_INTENT:
+            return {"role": "system", "content": CREATE_SCRIPT_POLICY}
+        return None
+
+    @staticmethod
+    def _filter_tools_for_strategy(tools: list[dict[str, Any]], strategy: str) -> list[dict[str, Any]]:
+        if strategy != PROCEDURAL_WEB_STRATEGY:
+            return tools
+        filtered: list[dict[str, Any]] = []
+        for tool in tools:
+            name = str(tool.get("function", {}).get("name", ""))
+            if name in BLOCKED_PROCEDURAL_TOOLS:
+                continue
+            filtered.append(tool)
+        return filtered
+
+    @staticmethod
+    def _filter_tools_for_intent(tools: list[dict[str, Any]], intent: str) -> list[dict[str, Any]]:
+        if intent != CREATE_SCRIPT_INTENT:
+            return tools
+        allowed = {"session__scratchpad_write", "web__create_script"}
+        filtered: list[dict[str, Any]] = []
+        for tool in tools:
+            name = str(tool.get("function", {}).get("name", ""))
+            if name in allowed:
+                filtered.append(tool)
+        # Safety fallback: never drop all tools unexpectedly.
+        return filtered or tools
 
     def _build_context_report(self, scope: str) -> str:
         return build_context_report(self, scope)

@@ -8,6 +8,8 @@ import pytest
 from nanobot.channels.base import IncomingMessage
 from nanobot.core import BotCore
 from nanobot.messages import SubagentResultMessage, UserMessage
+from nanobot.subagents.manager import SubagentRunResult
+from nanobot.tools.base import Tool
 
 
 class _FakeChannel:
@@ -22,6 +24,27 @@ class _FakeChannel:
 
     async def send(self, chat_id: str, text: str) -> None:
         self.sent.append((chat_id, text))
+
+
+class _FakeTool(Tool):
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        return "{}"
 
 
 def _make_config() -> Any:
@@ -196,3 +219,120 @@ async def test_handle_subagent_result_does_not_notify_when_should_not(bot: BotCo
 
             mock_add.assert_not_called()
             mock_send.assert_not_called()
+
+
+def test_execution_strategy_detects_procedural_web_request(bot: BotCore) -> None:
+    strategy = bot._execution_strategy_for_request(
+        "Please extract GitHub issues from https://github.com/microsoft/vscode/issues and reuse script."
+    )
+    assert strategy == "procedural_web"
+
+
+def test_execution_strategy_keeps_general_for_non_web_request(bot: BotCore) -> None:
+    strategy = bot._execution_strategy_for_request("Set a reminder at 7pm tomorrow.")
+    assert strategy == "general"
+
+
+def test_filter_tools_for_procedural_strategy_blocks_search_web(bot: BotCore) -> None:
+    tools = [
+        {"type": "function", "function": {"name": "web__search_web"}},
+        {"type": "function", "function": {"name": "web__search_scripts"}},
+        {"type": "function", "function": {"name": "web__invoke_script"}},
+    ]
+    filtered = bot._filter_tools_for_strategy(tools, "procedural_web")
+    names = [str(tool.get("function", {}).get("name", "")) for tool in filtered]
+    assert "web__search_web" not in names
+    assert "web__search_scripts" in names
+    assert "web__invoke_script" in names
+
+
+def test_intent_detects_create_script_for_natural_language(bot: BotCore) -> None:
+    strategy = bot._execution_strategy_for_request(
+        "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page with pagination."
+    )
+    intent = bot._intent_for_request(
+        "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page with pagination.",
+        strategy,
+    )
+    assert strategy == "procedural_web"
+    assert intent == "create_script"
+
+
+def test_intent_detects_create_script_for_reusable_workflow_language(bot: BotCore) -> None:
+    text = (
+        "I need a reusable browser workflow to extract GitHub issues with pagination "
+        "from a repo issues URL."
+    )
+    strategy = bot._execution_strategy_for_request(text)
+    intent = bot._intent_for_request(text, strategy)
+    assert strategy == "procedural_web"
+    assert intent == "create_script"
+
+
+def test_filter_tools_for_create_intent_keeps_only_create_and_scratchpad(bot: BotCore) -> None:
+    tools = [
+        {"type": "function", "function": {"name": "session__scratchpad_write"}},
+        {"type": "function", "function": {"name": "web__create_script"}},
+        {"type": "function", "function": {"name": "web__search_scripts"}},
+        {"type": "function", "function": {"name": "web__invoke_script"}},
+    ]
+    filtered = bot._filter_tools_for_intent(tools, "create_script")
+    names = [str(tool.get("function", {}).get("name", "")) for tool in filtered]
+    assert names == ["session__scratchpad_write", "web__create_script"]
+
+
+@pytest.mark.asyncio
+async def test_process_procedural_request_prefers_nanoscript_tools(bot: BotCore) -> None:
+    captured: dict[str, Any] = {}
+    bot.tools.register(_FakeTool("web__search_web"))
+    bot.tools.register(_FakeTool("web__search_scripts"))
+    bot.tools.register(_FakeTool("web__invoke_script"))
+
+    async def _fake_execute(run, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
+        del run, response_format
+        captured["messages"] = messages
+        captured["tools"] = tools
+        return SubagentRunResult(run_id="run-test", success=True, reply="done", tool_trace=[])
+
+    with patch.object(bot.subagent_manager, "execute", new=AsyncMock(side_effect=_fake_execute)):
+        with patch.object(bot, "_send", new_callable=AsyncMock):
+            await bot._process(
+                "telegram:123",
+                "Please extract GitHub issues from https://github.com/microsoft/vscode/issues and reuse it.",
+            )
+
+    tools = captured["tools"]
+    names = [str(tool.get("function", {}).get("name", "")) for tool in tools]
+    assert "web__search_web" not in names
+    assert any("web__search_scripts" == name for name in names)
+    assert any("web__invoke_script" == name for name in names)
+
+    messages = captured["messages"]
+    assert any("NanoScript procedural memory" in str(message.get("content", "")) for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_process_create_script_request_injects_create_policy_and_toolset(bot: BotCore) -> None:
+    captured: dict[str, Any] = {}
+    bot.tools.register(_FakeTool("web__create_script"))
+    bot.tools.register(_FakeTool("web__search_scripts"))
+    bot.tools.register(_FakeTool("web__invoke_script"))
+
+    async def _fake_execute(run, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
+        del run, response_format
+        captured["messages"] = messages
+        captured["tools"] = tools
+        return SubagentRunResult(run_id="run-test", success=True, reply="done", tool_trace=[])
+
+    with patch.object(bot.subagent_manager, "execute", new=AsyncMock(side_effect=_fake_execute)):
+        with patch.object(bot, "_send", new_callable=AsyncMock):
+            await bot._process(
+                "telegram:123",
+                "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page with pagination. Save it for reuse.",
+            )
+
+    tools = captured["tools"]
+    names = [str(tool.get("function", {}).get("name", "")) for tool in tools]
+    assert names == ["session__scratchpad_write", "web__create_script"]
+    messages = captured["messages"]
+    assert any("Call web__create_script in this turn" in str(message.get("content", "")) for message in messages)

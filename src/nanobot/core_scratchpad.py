@@ -64,6 +64,22 @@ def strip_thinking(content: str) -> str:
 
 
 def _to_text_list(value: Any, *, limit_items: int, limit_chars: int = MAX_FIELD_CHARS) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        # Handle common malformed payloads from models:
+        # "<item><![CDATA[text]]></item>" or plain comma/newline-delimited strings.
+        text = text.replace("<item><![CDATA[", "").replace("]]></item>", "").strip()
+        if not text:
+            return []
+        if "\n" in text:
+            parts = [segment.strip() for segment in text.splitlines() if segment.strip()]
+        elif "," in text:
+            parts = [segment.strip() for segment in text.split(",") if segment.strip()]
+        else:
+            parts = [text]
+        return [_clip_text(item, limit=limit_chars) for item in parts[-limit_items:]]
     if not isinstance(value, list):
         return []
     cleaned: list[str] = []
@@ -148,6 +164,10 @@ def scratchpad_tool_spec() -> dict[str, Any]:
 
 def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> dict[str, Any]:
     mode = _clip_text(args.get("mode")).lower()
+    if not mode:
+        # Some models occasionally omit required enum fields.
+        # Defaulting to append keeps the turn progressing safely.
+        mode = "append"
     if mode not in VALID_MODES:
         raise ValueError(f"Invalid mode '{mode}'. Expected one of: {', '.join(sorted(VALID_MODES))}")
 

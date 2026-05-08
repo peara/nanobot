@@ -101,6 +101,35 @@ vector_store:
                 assert vs._get_collection_name("memories") == "nanobot_memories"
                 assert vs._get_collection_name("skills") == "nanobot_skills"
 
+    def test_search_text_creates_collection_if_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            qdrant_path = Path(tmpdir) / "qdrant"
+            config_path.write_text(f"""
+llm:
+  provider: openai
+embedder:
+  provider: openai
+  config:
+    model: text-embedding-3-small
+vector_store:
+  provider: qdrant
+  config:
+    path: {qdrant_path}
+    collection_name: test
+    embedding_model_dims: 1536
+""")
+            mock_embedder = MagicMock()
+            mock_embedder.embed.return_value = [0.0] * 1536
+            with patch("nanobot.vector_store.store.EmbedderFactory.create", return_value=mock_embedder):
+                vs = VectorStore(str(config_path))
+                assert vs.has_collection(COLLECTION_SKILLS) is False
+
+                results = vs.search_text(COLLECTION_SKILLS, "hello", limit=3)
+
+                assert results == []
+                assert vs.has_collection(COLLECTION_SKILLS) is True
+
 
 class TestConstants:
     def test_collection_constants(self) -> None:

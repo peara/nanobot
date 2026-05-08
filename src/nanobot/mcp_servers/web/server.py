@@ -6,6 +6,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from nanobot.mcp_tools.create_script import create_script as create_script_impl
+from nanobot.mcp_tools.invoke_script import invoke_script as invoke_script_impl
+from nanobot.mcp_tools.repair_script import repair_script as repair_script_impl
+from nanobot.mcp_tools.runtime import get_runtime
+from nanobot.mcp_tools.search_scripts import search_scripts as search_scripts_impl
+from nanobot.mcp_tools.test_script import test_script as test_script_impl
 from web_agent.cache import Cache
 from web_agent.config import DEFAULT_QUALITY_THRESHOLD
 from web_agent.dependencies import capabilities
@@ -46,12 +52,21 @@ def _default_quality_threshold() -> float:
         return DEFAULT_QUALITY_THRESHOLD
 
 
+def _default_nanoscript_db_path() -> str:
+    return os.environ.get("NANOSCRIPT_DB_PATH", "./data/nanoscripts.db")
+
+
 def _build_tool(*, quality_threshold: float | None, headless: bool | None) -> WebAgentTool:
     return WebAgentTool(
         quality_threshold=quality_threshold if quality_threshold is not None else _default_quality_threshold(),
         headless=_default_headless() if headless is None else headless,
         chrome_cache=_chrome_cache,
     )
+
+
+def _build_nanoscript_runtime(*, headless: bool | None):
+    resolved_headless = _default_headless() if headless is None else headless
+    return get_runtime(_default_nanoscript_db_path(), resolved_headless)
 
 
 def _normalize_payload(payload: Any, *, strip_debug: bool = False) -> dict[str, Any]:
@@ -244,6 +259,121 @@ def domain_chrome(domain: str) -> dict[str, Any]:
         "items": baseline["items"],
         "links": baseline["links"],
     }
+
+
+@mcp.tool()
+def create_script(
+    name: str,
+    description: str,
+    code: str,
+    params_schema: dict[str, Any],
+    output_schema: dict[str, Any],
+    embedding_text: str,
+    created_by: str,
+    selector_manifest: dict[str, Any] | None = None,
+    domain: str | None = None,
+    task_type: str | None = None,
+    validation_rules: list[dict[str, Any]] | None = None,
+    headless: bool | None = None,
+) -> dict[str, Any]:
+    """Create and persist a new NanoScript with version v1."""
+    runtime = _build_nanoscript_runtime(headless=headless)
+    return create_script_impl(
+        runtime,
+        {
+            "name": name,
+            "description": description,
+            "domain": domain,
+            "task_type": task_type,
+            "code": code,
+            "params_schema": params_schema,
+            "output_schema": output_schema,
+            "selector_manifest": selector_manifest,
+            "validation_rules": validation_rules or [],
+            "embedding_text": embedding_text,
+            "created_by": created_by,
+        },
+    )
+
+
+@mcp.tool()
+def search_scripts(query: str, params: dict[str, Any] | None = None, limit: int = 5) -> dict[str, Any]:
+    """Search script procedural memory and rank candidates."""
+    runtime = _build_nanoscript_runtime(headless=None)
+    return search_scripts_impl(runtime, {"query": query, "params": params or {}, "limit": limit})
+
+
+@mcp.tool()
+async def invoke_script(
+    script_id: str,
+    params: dict[str, Any],
+    version_id: str | None = None,
+    repair_on_failure: bool = False,
+    patched_code: str | None = None,
+    patched_selector_manifest: dict[str, list[str]] | None = None,
+    changelog: str | None = None,
+    headless: bool | None = None,
+) -> dict[str, Any]:
+    """Execute NanoScript safely with AST validation, budget limits and output checks."""
+    runtime = _build_nanoscript_runtime(headless=headless)
+    return await invoke_script_impl(
+        runtime,
+        {
+            "script_id": script_id,
+            "params": params,
+            "version_id": version_id,
+            "repair_on_failure": repair_on_failure,
+            "patched_code": patched_code,
+            "patched_selector_manifest": patched_selector_manifest,
+            "changelog": changelog,
+        },
+    )
+
+
+@mcp.tool()
+async def test_script(
+    script_id: str,
+    version_id: str,
+    test_cases: list[dict[str, Any]],
+    promote_on_pass: bool = False,
+    headless: bool | None = None,
+) -> dict[str, Any]:
+    """Run test cases for a specific script version."""
+    runtime = _build_nanoscript_runtime(headless=headless)
+    return await test_script_impl(
+        runtime,
+        {
+            "script_id": script_id,
+            "version_id": version_id,
+            "test_cases": test_cases,
+            "promote_on_pass": promote_on_pass,
+        },
+    )
+
+
+@mcp.tool()
+async def repair_script(
+    script_id: str,
+    failed_execution_id: str,
+    patched_code: str,
+    patched_selector_manifest: dict[str, list[str]] | None = None,
+    changelog: str | None = None,
+    test_cases: list[dict[str, Any]] | None = None,
+    headless: bool | None = None,
+) -> dict[str, Any]:
+    """Create candidate repair version and optionally promote when tests pass."""
+    runtime = _build_nanoscript_runtime(headless=headless)
+    return await repair_script_impl(
+        runtime,
+        {
+            "script_id": script_id,
+            "failed_execution_id": failed_execution_id,
+            "patched_code": patched_code,
+            "patched_selector_manifest": patched_selector_manifest,
+            "changelog": changelog,
+            "test_cases": test_cases,
+        },
+    )
 
 
 if __name__ == "__main__":

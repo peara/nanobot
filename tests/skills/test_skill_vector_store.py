@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import socket
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
 from nanobot.vector_store import COLLECTION_SKILLS, VectorStore
+
+
+def _require_reachable_endpoint(url: str) -> None:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port
+    if not host or not port:
+        pytest.skip(f"Invalid integration endpoint: {url}")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        if sock.connect_ex((host, port)) != 0:
+            pytest.skip(f"Integration endpoint is unavailable: {url}")
 
 
 class TestSkillVectorStore:
@@ -70,6 +84,16 @@ class TestSkillVectorStore:
         results = mem0_store.search_skills("unknown topic", limit=5)
 
         assert len(results) == 0
+
+    def test_search_skills_returns_empty_on_backend_error(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.side_effect = RuntimeError("backend_down")
+
+        mem0_store = SkillVectorStore(mock_vs)
+
+        results = mem0_store.search_skills("any query", limit=5)
+
+        assert results == []
 
 
 class TestSkillMatcherIntelligent:
@@ -218,6 +242,7 @@ class TestSkillMem0Integration:
                     },
                 },
             }
+            _require_reachable_endpoint(str(config["embedder"]["config"]["openai_base_url"]))
             base_config_path.write_text(yaml.dump(config), encoding="utf-8")
 
             vs = VectorStore(str(base_config_path))
@@ -292,6 +317,7 @@ class TestSkillMem0Integration:
                     },
                 },
             }
+            _require_reachable_endpoint(str(config["embedder"]["config"]["openai_base_url"]))
             base_config_path.write_text(yaml.dump(config), encoding="utf-8")
 
             vs1 = VectorStore(str(base_config_path))

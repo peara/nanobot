@@ -119,6 +119,7 @@ class VectorStore:
     def search_text(
         self, collection: str, query: str, limit: int = 5, filter_metadata: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        self.ensure_collection(collection)
         embedding = self._embedder.embed(query, "search")
 
         from qdrant_client.models import FieldCondition, Filter, MatchValue

@@ -94,6 +94,7 @@ def test_template_accepts_real_system_prompt_tool_and_user_hello(tmp_path: Path)
     config = load_config(str(repo_root / "config.yaml"))
     config.database_path = str(tmp_path / "nanobot.db")
     config.scheduler_db_path = str(tmp_path / "scheduler.db")
+    config.mem0_config_path = None
     channel = _FakeChannel()
     bot = BotCore(config=config, channels={"telegram": channel})
     llm = _TemplateCheckingLlm(repo_root / "template.jinja")
@@ -107,7 +108,7 @@ def test_template_accepts_real_system_prompt_tool_and_user_hello(tmp_path: Path)
     assert channel.sent[0][1] == "hi"
     rendered = llm.last_rendered_prompt
     system_count = sum(1 for item in llm.last_messages if str(item.get("role")) == "system")
-    assert system_count == 1
+    assert system_count == 2
     assert "hello" in rendered
     assert "<tools>" in rendered
     assert "timer__time_now" in rendered

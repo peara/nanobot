@@ -179,6 +179,111 @@ Actions available from `interact_page` steps:
 | `wait_for` | `selector` or `text` | |
 | `switch_tab` | `index` | Return to a background tab by index |
 
+## NanoScript Procedural Memory
+
+NanoScript adds reusable browser procedures as persistent memory:
+
+- `web__create_script`: create a script + v1
+- `web__search_scripts`: semantic/keyword retrieval + ranking
+- `web__invoke_script`: safe execution with tracing and confidence scoring
+- `web__test_script`: run test cases for a version
+- `web__repair_script`: create candidate repair version, promote only on pass
+
+### Storage and versioning
+
+- SQLite tables: `scripts`, `script_versions`, `script_embeddings`, `executions`, `execution_traces`, `selector_stats`
+- Scripts are versioned. Repair never overwrites the active version directly.
+- Candidate versions are promoted only after tests/output validation pass.
+
+### Safety model
+
+- Script code must define exactly: `def script(browser, params): ...`
+- AST validator blocks imports, file/system/network builtins, class/lambda/async/with/try/raise/global/nonlocal, dunder access.
+- Runtime uses restricted builtins only (`len`, `range`, `str`, `int`, `float`, `bool`, `list`, `dict`, `set`, `enumerate`, `min`, `max`, `sum`).
+- Script can only access `SafeBrowser` / `SafeElement` API, not raw Playwright page objects.
+- Execution budgets are enforced: timeout, DOM query, navigation, click, loop, and output size limits.
+
+### Selector manifest and fallback
+
+- Scripts use selector keys (`browser.find("issue_row")`) instead of hardcoded CSS in code.
+- Resolver tries selector fallbacks in order and updates `selector_stats`.
+
+### Invocation lifecycle
+
+1. Load version and validate params schema.
+2. Validate AST.
+3. Execute in sandboxed environment with SafeBrowser + budget.
+4. Validate output schema and semantic warnings.
+5. Compute confidence and classify `success | suspicious | failed`.
+6. Persist execution record and step traces.
+
+### Configuration
+
+Set script DB path for web MCP server:
+
+```bash
+export NANOSCRIPT_DB_PATH="./data/nanoscripts.db"
+```
+
+### Current limitations
+
+- MVP search uses keyword similarity fallback through `embedding_text` (vector interface is pluggable).
+- Auto-repair requires patched code input; fully autonomous code synthesis is not implemented in this layer.
+
+### Telegram E2E (user-intent prompts, model chooses tools)
+
+Use these prompts directly in Telegram. Do not mention tool names.
+
+1. Create and remember a reusable workflow
+`I need to check new GitHub issues every day. Please create a reusable workflow so next time I only need to provide the URL.`
+
+Expected:
+- Bot creates and saves a reusable script/workflow.
+- Reply includes what was saved (id/version or equivalent confirmation).
+Expected tool path:
+- Primary: `web__create_script`
+- Optional: `session__scratchpad_write` (internal notes)
+
+2. Use workflow on a concrete URL
+`Please extract issues from https://github.com/microsoft/vscode/issues for me.`
+
+Expected:
+- Bot automatically selects the best existing reusable workflow.
+- Bot executes extraction and returns structured results or a clear failure reason.
+Expected tool path:
+- Primary: `web__search_scripts` -> `web__invoke_script`
+- Optional: `session__scratchpad_write` (internal notes)
+
+3. Ask for reliability check
+`Please validate that workflow on the same URL and report pass/fail with confidence.`
+
+Expected:
+- Bot runs a validation/test flow for the current workflow version.
+- Reply includes pass/fail status and confidence.
+Expected tool path:
+- Primary: `web__search_scripts` (if script/version must be resolved) -> `web__test_script`
+- Optional: `session__scratchpad_write` (internal notes)
+
+4. Ask for self-repair when output is poor
+`If the result is empty or incorrect, repair the workflow and run it again. Only apply the fix if validation passes.`
+
+Expected:
+- Bot attempts repair as a candidate first, then tests it.
+- Active version is updated only when candidate passes validation.
+Expected tool path:
+- Primary: `web__repair_script` -> `web__test_script` (and possibly `web__invoke_script` for re-check)
+- Optional: `web__snapshot_page` (if DOM inspection is needed), `session__scratchpad_write`
+
+5. Verify graceful behavior when web search provider is missing
+`Find the latest AI trends today.`
+
+Expected:
+- If `TAVILY_API_KEY`/`EXA_API_KEY` is missing, bot explains configuration gap once.
+- Bot avoids repeated same-turn search loops.
+Expected tool path:
+- Primary: `web__search_web` (single attempt with graceful error handling)
+- Optional: `session__scratchpad_write` (internal notes)
+
 ## Memory (mem0 OSS)
 
 Long-term semantic memory is configured via `mem0_config_path` in `config.yaml`:

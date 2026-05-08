@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from nanobot.agent_run import (
+    MISSING_REQUIRED_TOOL_CALL_REPLY,
     REPEATED_TOOL_CALL_ABORT_REPLY,
+    SEARCH_PROVIDER_UNAVAILABLE_REPLY,
     AgentRun,
     _normalize_roles,
     prepare_messages_for_chat,
@@ -38,8 +40,9 @@ class _FakeLlm:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        tool_choice: dict[str, Any] | str | None = None,
     ) -> dict:
-        del messages, tools, response_format
+        del messages, tools, response_format, tool_choice
         if self._idx >= len(self._replies):
             raise RuntimeError("No fake LLM reply left")
         reply = self._replies[self._idx]
@@ -52,16 +55,19 @@ class _RecordingFakeLlm(_FakeLlm):
         super().__init__(replies)
         self.calls_messages: list[list[dict[str, Any]]] = []
         self.calls_tools: list[list[dict[str, Any]]] = []
+        self.calls_tool_choice: list[dict[str, Any] | str | None] = []
 
     async def chat(
         self,
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        tool_choice: dict[str, Any] | str | None = None,
     ) -> dict:
         self.calls_messages.append(messages)
         self.calls_tools.append(tools)
-        return await super().chat(messages, tools, response_format)
+        self.calls_tool_choice.append(tool_choice)
+        return await super().chat(messages, tools, response_format, tool_choice)
 
 
 class _FakeTool(Tool):
@@ -491,3 +497,554 @@ def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
     assert final_tools == []
     final_messages = llm.calls_messages[-1]
     assert any("completed your research" in str(m.get("content", "")) for m in final_messages)
+
+
+def test_agent_run_blocks_web_search_after_provider_unavailable() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__search_web",
+                            "arguments": json.dumps({"query": "latest ai trends", "limit": 5}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__search_web",
+                            "arguments": json.dumps({"query": "latest ai trends", "limit": 5}),
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__search_web",
+            result=json.dumps(
+                {
+                    "ok": False,
+                    "error": "search_provider_unavailable",
+                    "message": "No search provider is configured. Set TAVILY_API_KEY or EXA_API_KEY.",
+                }
+            ),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "find latest ai trends"}],
+            tools=[{"type": "function", "function": {"name": "web__search_web"}}],
+        )
+        assert text == SEARCH_PROVIDER_UNAVAILABLE_REPLY
+        assert [item["name"] for item in trace] == ["web__search_web"]
+
+    asyncio.run(_go())
+
+
+def test_agent_run_remaps_misrouted_scratchpad_payload() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "goal": "Create script",
+                                    "current_step": "Writing payload",
+                                    "next_step": "Call create_script",
+                                    "tool_journal": ["drafted script"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create a script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web__create_script",
+                        "parameters": {
+                            "type": "object",
+                            "required": ["name", "description", "code", "params_schema", "output_schema"],
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "code": {"type": "string"},
+                                "params_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                            },
+                        },
+                    },
+                },
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME]
+
+    asyncio.run(_go())
+
+
+def test_agent_run_remaps_misrouted_scratchpad_payload_for_other_tool() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "goal": "Invoke script",
+                                    "current_step": "Preparing invocation",
+                                    "next_step": "Run invoke",
+                                    "tool_journal": ["created candidate id"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "invoke script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web__invoke_script",
+                        "parameters": {
+                            "type": "object",
+                            "required": ["script_id", "params"],
+                            "properties": {
+                                "script_id": {"type": "string"},
+                                "params": {"type": "object"},
+                            },
+                        },
+                    },
+                },
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME]
+
+    asyncio.run(_go())
+
+
+def test_agent_run_forces_create_script_tool_choice_for_create_intent() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "Extract GitHub Issues",
+                                    "description": "desc",
+                                    "code": "def script(browser, params):\n    return {}",
+                                    "params_schema": {"type": "object", "properties": {}},
+                                    "output_schema": {"type": "object", "properties": {}},
+                                    "selector_manifest": {"issue_row": ["a[href*='/issues/']"]},
+                                    "embedding_text": "extract github issues",
+                                    "created_by": "llm",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
+    host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create reusable script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web__create_script",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ],
+        )
+        assert text == "done"
+
+    asyncio.run(_go())
+    assert llm.calls_tool_choice[0] == {"type": "function", "function": {"name": "web__create_script"}}
+
+
+def test_agent_run_returns_when_required_tool_choice_not_honored() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {"content": "I will do it", "tool_calls": None},
+            {"content": "Still not calling tool", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create reusable script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
+            ],
+        )
+        assert text == MISSING_REQUIRED_TOOL_CALL_REPLY
+        assert trace == []
+
+    asyncio.run(_go())
+    assert len(llm.calls_tool_choice) >= 2
+    assert llm.calls_tool_choice[0] == {"type": "function", "function": {"name": "web__create_script"}}
+
+
+def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__search_scripts",
+                            "arguments": json.dumps({"query": "github issues", "limit": 5}),
+                        },
+                    }
+                ],
+            },
+            {"content": "Let me keep exploring DOM first", "tool_calls": None},
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "GitHub Issues Extractor",
+                                    "description": "desc",
+                                    "code": "def script(browser, params):\n    return {'issues': []}",
+                                    "params_schema": {"type": "object", "properties": {}},
+                                    "output_schema": {"type": "object", "properties": {}},
+                                    "selector_manifest": {"issue_row": ["a[href*='/issues/']"]},
+                                    "embedding_text": "extract github issues",
+                                    "created_by": "llm",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
+    host.tools.register(_FakeTool("web__search_scripts", result='{"candidates": []}'))
+    host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create reusable script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
+                {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["web__search_scripts", "web__create_script"]
+
+    asyncio.run(_go())
+    assert any(
+        call == {"type": "function", "function": {"name": "web__create_script"}} for call in llm.calls_tool_choice
+    )
+
+
+def test_agent_run_retries_create_script_after_schema_validation_error() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps({"name": "bad-script", "code": "def script(browser, params):\n    return {}"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps({"name": "good-script", "code": "def script(browser, params):\n    return {}"}),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
+    call_log: list[tuple[str, dict[str, Any]]] = []
+    host.tools.register(_RecordingTool("web__create_script", call_log))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create reusable script"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
+                {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["web__create_script", "web__create_script"]
+
+    # Override create_script tool behavior after registration.
+    async def _create_script_call(args: dict[str, Any]) -> str:
+        call_log.append(("web__create_script", dict(args)))
+        if len(call_log) == 1:
+            return json.dumps(
+                {"status": "failed", "error": {"type": "PARAMS_VALIDATION_ERROR", "message": "schema.type is required"}}
+            )
+        return json.dumps({"status": "created", "script_id": "scr_1", "version_id": "ver_1"})
+
+    # monkeypatch-like assignment for _RecordingTool instance call method
+    host.tools._tools["web__create_script"].call = _create_script_call  # type: ignore[attr-defined]
+    asyncio.run(_go())
+    assert len(call_log) == 2
+
+
+def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "skill__create",
+                            "arguments": json.dumps({"name": "x", "description": "y", "instructions": "z"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "GitHub Issues Extractor",
+                                    "description": "desc",
+                                    "code": "def script(browser, params):\n    return {'issues': []}",
+                                    "params_schema": {"type": "object", "properties": {}},
+                                    "output_schema": {"type": "object", "properties": {}},
+                                    "selector_manifest": {"issue_row": ["div[id^='issue_']"]},
+                                    "embedding_text": "extract github issues",
+                                    "created_by": "llm",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
+    host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "create reusable workflow"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "skill__create", "parameters": {}}},
+                {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["skill__create", "web__create_script"]
+        assert "disabled for create_script intent" in trace[0]["result_preview"]
+
+    asyncio.run(_go())
+
+
+def test_agent_run_forces_repair_then_reinvoke_after_invoke_failure() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps({"script_id": "scr_1", "params": {"url": "https://github.com/x/y/issues"}}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__repair_script",
+                            "arguments": json.dumps(
+                                {"script_id": "scr_1", "failed_execution_id": "exe_1", "patched_code": "def script(browser, params):\n    return {'issues': []}"}
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_3",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps({"script_id": "scr_1", "version_id": "ver_2", "params": {"url": "https://github.com/x/y/issues"}}),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    invoke_call_count = {"value": 0}
+
+    class _InvokeTool(Tool):
+        @property
+        def name(self) -> str:
+            return "web__invoke_script"
+
+        @property
+        def description(self) -> str:
+            return "invoke"
+
+        @property
+        def schema(self) -> dict[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        async def call(self, args: dict[str, Any]) -> str:
+            del args
+            invoke_call_count["value"] += 1
+            if invoke_call_count["value"] == 1:
+                return '{"status":"failed","execution_id":"exe_1","error":{"type":"TIMEOUT","message":"Execution timed out"}}'
+            return '{"status":"ok","execution_id":"exe_2","result":{"issues":[{"title":"x","url":"u"}]}}'
+
+    host.tools.register(_InvokeTool())
+    host.tools.register(_FakeTool("web__repair_script", result='{"status":"repaired","new_version_id":"ver_2"}'))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "invoke and repair script if failed"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__invoke_script", "parameters": {}}},
+                {"type": "function", "function": {"name": "web__repair_script", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["web__invoke_script", "web__repair_script", "web__invoke_script"]
+
+    asyncio.run(_go())
+    assert {"type": "function", "function": {"name": "web__repair_script"}} in llm.calls_tool_choice
+    assert {"type": "function", "function": {"name": "web__invoke_script"}} in llm.calls_tool_choice

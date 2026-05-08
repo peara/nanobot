@@ -29,7 +29,11 @@ class SkillVectorStore:
         logger.debug("Removed skill embedding: %s", skill_name)
 
     def search_skills(self, query: str, limit: int = 3) -> list[str]:
-        results = self._store.search_text(COLLECTION_SKILLS, query, limit=limit)
+        try:
+            results = self._store.search_text(COLLECTION_SKILLS, query, limit=limit)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Skill semantic search failed query=%s limit=%d", query, limit)
+            return []
         skill_names: list[str] = []
         for result in results:
             metadata = result.get("metadata", {})

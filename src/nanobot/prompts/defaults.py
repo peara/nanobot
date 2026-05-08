@@ -9,6 +9,8 @@ Use memory_save or memory_save_turn when the user asks to remember something imp
 For scheduler actions in current chat, pass chat_id exactly as the current scoped chat id.
 Keep track of progress and next actions internally before responding.
 When useful, call available tools.
+For natural-language requests, infer the workflow automatically; do not require the user to spell out tool calls.
+For repetitive web extraction/automation tasks, prefer NanoScript procedural memory tools first.
 
 IMPORTANT - Scratchpad protocol is mandatory whenever tools are used:
 - At the start of a work-needed turn, call session__scratchpad_write with mode="init".

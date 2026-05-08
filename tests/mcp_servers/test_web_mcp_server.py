@@ -241,3 +241,106 @@ def test_interact_page_applies_chrome_dedup(monkeypatch) -> None:
     assert payload2["chrome_omitted"]["links"] == 3
 
     server._chrome_cache.clear()
+
+
+def test_create_script_tool(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
+    monkeypatch.setattr(
+        server,
+        "create_script_impl",
+        lambda runtime, payload: {
+            "status": "created",
+            "script_id": "scr_1",
+            "version_id": "ver_1",
+            "name": payload["name"],
+            "runtime": runtime is not None,
+        },
+    )
+    payload = server.create_script(
+        name="Extract Issues",
+        description="desc",
+        code="def script(browser, params):\n    return {}",
+        params_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object", "properties": {}},
+        selector_manifest={},
+        embedding_text="text",
+        created_by="llm",
+    )
+    assert payload["status"] == "created"
+    assert payload["script_id"] == "scr_1"
+
+
+def test_create_script_tool_accepts_none_selector_manifest(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
+    monkeypatch.setattr(
+        server,
+        "create_script_impl",
+        lambda runtime, payload: {
+            "status": "failed",
+            "error": {
+                "type": "PARAMS_VALIDATION_ERROR",
+                "message": "selector_manifest is required and must be an object of string -> string[]",
+            },
+            "selector_manifest_is_none": payload["selector_manifest"] is None,
+            "runtime": runtime is not None,
+        },
+    )
+    payload = server.create_script(
+        name="Extract Issues",
+        description="desc",
+        code="def script(browser, params):\n    return {}",
+        params_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object", "properties": {}},
+        selector_manifest=None,
+        embedding_text="text",
+        created_by="llm",
+    )
+    assert payload["status"] == "failed"
+    assert payload["selector_manifest_is_none"] is True
+
+
+def test_search_scripts_tool(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
+    monkeypatch.setattr(
+        server,
+        "search_scripts_impl",
+        lambda runtime, payload: {
+            "runtime": runtime is not None,
+            "candidates": [{"script_id": "scr_1", "version_id": "ver_1", "score": 0.9}],
+            "query": payload["query"],
+        },
+    )
+    payload = server.search_scripts("github issues", params={"url": "https://github.com/org/repo/issues"}, limit=3)
+    assert payload["candidates"][0]["script_id"] == "scr_1"
+    assert payload["query"] == "github issues"
+
+
+def test_invoke_test_and_repair_tools(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
+
+    async def _fake_invoke(runtime, payload):
+        del runtime, payload
+        return {"status": "success", "confidence": 0.9, "result": {"ok": True}, "execution_id": "exe_1", "error": None}
+
+    async def _fake_test(runtime, payload):
+        del runtime, payload
+        return {"status": "passed", "cases": [{"status": "success", "confidence": 0.9, "error": None}]}
+
+    async def _fake_repair(runtime, payload):
+        del runtime, payload
+        return {"status": "candidate_created", "new_version_id": "ver_2", "promoted": False}
+
+    monkeypatch.setattr(server, "invoke_script_impl", _fake_invoke)
+    monkeypatch.setattr(server, "test_script_impl", _fake_test)
+    monkeypatch.setattr(server, "repair_script_impl", _fake_repair)
+
+    invoke_payload = asyncio.run(server.invoke_script("scr_1", {"url": "https://example.com"}))
+    assert invoke_payload["status"] == "success"
+
+    test_payload = asyncio.run(server.test_script("scr_1", "ver_1", [{"params": {"url": "https://example.com"}}]))
+    assert test_payload["status"] == "passed"
+
+    repair_payload = asyncio.run(
+        server.repair_script("scr_1", "exe_1", "def script(browser, params):\n    return {}", test_cases=[])
+    )
+    assert repair_payload["status"] == "candidate_created"

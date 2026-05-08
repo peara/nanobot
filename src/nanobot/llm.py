@@ -22,10 +22,13 @@ class LlmClient:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        tool_choice: dict[str, Any] | str | None = None,
     ) -> dict:
         kwargs: dict[str, Any] = {}
         if response_format is not None:
             kwargs["response_format"] = response_format
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,  # type: ignore[arg-type]

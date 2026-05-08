@@ -154,6 +154,10 @@ class TestParseLearningFromJson:
         assert len(extraction.learnings) == 1
         assert extraction.learnings[0].observation == "Prefers concise answers"
 
+    def test_parse_invalid_json_returns_empty_extraction(self) -> None:
+        extraction = parse_learning_from_json("not-json")
+        assert extraction.learnings == []
+
 
 class TestLearningExtractionSchema:
     def test_schema_structure(self) -> None:
