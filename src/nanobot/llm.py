@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from nanobot.config import ModelConfig
+
+logger = logging.getLogger(__name__)
 
 
 class LlmClient:
@@ -31,4 +34,13 @@ class LlmClient:
             max_tokens=self.max_tokens,
             **kwargs,
         )
-        return response.choices[0].message.model_dump()  # type: ignore[no-any-return]
+        choice = response.choices[0]
+        message = choice.message.model_dump()
+        message["finish_reason"] = choice.finish_reason
+        if choice.finish_reason == "length":
+            logger.warning(
+                "LLM response truncated (finish_reason=length) model=%s max_tokens=%d",
+                self.model,
+                self.max_tokens,
+            )
+        return message

@@ -128,6 +128,9 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or "{}"
+        if response.get("finish_reason") == "length":
+            logger.warning("Evaluator quality assessment truncated scope=%s", scope)
+            return self._default_quality(worker_result)
         self._log_phase(scope, "quality_assessment", user_message, content)
         if not content or content == "{}":
             return self._default_quality(worker_result)
@@ -155,6 +158,9 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or '{"learnings": []}'
+        if response.get("finish_reason") == "length":
+            logger.warning("Evaluator learning extraction truncated scope=%s", scope)
+            return LearningExtraction(learnings=[])
         self._log_phase(scope, "learning_extraction", user_message, content)
         if not content:
             return LearningExtraction(learnings=[])
@@ -180,6 +186,9 @@ class LearningEvaluator:
         )
 
         content = response.get("content") or '{"operations": []}'
+        if response.get("finish_reason") == "length":
+            logger.warning("Evaluator lifecycle decision truncated scope=%s", scope)
+            return []
         self._log_phase(scope, "skill_lifecycle", user_message, content)
         if not content:
             return []
