@@ -405,7 +405,13 @@ class MemoryDeleteTool(Tool):
 
         if memory_id:
             logger.debug("MemoryDeleteTool: deleting memory_id=%s", memory_id)
-            result = self._memories.delete(str(memory_id))  # type: ignore[call-arg]
+            try:
+                result = self._memories.delete(str(memory_id))  # type: ignore[call-arg]
+            except AttributeError as exc:
+                logger.debug("MemoryDeleteTool: delete failed for memory_id=%s: %s", memory_id, exc)
+                return json.dumps(
+                    {"error": f"Memory not found: {memory_id}", "ok": False}, ensure_ascii=True
+                )
             payload = result if isinstance(result, dict) else {"ok": True, "deleted": str(memory_id)}
             return json.dumps(payload, ensure_ascii=True)
 

@@ -248,6 +248,17 @@ class TestMemoryDeleteTool:
         mock_memory.delete.assert_called_once_with("mem-123")
         mock_memory.delete_all.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_memory_id(self) -> None:
+        mock_vs, mock_memory = _make_mock_vector_store()
+        mock_memory.delete.side_effect = AttributeError("'NoneType' object has no attribute 'payload'")
+
+        tool = MemoryDeleteTool(mock_vs)
+        result = await tool.call({"memory_id": "nonexistent-id"})
+        data = json.loads(result)
+        assert "error" in data
+        assert not data.get("ok", True)
+
 
 class TestMemoryUpdateTool:
     @pytest.mark.asyncio
