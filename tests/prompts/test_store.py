@@ -186,6 +186,7 @@ class TestPromptStoreSeedDefaults:
         expected = {
             "orchestrator_main",
             "orchestrator_main_time",
+            "orchestrator_user_context",
             "subagent_default",
             "plan_brief_extractor",
             "plan_execution_agent",

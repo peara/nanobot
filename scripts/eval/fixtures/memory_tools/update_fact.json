@@ -1,16 +1,16 @@
 {
   "name": "update_fact",
   "phase": "memory_tool_selection",
-  "description": "User asks to update an existing memory's content",
-  "scenario": "Update memory abc123 to say my birthday is July 16",
+  "description": "User corrects a stored fact, bot should search to find and then update",
+  "scenario": "My birthday is July 16, not July 15. Can you update that?",
+  "setup": {
+    "memories": [
+      {"text": "My birthday is July 15", "user_id": "eval"}
+    ]
+  },
   "expected_tool_calls": [
-    {
-      "tool_name": "memory__update",
-      "required_args": {
-        "memory_id": "*",
-        "text": "*"
-      }
-    }
+    {"tool_name": "memory__search", "required_args": {"query": "*"}},
+    {"tool_name": "memory__update", "required_args": {"memory_id": "*", "text": "*"}}
   ],
-  "acceptable_alternatives": []
+  "acceptable_alternatives": ["memory__list"]
 }

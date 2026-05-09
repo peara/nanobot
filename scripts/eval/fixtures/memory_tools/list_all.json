@@ -3,13 +3,14 @@
   "phase": "memory_tool_selection",
   "description": "User asks to browse all their memories",
   "scenario": "Show me all my memories",
+  "setup": {
+    "memories": [
+      {"text": "My birthday is July 15", "user_id": "eval"},
+      {"text": "I prefer dark mode on all apps", "user_id": "eval"}
+    ]
+  },
   "expected_tool_calls": [
-    {
-      "tool_name": "memory__list",
-      "required_args": {
-        "user_id": "*"
-      }
-    }
+    {"tool_name": "memory__list", "required_args": {"user_id": "*"}}
   ],
   "acceptable_alternatives": ["memory__search"]
 }

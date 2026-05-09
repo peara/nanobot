@@ -187,7 +187,7 @@ class BotCore:
             )
             await self.command_manager.handle(cmd, incoming, scope)
         else:
-            await self._process(scope, msg.text)
+            await self._process(scope, msg.text, user_id=msg.user_id)
 
     async def _handle_subagent_result(self, msg: SubagentResultMessage) -> None:
         logger.info(
@@ -233,8 +233,8 @@ class BotCore:
         await self.on_subagent_result(msg)
         await self._evaluate_turn(scoped_id, prompt, result)
 
-    async def _process(self, scope: str, user_text: str) -> None:
-        logger.info("Processing message for scope=%s", scope)
+    async def _process(self, scope: str, user_text: str, user_id: str = "") -> None:
+        logger.info("Processing message for scope=%s user_id=%s", scope, user_id)
         self.active_requests[scope] = ActiveRequest(
             chat_id=scope,
             started_at=datetime.now(),
@@ -248,7 +248,7 @@ class BotCore:
             history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
             history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
             history = trim_history_by_chars(history, self.config.history_char_limit)
-            messages = self._system_messages()
+            messages = self._system_messages(user_id=user_id)
             messages.extend(history)
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
@@ -271,7 +271,7 @@ class BotCore:
         finally:
             self.active_requests.pop(scope, None)
 
-    def _system_messages(self) -> list[dict[str, str]]:
+    def _system_messages(self, user_id: str = "") -> list[dict[str, str]]:
         """Build the ordered list of system messages for prompt caching.
 
         Returns separate system messages so the static prefix (orchestrator_main)
@@ -286,10 +286,17 @@ class BotCore:
             working_timezone=self.config.working_timezone,
             current_time=human_now(self.config.working_timezone),
         )
-        return [
+        messages = [
             {"role": "system", "content": static_content},
             {"role": "system", "content": time_content},
         ]
+        if user_id:
+            user_content = self.prompts.render(
+                "orchestrator_user_context",
+                user_id=user_id,
+            )
+            messages.append({"role": "system", "content": user_content})
+        return messages
 
     def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]

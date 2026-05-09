@@ -30,6 +30,10 @@ Always interpret and communicate times in this timezone unless the user explicit
 
 ORCHESTRATOR_MAIN_TIME_VARIABLES = ["working_timezone", "current_time"]
 
+ORCHESTRATOR_USER_CONTEXT = """Current user: {user_id}"""
+
+ORCHESTRATOR_USER_CONTEXT_VARIABLES = ["user_id"]
+
 SUBAGENT_DEFAULT = """You are an autonomous agent executing a scheduled task.
 Use available tools to complete the task efficiently.
 Provide a concise summary of what you did.
@@ -270,6 +274,7 @@ SKILL_LIFECYCLE_PROMPT_VARIABLES: list[str] = []
 DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main": (ORCHESTRATOR_MAIN, "orchestrator", ORCHESTRATOR_MAIN_VARIABLES),
     "orchestrator_main_time": (ORCHESTRATOR_MAIN_TIME, "orchestrator", ORCHESTRATOR_MAIN_TIME_VARIABLES),
+    "orchestrator_user_context": (ORCHESTRATOR_USER_CONTEXT, "orchestrator", ORCHESTRATOR_USER_CONTEXT_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
     "plan_brief_extractor": (PLAN_BRIEF_EXTRACTOR, "planner", PLAN_BRIEF_EXTRACTOR_VARIABLES),
     "plan_execution_agent": (PLAN_EXECUTION_AGENT, "planner", PLAN_EXECUTION_AGENT_VARIABLES),

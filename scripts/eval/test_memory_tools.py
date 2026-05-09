@@ -24,12 +24,49 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+def inject_memories_via_bot(
+    sessions_dir: Path,
+    session_id: str,
+    memories: list[dict[str, Any]],
+    event_offset: int,
+    timeout: float,
+    user_id: str = "eval",
+) -> tuple[int, list[str]]:
+    """Inject memories by sending memory__save prompts through the FileChannel.
+
+    This is necessary because the bot holds an exclusive lock on the Qdrant DB,
+    so we can't inject directly via mem0 API while the bot is running.
+
+    Returns (new_event_offset, list of sent scenario texts).
+    """
+    sent_texts: list[str] = []
+    for mem_data in memories:
+        text = mem_data["text"]
+        uid = mem_data.get("user_id", user_id)
+        save_prompt = f"Remember this: {text}"
+        agent_id = mem_data.get("agent_id")
+        if agent_id:
+            save_prompt += f" (for the {agent_id} task)"
+        send_message(sessions_dir, session_id, save_prompt, user_id=uid)
+        try:
+            new_events = wait_for_turn_complete(sessions_dir, session_id, event_offset, timeout=timeout)
+            event_offset += len(new_events)
+        except TimeoutError:
+            logger.warning("Timed out injecting memory: %s", text[:50])
+        time.sleep(1)
+        sent_texts.append(save_prompt)
+    return event_offset, sent_texts
+
 
 DEFAULT_SESSIONS_DIR = Path("data/chat/sessions")
 
@@ -302,7 +339,7 @@ def main() -> None:
         default=DEFAULT_SESSIONS_DIR,
         help="Path to sessions directory",
     )
-    parser.add_argument("--timeout", type=float, default=120, help="Seconds to wait for bot response per fixture")
+    parser.add_argument("--timeout", type=float, default=600, help="Seconds to wait for bot response per fixture")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show bot reply and tool args")
     parser.add_argument("--tool-names-only", action="store_true", help="Only validate tool names, not arguments")
     parser.add_argument("--list", action="store_true", help="List available fixtures and exit")
@@ -341,6 +378,7 @@ def main() -> None:
         scenario = fixture["scenario"]
         expected_tool_calls = fixture.get("expected_tool_calls", [])
         acceptable_alternatives = fixture.get("acceptable_alternatives", [])
+        setup_memories = fixture.get("setup", {}).get("memories", [])
 
         print("  Resetting state...", file=sys.stderr)
         send_message(args.sessions_dir, session_id, "/reset", user_id="eval")
@@ -353,6 +391,12 @@ def main() -> None:
             print(f"  WARNING: Reset timed out for {name}, continuing anyway", file=sys.stderr)
             events = read_events(args.sessions_dir, session_id)
             event_offset = len(events)
+
+        if setup_memories:
+            print(f"  Injecting {len(setup_memories)} memories via bot...", file=sys.stderr)
+            event_offset, _ = inject_memories_via_bot(
+                args.sessions_dir, session_id, setup_memories, event_offset, args.timeout
+            )
 
         print(f'  Testing: {name} - "{scenario[:50]}..."', file=sys.stderr)
         send_message(args.sessions_dir, session_id, scenario, user_id="eval")

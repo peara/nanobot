@@ -1,15 +1,17 @@
 {
   "name": "delete_by_namespace",
   "phase": "memory_tool_selection",
-  "description": "User asks to clear all memories from a specific task/agent namespace",
-  "scenario": "Delete all memories from the old research task",
+  "description": "User asks to delete memories about a topic, bot should search then delete",
+  "scenario": "Delete all memories about the research task",
+  "setup": {
+    "memories": [
+      {"text": "Research task found that model accuracy improves with more data", "user_id": "eval"},
+      {"text": "Research task completed on March 1st", "user_id": "eval"}
+    ]
+  },
   "expected_tool_calls": [
-    {
-      "tool_name": "memory__delete",
-      "required_args": {
-        "agent_id": "*"
-      }
-    }
+    {"tool_name": "memory__search", "required_args": {"query": "*"}},
+    {"tool_name": "memory__delete", "required_args": {"memory_id": "*"}}
   ],
-  "acceptable_alternatives": []
+  "acceptable_alternatives": ["memory__list"]
 }

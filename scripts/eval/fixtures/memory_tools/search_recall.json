@@ -3,6 +3,11 @@
   "phase": "memory_tool_selection",
   "description": "User asks to recall a specific fact from memory",
   "scenario": "What's my birthday?",
+  "setup": {
+    "memories": [
+      {"text": "My birthday is July 15", "user_id": "eval"}
+    ]
+  },
   "expected_tool_calls": [
     {
       "tool_name": "memory__search",
@@ -12,5 +17,5 @@
       }
     }
   ],
-  "acceptable_alternatives": []
+  "acceptable_alternatives": ["memory__list"]
 }

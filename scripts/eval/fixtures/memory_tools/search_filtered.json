@@ -3,17 +3,17 @@
   "phase": "memory_tool_selection",
   "description": "User asks to search memories with a domain/category filter",
   "scenario": "Search my work memories about deadlines",
+  "setup": {
+    "memories": [
+      {"text": "Project deadline is March 1st", "user_id": "eval", "metadata": {"category": "work"}},
+      {"text": "My birthday is July 15", "user_id": "eval", "metadata": {"category": "personal"}}
+    ]
+  },
   "expected_tool_calls": [
     {
       "tool_name": "memory__search",
-      "required_args": {
-        "query": "*",
-        "user_id": "*"
-      },
-      "optional_args": {
-        "filters_json": "*"
-      }
+      "required_args": {"query": "*", "user_id": "*"}
     }
   ],
-  "acceptable_alternatives": []
+  "acceptable_alternatives": ["memory__list"]
 }

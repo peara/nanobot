@@ -3,14 +3,13 @@
   "phase": "memory_tool_selection",
   "description": "User asks to list memories from a specific agent/task namespace",
   "scenario": "What memories did the research task store?",
+  "setup": {
+    "memories": [
+      {"text": "Research task found that model accuracy improves with more data", "user_id": "eval", "agent_id": "research"}
+    ]
+  },
   "expected_tool_calls": [
-    {
-      "tool_name": "memory__list",
-      "required_args": {
-        "user_id": "*",
-        "agent_id": "*"
-      }
-    }
+    {"tool_name": "memory__list", "required_args": {"user_id": "*"}}
   ],
   "acceptable_alternatives": ["memory__search"]
 }

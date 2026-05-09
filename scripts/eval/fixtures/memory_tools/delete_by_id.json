@@ -1,15 +1,16 @@
 {
   "name": "delete_by_id",
   "phase": "memory_tool_selection",
-  "description": "User asks to delete a specific memory by its ID",
-  "scenario": "Delete memory abc123",
+  "description": "User asks to delete a specific memory by describing it",
+  "scenario": "Delete the memory about my birthday",
+  "setup": {
+    "memories": [
+      {"text": "My birthday is July 15", "user_id": "eval"}
+    ]
+  },
   "expected_tool_calls": [
-    {
-      "tool_name": "memory__delete",
-      "required_args": {
-        "memory_id": "*"
-      }
-    }
+    {"tool_name": "memory__search", "required_args": {"query": "*"}},
+    {"tool_name": "memory__delete", "required_args": {"memory_id": "*"}}
   ],
-  "acceptable_alternatives": []
+  "acceptable_alternatives": ["memory__list"]
 }
