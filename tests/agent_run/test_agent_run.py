@@ -705,7 +705,6 @@ def test_agent_run_forces_create_script_tool_choice_for_create_intent() -> None:
         ]
     )
     host = _FakeHost(llm)
-    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
     host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
     run = AgentRun(host)
 
@@ -723,6 +722,7 @@ def test_agent_run_forces_create_script_tool_choice_for_create_intent() -> None:
                     },
                 },
             ],
+            procedural_intent="create_script",
         )
         assert text == "done"
 
@@ -738,7 +738,6 @@ def test_agent_run_returns_when_required_tool_choice_not_honored() -> None:
         ]
     )
     host = _FakeHost(llm)
-    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
     run = AgentRun(host)
 
     async def _go() -> None:
@@ -749,6 +748,7 @@ def test_agent_run_returns_when_required_tool_choice_not_honored() -> None:
                 {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
             ],
+            procedural_intent="create_script",
         )
         assert text == MISSING_REQUIRED_TOOL_CALL_REPLY
         assert trace == []
@@ -803,7 +803,6 @@ def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
         ]
     )
     host = _FakeHost(llm)
-    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
     host.tools.register(_FakeTool("web__search_scripts", result='{"candidates": []}'))
     host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
     run = AgentRun(host)
@@ -817,6 +816,7 @@ def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
                 {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
             ],
+            procedural_intent="create_script",
         )
         assert text == "done"
         assert [item["name"] for item in trace] == ["web__search_scripts", "web__create_script"]
@@ -860,7 +860,6 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
         ]
     )
     host = _FakeHost(llm)
-    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
     call_log: list[tuple[str, dict[str, Any]]] = []
     host.tools.register(_RecordingTool("web__create_script", call_log))
     run = AgentRun(host)
@@ -874,6 +873,7 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
             ],
+            procedural_intent="create_script",
         )
         assert text == "done"
         assert [item["name"] for item in trace] == ["web__create_script", "web__create_script"]
@@ -937,7 +937,6 @@ def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
         ]
     )
     host = _FakeHost(llm)
-    host.contexts.put("chat", "telegram:1", "execution_intent", {"value": "create_script"})
     host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
     run = AgentRun(host)
 
@@ -950,6 +949,7 @@ def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
                 {"type": "function", "function": {"name": "skill__create", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
             ],
+            procedural_intent="create_script",
         )
         assert text == "done"
         assert [item["name"] for item in trace] == ["skill__create", "web__create_script"]

@@ -1,8 +1,88 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 _SUPPORTED_PRIMITIVE_TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
+CREATE_SCRIPT_SCHEMA_ERROR = "schema.type is required"
+CREATE_SCRIPT_REQUIRED_FIELDS = {
+    "name",
+    "description",
+    "code",
+    "params_schema",
+    "output_schema",
+    "embedding_text",
+    "created_by",
+}
+
+
+def default_create_script_params_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Repository issues URL"},
+            "max_pages": {"type": "integer", "default": 5},
+        },
+    }
+
+
+def default_create_script_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["issues"],
+        "properties": {
+            "issues": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["title", "url"],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+
+
+def default_create_script_selector_manifest() -> dict[str, list[str]]:
+    return {
+        "issue_row": ["div[id^='issue_']", ".js-issue-row", "[data-testid='list-view-item']"],
+        "issue_title_link": ["a[data-hovercard-type='issue']", "a.js-navigation-open", "a.Link--primary"],
+        "next_page": ["a.next_page", "a[rel='next']", "a[aria-label='Next Page']"],
+    }
+
+
+def normalize_create_script_args(args: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(args)
+    params_schema = normalized.get("params_schema")
+    if not isinstance(params_schema, dict) or "type" not in params_schema:
+        normalized["params_schema"] = default_create_script_params_schema()
+    output_schema = normalized.get("output_schema")
+    if not isinstance(output_schema, dict) or "type" not in output_schema:
+        normalized["output_schema"] = default_create_script_output_schema()
+    selector_manifest = normalized.get("selector_manifest")
+    if not isinstance(selector_manifest, dict):
+        normalized["selector_manifest"] = default_create_script_selector_manifest()
+    return normalized
+
+
+def is_create_script_schema_error(result_text: str) -> bool:
+    try:
+        payload = json.loads(result_text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    if str(error.get("type", "")) != "PARAMS_VALIDATION_ERROR":
+        return False
+    message = str(error.get("message", ""))
+    return CREATE_SCRIPT_SCHEMA_ERROR in message
 
 
 def validate_schema_definition(schema: dict[str, Any]) -> list[str]:
