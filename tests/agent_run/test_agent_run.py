@@ -884,3 +884,199 @@ def test_agent_run_executes_llm_chosen_repair_then_reinvoke_after_invoke_failure
 
     asyncio.run(_go())
     assert llm.calls_tool_choice == [None, None, None, None]
+
+
+def test_agent_run_persists_invoke_issues_to_context_and_scratchpad() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps({"script_id": "scr_1", "params": {"url": "https://github.com/x/y/issues"}}),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__invoke_script",
+            result=(
+                '{"status":"success","result":{"issues":['
+                '{"title":"Issue A","url":"https://github.com/x/y/issues/1"},'
+                '{"title":"Issue B","url":"https://github.com/x/y/issues/2"}]}}'
+            ),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "run workflow and show issues"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__invoke_script", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["web__invoke_script"]
+
+    asyncio.run(_go())
+    workflow_output = host.contexts.get("chat", "telegram:1", "workflow_output")
+    assert isinstance(workflow_output, dict)
+    assert int(workflow_output.get("issue_count", 0)) == 2
+    issues = workflow_output.get("issues")
+    assert isinstance(issues, list)
+    assert issues[0]["title"] == "Issue A"
+
+    scratchpad = host.contexts.get("chat", "telegram:1", "scratchpad")
+    assert isinstance(scratchpad, dict)
+    known_facts = scratchpad.get("known_facts")
+    assert isinstance(known_facts, list)
+    assert any("Issue A" in str(item) for item in known_facts)
+
+
+def test_extract_issues_from_snapshot_payload_uses_repo_from_payload_url() -> None:
+    payload = {
+        "url": "https://github.com/microsoft/vscode/issues",
+        "visible_text": "\n".join(
+            [
+                "[Bug]: Something broke",
+                "#12345",
+                "[Feature]: Add cool mode",
+                "#12346",
+            ]
+        ),
+    }
+
+    issues = AgentRun._extract_issues_from_snapshot_payload(payload)
+    assert len(issues) == 2
+    assert issues[0]["url"] == "https://github.com/microsoft/vscode/issues/12345"
+    assert issues[1]["url"] == "https://github.com/microsoft/vscode/issues/12346"
+
+
+def test_extract_issues_from_snapshot_payload_is_not_github_hardcoded() -> None:
+    payload = {
+        "url": "https://gitlab.com/group/project/-/issues",
+        "visible_text": "\n".join(
+            [
+                "Bug on login",
+                "#9001",
+                "UI glitch",
+                "#9002",
+            ]
+        ),
+    }
+
+    issues = AgentRun._extract_issues_from_snapshot_payload(payload)
+    assert len(issues) == 2
+    assert issues[0]["url"] == "https://gitlab.com/group/project/-/issues/9001"
+    assert issues[1]["url"] == "https://gitlab.com/group/project/-/issues/9002"
+
+
+def test_extract_issues_from_snapshot_payload_simple_page_links() -> None:
+    payload = {
+        "url": "https://example.com/issues",
+        "links": [
+            {"text": "Issue one title", "href": "/issues/101"},
+            {"text": "Issue two title", "href": "https://example.com/issues/102"},
+            {"text": "Not an issue", "href": "/about"},
+        ],
+    }
+
+    issues = AgentRun._extract_issues_from_snapshot_payload(payload)
+    assert len(issues) == 2
+    assert issues[0] == {"title": "Issue one title", "url": "https://example.com/issues/101"}
+    assert issues[1] == {"title": "Issue two title", "url": "https://example.com/issues/102"}
+
+
+def test_agent_run_forces_finalize_after_read_page_has_enough_issues() -> None:
+    llm = _RecordingFakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://github.com/microsoft/vscode/issues"}),
+                        },
+                    }
+                ],
+            },
+            {"content": "done", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__read_page",
+            result=json.dumps(
+                {
+                    "url": "https://github.com/microsoft/vscode/issues",
+                    "content": "\n".join(
+                        [
+                            "Issue 1",
+                            "#",
+                            "10001",
+                            "Issue 2",
+                            "#",
+                            "10002",
+                            "Issue 3",
+                            "#",
+                            "10003",
+                            "Issue 4",
+                            "#",
+                            "10004",
+                            "Issue 5",
+                            "#",
+                            "10005",
+                            "Issue 6",
+                            "#",
+                            "10006",
+                            "Issue 7",
+                            "#",
+                            "10007",
+                            "Issue 8",
+                            "#",
+                            "10008",
+                            "Issue 9",
+                            "#",
+                            "10009",
+                            "Issue 10",
+                            "#",
+                            "10010",
+                        ]
+                    ),
+                }
+            ),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "list issues"}],
+            tools=[
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+                {"type": "function", "function": {"name": "web__read_page", "parameters": {}}},
+            ],
+        )
+        assert text == "done"
+        assert [item["name"] for item in trace] == ["web__read_page"]
+
+    asyncio.run(_go())
+    assert len(llm.calls_tools) == 2
+    assert llm.calls_tools[-1] == []

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
@@ -27,6 +29,10 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
 EMPTY_REPLY_FALLBACK = "I'm sorry, I hit an empty model response. Please try again."
+WORKFLOW_OUTPUT_CONTEXT_KEY = "workflow_output"
+MAX_PERSISTED_ISSUES = 200
+MAX_ISSUE_FACTS = 10
+MIN_ISSUES_TO_FORCE_FINALIZE = 10
 SCRATCHPAD_HINT_FIELDS = {
     "mode",
     "goal",
@@ -205,6 +211,210 @@ class AgentRun:
         return by_name
 
     @staticmethod
+    def _extract_issues_from_result_payload(payload: Any) -> list[dict[str, str]]:
+        if not isinstance(payload, dict):
+            return []
+        candidates = payload.get("issues")
+        if not isinstance(candidates, list):
+            nested = payload.get("result")
+            if isinstance(nested, dict):
+                candidates = nested.get("issues")
+        if not isinstance(candidates, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not title and not url:
+                continue
+            normalized.append({"title": title, "url": url})
+        return normalized
+
+    @staticmethod
+    def _source_url_from_payload(payload: dict[str, Any]) -> str:
+        for key in ("url", "requested_url"):
+            raw = str(payload.get(key) or "").strip()
+            if raw:
+                return raw
+        return ""
+
+    @staticmethod
+    def _issues_base_from_url(source_url: str) -> str:
+        if not source_url:
+            return ""
+        parsed = urlparse(source_url)
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if not segments:
+            return ""
+        issue_idx: int | None = None
+        for idx, segment in enumerate(segments):
+            if segment.lower() == "issues":
+                issue_idx = idx
+                break
+        if issue_idx is None:
+            return ""
+        base_segments = segments[:issue_idx]
+        base_path = "/" + "/".join(base_segments) if base_segments else ""
+        return f"{parsed.scheme}://{parsed.netloc}{base_path}"
+
+    @staticmethod
+    def _extract_issues_from_snapshot_payload(payload: Any) -> list[dict[str, str]]:
+        if not isinstance(payload, dict):
+            return []
+        source_url = AgentRun._source_url_from_payload(payload)
+        issues_base = AgentRun._issues_base_from_url(source_url)
+        links = payload.get("links")
+        extracted: list[dict[str, str]] = []
+        if isinstance(links, list):
+            for item in links:
+                if not isinstance(item, dict):
+                    continue
+                href = str(item.get("href") or "").strip()
+                text = str(item.get("text") or "").strip()
+                if "/issues/" not in href or not text:
+                    continue
+                if source_url:
+                    href = urljoin(source_url, href)
+                extracted.append({"title": text, "url": href})
+        if extracted:
+            return AgentRun._dedupe_issues(extracted)
+
+        visible_text = str(payload.get("visible_text") or "")
+        if not visible_text:
+            return []
+        lines = [line.strip() for line in visible_text.splitlines() if line.strip()]
+        parsed: list[dict[str, str]] = []
+        for idx, line in enumerate(lines):
+            match = re.fullmatch(r"#(\d+)", line)
+            if match is None or idx == 0:
+                continue
+            issue_id = match.group(1)
+            title = lines[idx - 1]
+            if "Status:" in title or title.startswith("#"):
+                continue
+            parsed.append(
+                {
+                    "title": title,
+                    "url": f"{issues_base}/issues/{issue_id}" if issues_base else f"#{issue_id}",
+                }
+            )
+        return AgentRun._dedupe_issues(parsed)
+
+    @staticmethod
+    def _extract_issues_from_read_page_payload(payload: Any) -> list[dict[str, str]]:
+        if not isinstance(payload, dict):
+            return []
+        source_url = AgentRun._source_url_from_payload(payload)
+        issues_base = AgentRun._issues_base_from_url(source_url)
+        content = str(payload.get("content") or "")
+        if not content:
+            return []
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        parsed: list[dict[str, str]] = []
+        for idx, line in enumerate(lines):
+            issue_id = ""
+            direct = re.fullmatch(r"#(\d+)", line)
+            if direct is not None:
+                issue_id = direct.group(1)
+            elif line == "#" and idx + 1 < len(lines) and re.fullmatch(r"\d+", lines[idx + 1]):
+                issue_id = lines[idx + 1]
+            if not issue_id:
+                continue
+            if idx == 0:
+                continue
+            title = lines[idx - 1]
+            if title.startswith("#") or title.startswith("Status:"):
+                continue
+            parsed.append(
+                {
+                    "title": title,
+                    "url": f"{issues_base}/issues/{issue_id}" if issues_base else f"#{issue_id}",
+                }
+            )
+        return AgentRun._dedupe_issues(parsed)
+
+    @staticmethod
+    def _dedupe_issues(issues: list[dict[str, str]]) -> list[dict[str, str]]:
+        deduped: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for issue in issues:
+            key = f"{issue.get('title', '').strip()}|{issue.get('url', '').strip()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(issue)
+        return deduped
+
+    def _persist_workflow_output(self, scope_for_tools: str, tool_name: str, result_text: str) -> None:
+        if tool_name not in {
+            "web__invoke_script",
+            "web__test_script",
+            "web__repair_script",
+            "web__snapshot_page",
+            "web__read_page",
+        }:
+            return
+        try:
+            payload = json.loads(result_text)
+        except json.JSONDecodeError:
+            return
+
+        issues = self._extract_issues_from_result_payload(payload)
+        if not issues and tool_name == "web__snapshot_page":
+            issues = self._extract_issues_from_snapshot_payload(payload)
+        if not issues and tool_name == "web__read_page":
+            issues = self._extract_issues_from_read_page_payload(payload)
+        if not issues:
+            return
+
+        persisted_issues = issues[:MAX_PERSISTED_ISSUES]
+        self._host.contexts.put(
+            "chat",
+            scope_for_tools,
+            WORKFLOW_OUTPUT_CONTEXT_KEY,
+            {
+                "tool": tool_name,
+                "issue_count": len(issues),
+                "issues": persisted_issues,
+                "truncated": len(issues) > len(persisted_issues),
+                "captured_at": human_now(str(getattr(getattr(self._host, "config", None), "working_timezone", "UTC"))),
+            },
+        )
+
+        known_facts = []
+        for issue in issues[:MAX_ISSUE_FACTS]:
+            title = issue.get("title", "")
+            url = issue.get("url", "")
+            known_facts.append(f"{title} | {url}".strip(" |"))
+        if known_facts:
+            apply_scratchpad_tool_call(
+                self._host,
+                scope_for_tools,
+                {
+                    "mode": "append",
+                    "known_facts": known_facts,
+                    "tool_journal": [
+                        (
+                            f"Captured {len(issues)} issues from {tool_name} and persisted "
+                            f"to chat context '{WORKFLOW_OUTPUT_CONTEXT_KEY}'."
+                        )
+                    ],
+                    "current_step": "Ready to answer with issue titles and URLs from persisted workflow output.",
+                },
+            )
+
+    def _should_force_finalize_after_round(self, scope_for_tools: str) -> bool:
+        workflow_output = self._host.contexts.get("chat", scope_for_tools, WORKFLOW_OUTPUT_CONTEXT_KEY)
+        if not isinstance(workflow_output, dict):
+            return False
+        issues = workflow_output.get("issues")
+        if not isinstance(issues, list):
+            return False
+        return len(issues) >= MIN_ISSUES_TO_FORCE_FINALIZE
+
+    @staticmethod
     def _looks_like_misrouted_scratchpad_call(
         fn_name: str,
         args: dict[str, Any],
@@ -381,6 +591,7 @@ class AgentRun:
                     tool_result_preview(result_text),
                 )
                 if fn_name != SCRATCHPAD_TOOL_NAME:
+                    self._persist_workflow_output(scope_for_tools, fn_name, result_text)
                     tz = getattr(getattr(self._host, "config", None), "working_timezone", "UTC")
                     await self._host._dispatch_after_tool_call(
                         ToolCallEvent(
@@ -411,6 +622,26 @@ class AgentRun:
                     }
                 )
             if round_used_external_tool:
+                if self._should_force_finalize_after_round(scope_for_tools):
+                    finalize_msg = _finalize_response_message(self._host, scope_for_tools)
+                    trimmed = trim_to_last_tool_round(messages)
+                    to_send = trimmed + ([finalize_msg] if finalize_msg else [])
+                    prepared_messages = prepare_messages_for_chat(to_send)
+                    final_message = await self._chat(
+                        messages=prepared_messages,
+                        tools=[],
+                        response_format=None,
+                    )
+                    finish_reason = final_message.get("finish_reason")
+                    reply = final_message.get("content") or ""
+                    if not reply.strip():
+                        logger.warning(
+                            "LLM returned empty reply in forced finalize path scope=%s finish_reason=%s",
+                            scope_for_tools,
+                            finish_reason,
+                        )
+                        reply = EMPTY_REPLY_FALLBACK
+                    return reply, tool_trace
                 include_scratchpad_prompt = True
             elif round_finalized_scratchpad:
                 finalize_msg = _finalize_response_message(self._host, scope_for_tools)

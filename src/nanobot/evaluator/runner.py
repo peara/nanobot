@@ -134,7 +134,11 @@ class LearningEvaluator:
         self._log_phase(scope, "quality_assessment", user_message, content)
         if not content or content == "{}":
             return self._default_quality(worker_result)
-        return parse_quality_from_json(content)
+        try:
+            return parse_quality_from_json(content)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            logger.warning("Evaluator quality assessment parse failed scope=%s; using default quality", scope)
+            return self._default_quality(worker_result)
 
     async def extract_learnings(
         self,
