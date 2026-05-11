@@ -202,3 +202,23 @@ class TestPromptStoreSeedDefaults:
             "skill_lifecycle",
         }
         assert names == expected
+
+    def test_orchestrator_requires_search_before_invoke(self, seeded_store: PromptStore) -> None:
+        prompt = seeded_store.get_active("orchestrator_main")
+
+        assert prompt is not None
+        assert (
+            "Always call web__search_scripts before the first web__invoke_script for a user request"
+            in prompt.content
+        )
+        assert "Do not call web__search_scripts again for the same user request" in prompt.content
+        assert "invoke_example" in prompt.content
+        assert "do not repeat the same script_id/version_id/params invocation" in prompt.content
+        assert "After a direct fallback web tool succeeds" in prompt.content
+        assert 'mode="init" exactly once' in prompt.content
+
+    def test_orchestrator_main_renders_json_examples(self, seeded_store: PromptStore) -> None:
+        rendered = seeded_store.render("orchestrator_main", assistant_name="NanoBot")
+
+        assert '{"url": "..."}' in rendered
+        assert '{"script_id": "...", "params": {"url": "https://example.com/path"}}' in rendered

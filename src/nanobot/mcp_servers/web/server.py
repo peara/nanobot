@@ -312,7 +312,12 @@ def create_script(
 
 @mcp.tool()
 def search_scripts(query: str, params: dict[str, Any] | None = None, limit: int = 5) -> dict[str, Any]:
-    """Search executable NanoScript browser workflows and rank candidates."""
+    """Search executable NanoScript browser workflows and rank candidates.
+
+    Call this before invoking a saved workflow. Results include each candidate's
+    input/output schemas, required and missing params, and an invoke_example that
+    can be used as the basis for web__invoke_script.
+    """
     runtime = _build_nanoscript_runtime(headless=None)
     return search_scripts_impl(runtime, {"query": query, "params": params or {}, "limit": limit})
 
@@ -320,7 +325,7 @@ def search_scripts(query: str, params: dict[str, Any] | None = None, limit: int 
 @mcp.tool()
 async def invoke_script(
     script_id: str,
-    params: dict[str, Any],
+    params: dict[str, Any] | None = None,
     version_id: str | None = None,
     repair_on_failure: bool = False,
     patched_code: str | None = None,
@@ -328,13 +333,25 @@ async def invoke_script(
     changelog: str | None = None,
     headless: bool | None = None,
 ) -> dict[str, Any]:
-    """Execute a saved NanoScript browser workflow safely with AST validation, budget limits and output checks."""
+    """Execute a saved NanoScript browser workflow safely.
+
+    Before calling this, call web__search_scripts in the same turn and select the
+    candidate that matches the current user goal. Prefer that candidate's
+    invoke_example, then fill params from the user's request.
+
+    Always pass script inputs inside params. For example, to run a GitHub issues
+    workflow, call with:
+    {"script_id": "...", "params": {"url": "https://github.com/owner/repo/issues"}}
+
+    If params is omitted, the tool uses an empty object so the script can return
+    a normal validation error instead of failing MCP argument validation.
+    """
     runtime = _build_nanoscript_runtime(headless=headless)
     return await invoke_script_impl(
         runtime,
         {
             "script_id": script_id,
-            "params": params,
+            "params": params or {},
             "version_id": version_id,
             "repair_on_failure": repair_on_failure,
             "patched_code": patched_code,

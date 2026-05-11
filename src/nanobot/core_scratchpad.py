@@ -101,6 +101,19 @@ def _dedupe_text_list(values: list[str], *, limit_items: int) -> list[str]:
     return deduped[-limit_items:]
 
 
+def _state_has_content(state: dict[str, Any]) -> bool:
+    return any(
+        [
+            bool(_clip_text(state.get("goal"))),
+            bool(_clip_text(state.get("context"))),
+            bool(_clip_text(state.get("current_step"))),
+            bool(_clip_text(state.get("next_step"))),
+            bool(_to_text_list(state.get("known_facts"), limit_items=1)),
+            bool(_to_text_list(state.get("tool_journal"), limit_items=1)),
+        ]
+    )
+
+
 def _coerce_state(payload: Any, timezone_name: str = "UTC") -> dict[str, Any]:
     state = empty_scratchpad_state()
     if not isinstance(payload, dict):
@@ -173,7 +186,12 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
 
     state = get_scratchpad_state(bot, scope)
     if mode == "init":
-        state = empty_scratchpad_state()
+        if _state_has_content(state):
+            # Models sometimes re-emit init mid-turn. Treat it as append so
+            # previously verified tool facts are not lost and loops do not reset.
+            mode = "append"
+        else:
+            state = empty_scratchpad_state()
 
     goal = _clip_text(args.get("goal"))
     if goal:

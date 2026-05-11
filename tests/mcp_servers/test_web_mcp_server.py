@@ -316,9 +316,11 @@ def test_search_scripts_tool(monkeypatch) -> None:
 
 def test_invoke_test_and_repair_tools(monkeypatch) -> None:
     monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
+    invoke_payloads = []
 
     async def _fake_invoke(runtime, payload):
-        del runtime, payload
+        del runtime
+        invoke_payloads.append(payload)
         return {"status": "success", "confidence": 0.9, "result": {"ok": True}, "execution_id": "exe_1", "error": None}
 
     async def _fake_test(runtime, payload):
@@ -335,6 +337,10 @@ def test_invoke_test_and_repair_tools(monkeypatch) -> None:
 
     invoke_payload = asyncio.run(server.invoke_script("scr_1", {"url": "https://example.com"}))
     assert invoke_payload["status"] == "success"
+
+    invoke_without_params_payload = asyncio.run(server.invoke_script("scr_1"))
+    assert invoke_without_params_payload["status"] == "success"
+    assert invoke_payloads[-1]["params"] == {}
 
     test_payload = asyncio.run(server.test_script("scr_1", "ver_1", [{"params": {"url": "https://example.com"}}]))
     assert test_payload["status"] == "passed"
