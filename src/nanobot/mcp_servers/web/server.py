@@ -12,6 +12,11 @@ from nanobot.mcp_tools.repair_script import repair_script as repair_script_impl
 from nanobot.mcp_tools.runtime import get_runtime
 from nanobot.mcp_tools.search_scripts import search_scripts as search_scripts_impl
 from nanobot.mcp_tools.test_script import test_script as test_script_impl
+from nanobot.scripts.schemas import (
+    default_create_script_output_schema,
+    default_create_script_params_schema,
+    default_create_script_selector_manifest,
+)
 from web_agent.cache import Cache
 from web_agent.config import DEFAULT_QUALITY_THRESHOLD
 from web_agent.dependencies import capabilities
@@ -266,17 +271,26 @@ def create_script(
     name: str,
     description: str,
     code: str,
-    params_schema: dict[str, Any],
-    output_schema: dict[str, Any],
-    embedding_text: str,
-    created_by: str,
+    params_schema: dict[str, Any] | None = None,
+    output_schema: dict[str, Any] | None = None,
+    embedding_text: str | None = None,
+    created_by: str = "llm",
     selector_manifest: dict[str, Any] | None = None,
     domain: str | None = None,
     task_type: str | None = None,
     validation_rules: list[dict[str, Any]] | None = None,
     headless: bool | None = None,
 ) -> dict[str, Any]:
-    """Create and persist a new NanoScript with version v1."""
+    """Create and persist an executable NanoScript browser workflow with version v1.
+
+    Use this directly for reusable web automation: opening pages, clicking, filling forms,
+    extracting website data, selector fallback, pagination, and repeated browser
+    procedures. Do not use skill__create for these executable browser workflows.
+
+    Only name, description, and code are essential. If schemas, selectors, or
+    embedding metadata are missing, this tool supplies sensible defaults for
+    common browser extraction workflows, especially GitHub issue pages.
+    """
     runtime = _build_nanoscript_runtime(headless=headless)
     return create_script_impl(
         runtime,
@@ -286,11 +300,11 @@ def create_script(
             "domain": domain,
             "task_type": task_type,
             "code": code,
-            "params_schema": params_schema,
-            "output_schema": output_schema,
-            "selector_manifest": selector_manifest,
+            "params_schema": params_schema or default_create_script_params_schema(),
+            "output_schema": output_schema or default_create_script_output_schema(),
+            "selector_manifest": selector_manifest or default_create_script_selector_manifest(),
             "validation_rules": validation_rules or [],
-            "embedding_text": embedding_text,
+            "embedding_text": embedding_text or f"{name}: {description}",
             "created_by": created_by,
         },
     )
@@ -298,7 +312,7 @@ def create_script(
 
 @mcp.tool()
 def search_scripts(query: str, params: dict[str, Any] | None = None, limit: int = 5) -> dict[str, Any]:
-    """Search script procedural memory and rank candidates."""
+    """Search executable NanoScript browser workflows and rank candidates."""
     runtime = _build_nanoscript_runtime(headless=None)
     return search_scripts_impl(runtime, {"query": query, "params": params or {}, "limit": limit})
 
@@ -314,7 +328,7 @@ async def invoke_script(
     changelog: str | None = None,
     headless: bool | None = None,
 ) -> dict[str, Any]:
-    """Execute NanoScript safely with AST validation, budget limits and output checks."""
+    """Execute a saved NanoScript browser workflow safely with AST validation, budget limits and output checks."""
     runtime = _build_nanoscript_runtime(headless=headless)
     return await invoke_script_impl(
         runtime,

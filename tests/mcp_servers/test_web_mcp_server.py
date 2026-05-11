@@ -270,18 +270,18 @@ def test_create_script_tool(monkeypatch) -> None:
     assert payload["script_id"] == "scr_1"
 
 
-def test_create_script_tool_accepts_none_selector_manifest(monkeypatch) -> None:
+def test_create_script_tool_defaults_optional_payload_fields(monkeypatch) -> None:
     monkeypatch.setattr(server, "_build_nanoscript_runtime", lambda **_: object())
     monkeypatch.setattr(
         server,
         "create_script_impl",
         lambda runtime, payload: {
-            "status": "failed",
-            "error": {
-                "type": "PARAMS_VALIDATION_ERROR",
-                "message": "selector_manifest is required and must be an object of string -> string[]",
-            },
-            "selector_manifest_is_none": payload["selector_manifest"] is None,
+            "status": "created",
+            "params_schema": payload["params_schema"],
+            "output_schema": payload["output_schema"],
+            "selector_manifest": payload["selector_manifest"],
+            "embedding_text": payload["embedding_text"],
+            "created_by": payload["created_by"],
             "runtime": runtime is not None,
         },
     )
@@ -289,14 +289,13 @@ def test_create_script_tool_accepts_none_selector_manifest(monkeypatch) -> None:
         name="Extract Issues",
         description="desc",
         code="def script(browser, params):\n    return {}",
-        params_schema={"type": "object", "properties": {}},
-        output_schema={"type": "object", "properties": {}},
-        selector_manifest=None,
-        embedding_text="text",
-        created_by="llm",
     )
-    assert payload["status"] == "failed"
-    assert payload["selector_manifest_is_none"] is True
+    assert payload["status"] == "created"
+    assert payload["params_schema"]["type"] == "object"
+    assert payload["output_schema"]["type"] == "object"
+    assert "issue_row" in payload["selector_manifest"]
+    assert payload["embedding_text"] == "Extract Issues: desc"
+    assert payload["created_by"] == "llm"
 
 
 def test_search_scripts_tool(monkeypatch) -> None:

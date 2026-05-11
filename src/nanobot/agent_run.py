@@ -13,7 +13,6 @@ from nanobot.core_scratchpad import (
 )
 from nanobot.core_utils import human_now, tool_result_preview
 from nanobot.hooks import ToolCallEvent
-from nanobot.scripts.agent_hooks import ProceduralState, SEARCH_PROVIDER_UNAVAILABLE_REPLY
 from nanobot.scripts.schemas import CREATE_SCRIPT_REQUIRED_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -28,9 +27,6 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
 EMPTY_REPLY_FALLBACK = "I'm sorry, I hit an empty model response. Please try again."
-MISSING_REQUIRED_TOOL_CALL_REPLY = (
-    "I could not execute the required tool call in this turn. Please try again."
-)
 SCRATCHPAD_HINT_FIELDS = {
     "mode",
     "goal",
@@ -192,20 +188,8 @@ class AgentRun:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         response_format: dict[str, Any] | None,
-        tool_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if tool_choice is None:
-            return await self._host.llm.chat(messages=messages, tools=tools, response_format=response_format)
-        try:
-            return await self._host.llm.chat(
-                messages=messages,
-                tools=tools,
-                response_format=response_format,
-                tool_choice=tool_choice,
-            )
-        except TypeError:
-            # Keep compatibility with local/mock clients that haven't adopted tool_choice yet.
-            return await self._host.llm.chat(messages=messages, tools=tools, response_format=response_format)
+        return await self._host.llm.chat(messages=messages, tools=tools, response_format=response_format)
 
     @staticmethod
     def _tool_parameters_by_name(tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -254,35 +238,17 @@ class AgentRun:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
         run_id: str | None = None,
-        procedural_intent: str = "default",
     ) -> tuple[str, list[dict[str, Any]]]:
-        procedural_state = ProceduralState(intent=procedural_intent)
         include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
         prepared_messages = prepare_messages_for_chat(to_send)
         initial_tools = self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt)
-        initial_tool_choice = procedural_state.initial_tool_choice(initial_tools)
         assistant_message = await self._chat(
             messages=prepared_messages,
             tools=initial_tools,
             response_format=response_format,
-            tool_choice=initial_tool_choice,
         )
-        if initial_tool_choice is not None and not assistant_message.get("tool_calls"):
-            reminder = {
-                "role": "user",
-                "content": "You must execute the required tool call now before any final reply.",
-            }
-            retry_messages = prepare_messages_for_chat([*to_send, reminder])
-            assistant_message = await self._chat(
-                messages=retry_messages,
-                tools=initial_tools,
-                response_format=response_format,
-                tool_choice=initial_tool_choice,
-            )
-            if not assistant_message.get("tool_calls"):
-                return MISSING_REQUIRED_TOOL_CALL_REPLY, []
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
         total_tool_calls = 0
@@ -291,14 +257,6 @@ class AgentRun:
         identical_round_repeats = 0
         while assistant_message.get("tool_calls"):
             requested_calls = assistant_message["tool_calls"]
-            requested_tool_names = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
-            if procedural_state.all_requested_tools_blocked(requested_tool_names):
-                logger.warning(
-                    "Blocked tools requested again scope=%s tools=%s",
-                    scope_for_tools,
-                    requested_tool_names,
-                )
-                return SEARCH_PROVIDER_UNAVAILABLE_REPLY, tool_trace
             requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
             if previous_round_signatures == requested_signatures:
                 identical_round_repeats += 1
@@ -404,20 +362,9 @@ class AgentRun:
                         if scratchpad_mode == "finalize":
                             round_finalized_scratchpad = True
                     else:
-                        args = procedural_state.normalize_args(fn_name, args)
-                        blocked_result = procedural_state.blocked_result(fn_name)
-                        if blocked_result is not None:
-                            result = blocked_result
-                            needs_scratchpad_update = True
-                            logger.info("Blocked tool=%s for create_script intent", fn_name)
-                        else:
-                            result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
-                            needs_scratchpad_update = True
-                            round_used_external_tool = True
-                            result_text_for_state = (
-                                result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
-                            )
-                            procedural_state.on_tool_result(fn_name, result_text_for_state)
+                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
+                        needs_scratchpad_update = True
+                        round_used_external_tool = True
                     logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
@@ -491,27 +438,11 @@ class AgentRun:
             )
             to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
             prepared_messages = prepare_messages_for_chat(to_send)
-            tool_choice_override = procedural_state.next_tool_choice(tools)
             assistant_message = await self._chat(
                 messages=prepared_messages,
                 tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
                 response_format=response_format,
-                tool_choice=tool_choice_override,
             )
-            if tool_choice_override is not None and not assistant_message.get("tool_calls"):
-                reminder = procedural_state.reminder_message()
-                retry_messages = prepare_messages_for_chat([*to_send, reminder])
-                assistant_message = await self._chat(
-                    messages=retry_messages,
-                    tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
-                    response_format=response_format,
-                    tool_choice=tool_choice_override,
-                )
-            if assistant_message.get("tool_calls"):
-                requested_names = [
-                    str(call.get("function", {}).get("name", "")) for call in assistant_message.get("tool_calls", [])
-                ]
-                procedural_state.mark_requested_tools(requested_names)
         finish_reason = assistant_message.get("finish_reason")
         reply = assistant_message.get("content") or ""
         if not reply.strip():

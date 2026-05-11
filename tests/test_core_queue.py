@@ -8,7 +8,6 @@ import pytest
 from nanobot.channels.base import IncomingMessage
 from nanobot.core import BotCore
 from nanobot.messages import SubagentResultMessage, UserMessage
-from nanobot.scripts.router import route_request
 from nanobot.subagents.manager import SubagentRunResult
 from nanobot.tools.base import Tool
 
@@ -222,76 +221,17 @@ async def test_handle_subagent_result_does_not_notify_when_should_not(bot: BotCo
             mock_send.assert_not_called()
 
 
-def test_execution_strategy_detects_procedural_web_request() -> None:
-    route = route_request(
-        "Please extract GitHub issues from https://github.com/microsoft/vscode/issues and reuse script."
-        ,
-        [],
-    )
-    assert route.strategy == "procedural_web"
-
-
-def test_execution_strategy_keeps_general_for_non_web_request() -> None:
-    route = route_request("Set a reminder at 7pm tomorrow.", [])
-    assert route.strategy == "general"
-
-
-def test_filter_tools_for_procedural_strategy_blocks_search_web() -> None:
-    tools = [
-        {"type": "function", "function": {"name": "web__search_web"}},
-        {"type": "function", "function": {"name": "web__search_scripts"}},
-        {"type": "function", "function": {"name": "web__invoke_script"}},
-    ]
-    route = route_request("Extract issues from https://github.com/org/repo/issues", tools)
-    names = [str(tool.get("function", {}).get("name", "")) for tool in route.tools]
-    assert "web__search_web" not in names
-    assert "web__search_scripts" in names
-    assert "web__invoke_script" in names
-
-
-def test_intent_detects_create_script_for_natural_language() -> None:
-    route = route_request(
-        "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page with pagination.",
-        [],
-    )
-    assert route.strategy == "procedural_web"
-    assert route.intent == "create_script"
-
-
-def test_intent_detects_create_script_for_reusable_workflow_language() -> None:
-    text = (
-        "I need a reusable browser workflow to extract GitHub issues with pagination "
-        "from a repo issues URL."
-    )
-    route = route_request(text, [])
-    assert route.strategy == "procedural_web"
-    assert route.intent == "create_script"
-
-
-def test_filter_tools_for_create_intent_keeps_only_create_and_scratchpad() -> None:
-    tools = [
-        {"type": "function", "function": {"name": "session__scratchpad_write"}},
-        {"type": "function", "function": {"name": "web__create_script"}},
-        {"type": "function", "function": {"name": "web__search_scripts"}},
-        {"type": "function", "function": {"name": "web__invoke_script"}},
-    ]
-    route = route_request("Please create a reusable NanoScript for GitHub issues.", tools)
-    names = [str(tool.get("function", {}).get("name", "")) for tool in route.tools]
-    assert names == ["session__scratchpad_write", "web__create_script"]
-
-
 @pytest.mark.asyncio
-async def test_process_procedural_request_prefers_nanoscript_tools(bot: BotCore) -> None:
+async def test_process_passes_all_registered_tools_to_llm(bot: BotCore) -> None:
     captured: dict[str, Any] = {}
     bot.tools.register(_FakeTool("web__search_web"))
     bot.tools.register(_FakeTool("web__search_scripts"))
     bot.tools.register(_FakeTool("web__invoke_script"))
 
-    async def _fake_execute(run, messages, tools, response_format=None, procedural_intent="default"):  # type: ignore[no-untyped-def]
+    async def _fake_execute(run, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
         del run, response_format
         captured["messages"] = messages
         captured["tools"] = tools
-        captured["procedural_intent"] = procedural_intent
         return SubagentRunResult(run_id="run-test", success=True, reply="done", tool_trace=[])
 
     with patch.object(bot.subagent_manager, "execute", new=AsyncMock(side_effect=_fake_execute)):
@@ -303,39 +243,40 @@ async def test_process_procedural_request_prefers_nanoscript_tools(bot: BotCore)
 
     tools = captured["tools"]
     names = [str(tool.get("function", {}).get("name", "")) for tool in tools]
-    assert "web__search_web" not in names
-    assert any("web__search_scripts" == name for name in names)
-    assert any("web__invoke_script" == name for name in names)
-
-    messages = captured["messages"]
-    assert any("NanoScript procedural memory" in str(message.get("content", "")) for message in messages)
-    assert captured["procedural_intent"] == "default"
+    assert "session__scratchpad_write" in names
+    assert "web__search_web" in names
+    assert "web__search_scripts" in names
+    assert "web__invoke_script" in names
+    assert captured["messages"]
 
 
 @pytest.mark.asyncio
-async def test_process_create_script_request_injects_create_policy_and_toolset(bot: BotCore) -> None:
+async def test_process_create_script_request_still_passes_all_registered_tools(bot: BotCore) -> None:
     captured: dict[str, Any] = {}
     bot.tools.register(_FakeTool("web__create_script"))
     bot.tools.register(_FakeTool("web__search_scripts"))
     bot.tools.register(_FakeTool("web__invoke_script"))
 
-    async def _fake_execute(run, messages, tools, response_format=None, procedural_intent="default"):  # type: ignore[no-untyped-def]
+    async def _fake_execute(run, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
         del run, response_format
         captured["messages"] = messages
         captured["tools"] = tools
-        captured["procedural_intent"] = procedural_intent
         return SubagentRunResult(run_id="run-test", success=True, reply="done", tool_trace=[])
 
     with patch.object(bot.subagent_manager, "execute", new=AsyncMock(side_effect=_fake_execute)):
         with patch.object(bot, "_send", new_callable=AsyncMock):
             await bot._process(
                 "telegram:123",
-                "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page with pagination. Save it for reuse.",
+                (
+                    "Please create a reusable NanoScript that extracts GitHub issues from a repo issues page "
+                    "with pagination. Save it for reuse."
+                ),
             )
 
     tools = captured["tools"]
     names = [str(tool.get("function", {}).get("name", "")) for tool in tools]
-    assert names == ["session__scratchpad_write", "web__create_script"]
-    messages = captured["messages"]
-    assert any("Call web__create_script in this turn" in str(message.get("content", "")) for message in messages)
-    assert captured["procedural_intent"] == "create_script"
+    assert "session__scratchpad_write" in names
+    assert "web__create_script" in names
+    assert "web__search_scripts" in names
+    assert "web__invoke_script" in names
+    assert captured["messages"]

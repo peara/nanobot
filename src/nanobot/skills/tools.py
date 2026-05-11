@@ -120,7 +120,11 @@ class SkillCreateTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Create a new skill with trigger patterns for automatic activation."
+        return (
+            "Create a reusable reasoning/context skill for preferences, policies, domain knowledge, "
+            "or response guidance. Do not use this for executable browser workflows, web extraction, "
+            "selectors, pagination, clicking, or form automation; use web__create_script for those."
+        )
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -133,11 +137,14 @@ class SkillCreateTool(Tool):
                 },
                 "description": {
                     "type": "string",
-                    "description": "Brief description of when to use this skill (required)",
+                    "description": "Brief description of when to inject this reasoning/context skill (required)",
                 },
                 "instructions": {
                     "type": "string",
-                    "description": "Full skill instructions to inject into context (required)",
+                    "description": (
+                        "Full non-executable instructions to inject into context. Do not put browser automation "
+                        "code or selector procedures here; save those with web__create_script."
+                    ),
                 },
                 "trigger_mode": {
                     "type": "string",

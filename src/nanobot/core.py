@@ -31,7 +31,6 @@ from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
 from nanobot.scheduler_store import SchedulerStore
-from nanobot.scripts.router import route_request
 from nanobot.skills import SkillStore, SkillVectorStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.subagents.manager import SubagentRunResult
@@ -249,18 +248,11 @@ class BotCore:
             history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
             history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
             history = trim_history_by_chars(history, self.config.history_char_limit)
-            route = route_request(user_text, self._list_openai_tools())
             messages = self._system_messages(user_id=user_id)
-            messages.extend(route.system_messages)
             messages.extend(history)
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
-            result = await self.subagent_manager.execute(
-                run,
-                messages,
-                route.tools,
-                procedural_intent=route.intent,
-            )
+            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
 
             final_reply = str(result.reply or "")
             if not final_reply.strip():

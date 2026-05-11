@@ -6,9 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from nanobot.agent_run import (
-    MISSING_REQUIRED_TOOL_CALL_REPLY,
     REPEATED_TOOL_CALL_ABORT_REPLY,
-    SEARCH_PROVIDER_UNAVAILABLE_REPLY,
     AgentRun,
     _normalize_roles,
     prepare_messages_for_chat,
@@ -499,64 +497,6 @@ def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
     assert any("completed your research" in str(m.get("content", "")) for m in final_messages)
 
 
-def test_agent_run_blocks_web_search_after_provider_unavailable() -> None:
-    llm = _FakeLlm(
-        [
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web__search_web",
-                            "arguments": json.dumps({"query": "latest ai trends", "limit": 5}),
-                        },
-                    }
-                ],
-            },
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web__search_web",
-                            "arguments": json.dumps({"query": "latest ai trends", "limit": 5}),
-                        },
-                    }
-                ],
-            },
-        ]
-    )
-    host = _FakeHost(llm)
-    host.tools.register(
-        _FakeTool(
-            "web__search_web",
-            result=json.dumps(
-                {
-                    "ok": False,
-                    "error": "search_provider_unavailable",
-                    "message": "No search provider is configured. Set TAVILY_API_KEY or EXA_API_KEY.",
-                }
-            ),
-        )
-    )
-    run = AgentRun(host)
-
-    async def _go() -> None:
-        text, trace = await run.run(
-            scope_for_tools="telegram:1",
-            messages=[{"role": "user", "content": "find latest ai trends"}],
-            tools=[{"type": "function", "function": {"name": "web__search_web"}}],
-        )
-        assert text == SEARCH_PROVIDER_UNAVAILABLE_REPLY
-        assert [item["name"] for item in trace] == ["web__search_web"]
-
-    asyncio.run(_go())
-
-
 def test_agent_run_remaps_misrouted_scratchpad_payload() -> None:
     llm = _FakeLlm(
         [
@@ -674,91 +614,7 @@ def test_agent_run_remaps_misrouted_scratchpad_payload_for_other_tool() -> None:
     asyncio.run(_go())
 
 
-def test_agent_run_forces_create_script_tool_choice_for_create_intent() -> None:
-    llm = _RecordingFakeLlm(
-        [
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "web__create_script",
-                            "arguments": json.dumps(
-                                {
-                                    "name": "Extract GitHub Issues",
-                                    "description": "desc",
-                                    "code": "def script(browser, params):\n    return {}",
-                                    "params_schema": {"type": "object", "properties": {}},
-                                    "output_schema": {"type": "object", "properties": {}},
-                                    "selector_manifest": {"issue_row": ["a[href*='/issues/']"]},
-                                    "embedding_text": "extract github issues",
-                                    "created_by": "llm",
-                                }
-                            ),
-                        },
-                    }
-                ],
-            },
-            {"content": "done", "tool_calls": None},
-        ]
-    )
-    host = _FakeHost(llm)
-    host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
-    run = AgentRun(host)
-
-    async def _go() -> None:
-        text, _trace = await run.run(
-            scope_for_tools="telegram:1",
-            messages=[{"role": "user", "content": "create reusable script"}],
-            tools=[
-                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "web__create_script",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                },
-            ],
-            procedural_intent="create_script",
-        )
-        assert text == "done"
-
-    asyncio.run(_go())
-    assert llm.calls_tool_choice[0] == {"type": "function", "function": {"name": "web__create_script"}}
-
-
-def test_agent_run_returns_when_required_tool_choice_not_honored() -> None:
-    llm = _RecordingFakeLlm(
-        [
-            {"content": "I will do it", "tool_calls": None},
-            {"content": "Still not calling tool", "tool_calls": None},
-        ]
-    )
-    host = _FakeHost(llm)
-    run = AgentRun(host)
-
-    async def _go() -> None:
-        text, trace = await run.run(
-            scope_for_tools="telegram:1",
-            messages=[{"role": "user", "content": "create reusable script"}],
-            tools=[
-                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
-                {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
-            ],
-            procedural_intent="create_script",
-        )
-        assert text == MISSING_REQUIRED_TOOL_CALL_REPLY
-        assert trace == []
-
-    asyncio.run(_go())
-    assert len(llm.calls_tool_choice) >= 2
-    assert llm.calls_tool_choice[0] == {"type": "function", "function": {"name": "web__create_script"}}
-
-
-def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
+def test_agent_run_does_not_force_create_script_after_empty_search_candidates() -> None:
     llm = _RecordingFakeLlm(
         [
             {
@@ -775,31 +631,6 @@ def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
                 ],
             },
             {"content": "Let me keep exploring DOM first", "tool_calls": None},
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_2",
-                        "type": "function",
-                        "function": {
-                            "name": "web__create_script",
-                            "arguments": json.dumps(
-                                {
-                                    "name": "GitHub Issues Extractor",
-                                    "description": "desc",
-                                    "code": "def script(browser, params):\n    return {'issues': []}",
-                                    "params_schema": {"type": "object", "properties": {}},
-                                    "output_schema": {"type": "object", "properties": {}},
-                                    "selector_manifest": {"issue_row": ["a[href*='/issues/']"]},
-                                    "embedding_text": "extract github issues",
-                                    "created_by": "llm",
-                                }
-                            ),
-                        },
-                    }
-                ],
-            },
-            {"content": "done", "tool_calls": None},
         ]
     )
     host = _FakeHost(llm)
@@ -816,15 +647,12 @@ def test_agent_run_forces_create_script_after_empty_search_candidates() -> None:
                 {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
             ],
-            procedural_intent="create_script",
         )
-        assert text == "done"
-        assert [item["name"] for item in trace] == ["web__search_scripts", "web__create_script"]
+        assert text == "Let me keep exploring DOM first"
+        assert [item["name"] for item in trace] == ["web__search_scripts"]
 
     asyncio.run(_go())
-    assert any(
-        call == {"type": "function", "function": {"name": "web__create_script"}} for call in llm.calls_tool_choice
-    )
+    assert llm.calls_tool_choice == [None, None]
 
 
 def test_agent_run_retries_create_script_after_schema_validation_error() -> None:
@@ -838,7 +666,9 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
                         "type": "function",
                         "function": {
                             "name": "web__create_script",
-                            "arguments": json.dumps({"name": "bad-script", "code": "def script(browser, params):\n    return {}"}),
+                            "arguments": json.dumps(
+                                {"name": "bad-script", "code": "def script(browser, params):\n    return {}"}
+                            ),
                         },
                     }
                 ],
@@ -851,7 +681,9 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
                         "type": "function",
                         "function": {
                             "name": "web__create_script",
-                            "arguments": json.dumps({"name": "good-script", "code": "def script(browser, params):\n    return {}"}),
+                            "arguments": json.dumps(
+                                {"name": "good-script", "code": "def script(browser, params):\n    return {}"}
+                            ),
                         },
                     }
                 ],
@@ -873,7 +705,6 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__search_scripts", "parameters": {}}},
             ],
-            procedural_intent="create_script",
         )
         assert text == "done"
         assert [item["name"] for item in trace] == ["web__create_script", "web__create_script"]
@@ -893,7 +724,7 @@ def test_agent_run_retries_create_script_after_schema_validation_error() -> None
     assert len(call_log) == 2
 
 
-def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
+def test_agent_run_executes_llm_selected_skill_create() -> None:
     llm = _RecordingFakeLlm(
         [
             {
@@ -937,6 +768,7 @@ def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
         ]
     )
     host = _FakeHost(llm)
+    host.tools.register(_FakeTool("skill__create", result='{"status":"created"}'))
     host.tools.register(_FakeTool("web__create_script", result='{"status":"created"}'))
     run = AgentRun(host)
 
@@ -949,16 +781,14 @@ def test_agent_run_blocks_skill_create_for_create_script_intent() -> None:
                 {"type": "function", "function": {"name": "skill__create", "parameters": {}}},
                 {"type": "function", "function": {"name": "web__create_script", "parameters": {}}},
             ],
-            procedural_intent="create_script",
         )
         assert text == "done"
         assert [item["name"] for item in trace] == ["skill__create", "web__create_script"]
-        assert "disabled for create_script intent" in trace[0]["result_preview"]
 
     asyncio.run(_go())
 
 
-def test_agent_run_forces_repair_then_reinvoke_after_invoke_failure() -> None:
+def test_agent_run_executes_llm_chosen_repair_then_reinvoke_after_invoke_failure() -> None:
     llm = _RecordingFakeLlm(
         [
             {
@@ -983,7 +813,11 @@ def test_agent_run_forces_repair_then_reinvoke_after_invoke_failure() -> None:
                         "function": {
                             "name": "web__repair_script",
                             "arguments": json.dumps(
-                                {"script_id": "scr_1", "failed_execution_id": "exe_1", "patched_code": "def script(browser, params):\n    return {'issues': []}"}
+                                {
+                                    "script_id": "scr_1",
+                                    "failed_execution_id": "exe_1",
+                                    "patched_code": "def script(browser, params):\n    return {'issues': []}",
+                                }
                             ),
                         },
                     }
@@ -1025,7 +859,10 @@ def test_agent_run_forces_repair_then_reinvoke_after_invoke_failure() -> None:
             del args
             invoke_call_count["value"] += 1
             if invoke_call_count["value"] == 1:
-                return '{"status":"failed","execution_id":"exe_1","error":{"type":"TIMEOUT","message":"Execution timed out"}}'
+                return (
+                    '{"status":"failed","execution_id":"exe_1",'
+                    '"error":{"type":"TIMEOUT","message":"Execution timed out"}}'
+                )
             return '{"status":"ok","execution_id":"exe_2","result":{"issues":[{"title":"x","url":"u"}]}}'
 
     host.tools.register(_InvokeTool())
@@ -1046,5 +883,4 @@ def test_agent_run_forces_repair_then_reinvoke_after_invoke_failure() -> None:
         assert [item["name"] for item in trace] == ["web__invoke_script", "web__repair_script", "web__invoke_script"]
 
     asyncio.run(_go())
-    assert {"type": "function", "function": {"name": "web__repair_script"}} in llm.calls_tool_choice
-    assert {"type": "function", "function": {"name": "web__invoke_script"}} in llm.calls_tool_choice
+    assert llm.calls_tool_choice == [None, None, None, None]

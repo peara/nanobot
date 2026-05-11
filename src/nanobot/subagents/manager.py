@@ -84,7 +84,6 @@ class SubagentManager:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
-        procedural_intent: str = "default",
     ) -> SubagentRunResult:
         self._store.set_status(run.id, "running")
         self._contexts.put("subagent_run", run.id, "status", {"value": "running"})
@@ -124,7 +123,6 @@ class SubagentManager:
                 tools=tools,
                 response_format=response_format,
                 run_id=run.id,
-                procedural_intent=procedural_intent,
             )
         except Exception as exc:
             success = False
