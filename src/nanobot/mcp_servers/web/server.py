@@ -179,10 +179,13 @@ def create_script(
     tags: list[str] | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Create or update a reusable browser data extraction script.
+    """Create or update a reusable Python NanoScript browser data extractor.
 
-    Scripts extract structured data only. Do not include answer text, summaries,
-    or response templates; skills decide how to explain the extracted data.
+    Scripts execute browser/page extraction code and return structured data only.
+    Do not include answer text, formatting rules, language rules, summaries, or
+    response templates. Use skills for reusable workflow, routing, param mapping,
+    and user-facing response policy. If params_schema is empty, treat params as
+    unspecified/flexible rather than unsupported.
     """
     if not name.strip() or not description.strip() or not code.strip():
         return {"ok": False, "error": "invalid_input", "message": "name, description, and code are required"}
@@ -236,7 +239,12 @@ def create_script(
 
 @mcp.tool()
 def search_scripts(query: str, limit: int = 5) -> dict[str, Any]:
-    """Find reusable browser data extraction scripts for a task."""
+    """Find reusable browser data extraction scripts for a task.
+
+    Search results expose metadata and schemas for the agent/skills to decide whether
+    to invoke a script with params. Empty params_schema means unspecified/flexible,
+    not that params are unsupported.
+    """
     store = _build_script_store()
     scripts = []
     used_vector = False

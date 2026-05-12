@@ -170,6 +170,17 @@ class TestPromptStoreSeedDefaults:
         assert "orchestrator" == prompt.role
         assert len(prompt.variables) == 1
 
+    def test_orchestrator_prompt_defines_script_skill_boundary(self, seeded_store: PromptStore) -> None:
+        prompt = seeded_store.get_active("orchestrator_main")
+        assert prompt is not None
+        content = prompt.content
+
+        assert "Reusable artifacts boundary" in content
+        assert "Web Script = executable extractor returning structured data" in content
+        assert "Skill = reusable workflow/policy" in content
+        assert "Never store formatting, language, bullet-count policy" in content
+        assert "Treat empty params_schema as unspecified/flexible" in content
+
     def test_seed_defaults_idempotent(self, tmp_path: Path) -> None:
         db_path = str(tmp_path / "prompts.db")
         store1 = PromptStore(db_path, seed_defaults=True)

@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
+from nanobot.agent_tool_guards import (
+    contains_script_saved_claim,
+    extract_web_items,
+    has_usable_web_data,
+    looks_like_javascript_script,
+    looks_like_successful_script_create,
+    normalize_invoke_script_params,
+    normalize_memory_user_id,
+    parse_tool_result_json,
+    reply_claims_data_lost,
+    rewrite_data_loss_reply,
+    synthesize_web_data_reply,
+)
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
     apply_scratchpad_append_from_content,
@@ -27,123 +39,6 @@ REPEATED_TOOL_CALL_ABORT_REPLY = (
 TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
-
-_SCRIPT_SAVED_PATTERNS = (
-    r"\bscript saved\b",
-    r"\bsaved as\b",
-    r"\buse\s+[a-z0-9_-]+\b",
-)
-_JAVASCRIPT_SCRIPT_MARKERS = ("const ", "let ", "=>", "document.queryselector", "?.", "array.from(")
-_DATA_LOSS_REPLY_PATTERNS = (
-    "didn't survive",
-    "did not survive",
-    "need to re-run",
-    "need to rerun",
-    "would need to re-run",
-    "would need to rerun",
-)
-_BLOCKED_WHEN_ITEMS_EXIST = (
-    "would you like me to fetch",
-    "i don't have the actual",
-    "no actual web work done yet",
-)
-
-
-def _parse_tool_result_json(text: str) -> dict[str, Any] | None:
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _contains_script_saved_claim(text: str) -> bool:
-    lowered = text.lower()
-    return any(re.search(pattern, lowered) for pattern in _SCRIPT_SAVED_PATTERNS)
-
-
-def _normalize_memory_user_id(args: dict[str, Any], scope_for_tools: str) -> None:
-    if not str(args.get("user_id", "")).strip():
-        args["user_id"] = scope_for_tools
-        return
-    user_id = str(args.get("user_id", "")).strip()
-    if ":" in user_id:
-        return
-    if ":" not in scope_for_tools:
-        return
-    channel = scope_for_tools.split(":", 1)[0]
-    args["user_id"] = f"{channel}:{user_id}"
-
-
-def _looks_like_javascript_script(code: str) -> bool:
-    lowered = code.lower()
-    return any(marker in lowered for marker in _JAVASCRIPT_SCRIPT_MARKERS)
-
-
-def _has_usable_web_data(tool_name: str, payload: dict[str, Any]) -> bool:
-    if tool_name not in {"web__read_page", "web__invoke_script"}:
-        return False
-    if payload.get("ok") is not True:
-        return False
-    if tool_name == "web__invoke_script":
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            return False
-        items = data.get("items")
-        if isinstance(items, list) and items:
-            return True
-        return bool(str(data.get("content", "")).strip())
-    items = payload.get("items")
-    if isinstance(items, list) and items:
-        return True
-    return bool(str(payload.get("content", "")).strip())
-
-
-def _reply_claims_data_lost(text: str) -> bool:
-    lowered = text.lower()
-    return any(pattern in lowered for pattern in (*_DATA_LOSS_REPLY_PATTERNS, *_BLOCKED_WHEN_ITEMS_EXIST))
-
-
-def _rewrite_data_loss_reply(text: str) -> str:
-    if not _reply_claims_data_lost(text):
-        return text
-    return (
-        "I already fetched and parsed the page in this turn. "
-        "Here are the extracted results now, and the reusable script status is reported separately."
-    )
-
-
-def _extract_web_items(tool_name: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    if tool_name == "web__invoke_script":
-        data = payload.get("data")
-        if isinstance(data, dict):
-            items = data.get("items")
-            if isinstance(items, list):
-                return [item for item in items if isinstance(item, dict)]
-        return []
-    items = payload.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
-    return []
-
-
-def _synthesize_web_data_reply(items: list[dict[str, Any]], fallback: str) -> str:
-    if not items:
-        return _rewrite_data_loss_reply(fallback)
-    lines = ["I already extracted the results in this turn. Here are the top stories:"]
-    for idx, item in enumerate(items[:10], start=1):
-        title = str(item.get("title", "")).strip() or "Untitled"
-        url = str(item.get("url", "")).strip()
-        if url:
-            lines.append(f"{idx}. {title} — {url}")
-        else:
-            lines.append(f"{idx}. {title}")
-    return "\n".join(lines)
-
-
-def _looks_like_successful_script_create(tool_name: str, payload: dict[str, Any]) -> bool:
-    return tool_name == "web__create_script" and payload.get("ok") is True
-
 
 def _tool_call_limit_finalize_message(host: Any, scope: str) -> dict[str, str] | None:
     scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
@@ -401,14 +296,16 @@ class AgentRun:
                     chat_id = str(args.get("chat_id", "")).strip()
                     if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
                         args["chat_id"] = scope_for_tools
+                if fn_name == "web__invoke_script":
+                    normalize_invoke_script_params(args)
                 if fn_name == "memory__save":
-                    _normalize_memory_user_id(args, scope_for_tools)
+                    normalize_memory_user_id(args, scope_for_tools)
                 ok = True
                 error: str | None = None
                 try:
                     if fn_name == "web__create_script":
                         script_code = str(args.get("code", ""))
-                        if _looks_like_javascript_script(script_code):
+                        if looks_like_javascript_script(script_code):
                             ok = False
                             error = "invalid_script_language"
                             result = json.dumps(
@@ -437,7 +334,7 @@ class AgentRun:
                             logger.info("Tool succeeded tool=%s", fn_name)
                     elif fn_name == "memory__save" and last_create_script_ok is False:
                         text = str(args.get("text", ""))
-                        if _contains_script_saved_claim(text):
+                        if contains_script_saved_claim(text):
                             ok = False
                             error = "blocked_false_memory"
                             result = json.dumps(
@@ -490,25 +387,21 @@ class AgentRun:
                         needs_scratchpad_update = True
                 result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
                 if fn_name == "web__create_script":
-                    payload = _parse_tool_result_json(result_text)
+                    payload = parse_tool_result_json(result_text)
                     if payload is not None and isinstance(payload.get("ok"), bool):
                         last_create_script_ok = bool(payload["ok"])
-                payload = _parse_tool_result_json(result_text)
-                if payload is not None and _has_usable_web_data(fn_name, payload):
+                payload = parse_tool_result_json(result_text)
+                if payload is not None and has_usable_web_data(fn_name, payload):
                     had_usable_web_data = True
-                    extracted_items = _extract_web_items(fn_name, payload)
+                    extracted_items = extract_web_items(fn_name, payload)
                     if extracted_items:
                         latest_web_items = extracted_items
-                if payload is not None and _looks_like_successful_script_create(fn_name, payload):
+                if payload is not None and looks_like_successful_script_create(fn_name, payload):
                     script = payload.get("script")
                     if isinstance(script, dict):
                         name = str(script.get("name", "")).strip()
                         if name:
                             latest_script_status = f"{name} saved"
-                if fn_name == "web__invoke_script" and payload is not None:
-                    invoke_items = _extract_web_items(fn_name, payload)
-                    if invoke_items:
-                        force_finalize_after_round = True
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
@@ -575,13 +468,13 @@ class AgentRun:
                     )
                     reply = "I could not generate a response."
                 if had_usable_web_data:
-                    if _reply_claims_data_lost(reply):
-                        reply = _synthesize_web_data_reply(latest_web_items, reply)
+                    if reply_claims_data_lost(reply):
+                        reply = synthesize_web_data_reply(latest_web_items, reply)
                     else:
-                        reply = _rewrite_data_loss_reply(reply)
+                        reply = rewrite_data_loss_reply(reply)
                 return reply, tool_trace
             if force_finalize_after_round and had_usable_web_data:
-                lines = _synthesize_web_data_reply(latest_web_items, "").splitlines()
+                lines = synthesize_web_data_reply(latest_web_items, "").splitlines()
                 if latest_script_status:
                     lines.append(f"\nReusable script: {latest_script_status}.")
                 return "\n".join(lines), tool_trace
@@ -606,8 +499,8 @@ class AgentRun:
             )
             reply = "I could not generate a response."
         if had_usable_web_data:
-            if _reply_claims_data_lost(reply):
-                reply = _synthesize_web_data_reply(latest_web_items, reply)
+            if reply_claims_data_lost(reply):
+                reply = synthesize_web_data_reply(latest_web_items, reply)
             else:
-                reply = _rewrite_data_loss_reply(reply)
+                reply = rewrite_data_loss_reply(reply)
         return reply, tool_trace

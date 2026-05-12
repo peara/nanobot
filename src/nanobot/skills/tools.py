@@ -120,7 +120,11 @@ class SkillCreateTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Create a new skill with trigger patterns for automatic activation."
+        return (
+            "Create a reusable workflow/policy skill. Use skills for tool routing, parameter mapping, "
+            "formatting, language, bullet-count, and response strategy. Do not store executable scraping code here; "
+            "put browser data extraction code in web__create_script and reference that script from the skill."
+        )
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -137,7 +141,11 @@ class SkillCreateTool(Tool):
                 },
                 "instructions": {
                     "type": "string",
-                    "description": "Full skill instructions to inject into context (required)",
+                    "description": (
+                        "Workflow/policy instructions to inject into context. May reference tools or web scripts and "
+                        "describe how to map user intent to params and format final answers. Do not include executable "
+                        "scraping code."
+                    ),
                 },
                 "trigger_mode": {
                     "type": "string",
@@ -206,7 +214,11 @@ class SkillUpdateTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Update an existing skill by name."
+        return (
+            "Update an existing workflow/policy skill by name. Use this for reusable routing, parameter mapping, "
+            "formatting, language, bullet-count, or response strategy changes; keep executable extraction code in "
+            "web scripts."
+        )
 
     @property
     def schema(self) -> dict[str, Any]:
