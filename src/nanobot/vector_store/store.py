@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_MEMORIES = "memories"
 COLLECTION_SKILLS = "skills"
+COLLECTION_WEB_SCRIPTS = "web_scripts"
 
 
 class VectorStore:

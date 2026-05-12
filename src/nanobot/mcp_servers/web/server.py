@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from nanobot.vector_store import VectorStore
+from nanobot.web_scripts import (
+    NanoScriptInvalidResultError,
+    NanoScriptRunner,
+    NanoScriptRuntimeError,
+    NanoScriptValidationError,
+    NanoScriptValidator,
+    WebScriptStore,
+    WebScriptVectorStore,
+)
+from nanobot.web_scripts.runner import RESERVED_RESPONSE_KEYS
 from web_agent.cache import Cache
 from web_agent.config import DEFAULT_QUALITY_THRESHOLD
 from web_agent.dependencies import capabilities
@@ -18,6 +30,8 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("nanobot-web")
 
 _chrome_cache = DomainChromeCache(cache=Cache(max_entries=50))
+_script_store_cache: tuple[str, WebScriptStore] | None = None
+_script_vector_cache: tuple[str, WebScriptVectorStore | None] | None = None
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -52,6 +66,59 @@ def _build_tool(*, quality_threshold: float | None, headless: bool | None) -> We
         headless=_default_headless() if headless is None else headless,
         chrome_cache=_chrome_cache,
     )
+
+
+def _script_db_path() -> str:
+    return os.environ.get("WEB_SCRIPT_DB_PATH", "./data/web_scripts.db")
+
+
+def _script_vector_config_path() -> str | None:
+    return os.environ.get("WEB_SCRIPT_VECTOR_CONFIG") or os.environ.get("MEM0_CONFIG_PATH")
+
+
+def _build_script_store() -> WebScriptStore:
+    global _script_store_cache  # pylint: disable=global-statement
+    db_path = _script_db_path()
+    if _script_store_cache is None or _script_store_cache[0] != db_path:
+        _script_store_cache = (db_path, WebScriptStore(db_path))
+    return _script_store_cache[1]
+
+
+def _build_script_vector_store() -> WebScriptVectorStore | None:
+    global _script_vector_cache  # pylint: disable=global-statement
+    config_path = _script_vector_config_path()
+    if not config_path:
+        return None
+    if _script_vector_cache is not None and _script_vector_cache[0] == config_path:
+        return _script_vector_cache[1]
+    if not Path(config_path).exists():
+        logger.warning("WEB_SCRIPT_VECTOR_CONFIG not found: %s", config_path)
+        _script_vector_cache = (config_path, None)
+        return None
+    try:
+        vector_store = WebScriptVectorStore(VectorStore(config_path))
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("Failed to initialize web script vector store config=%s", config_path)
+        _script_vector_cache = (config_path, None)
+        return None
+    _script_vector_cache = (config_path, vector_store)
+    return vector_store
+
+
+def _script_metadata(script: Any) -> dict[str, Any]:
+    return script.as_dict(include_code=False)
+
+
+def _contains_response_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key) in RESERVED_RESPONSE_KEYS:
+                return True
+            if _contains_response_key(item):
+                return True
+    if isinstance(value, list):
+        return any(_contains_response_key(item) for item in value)
+    return False
 
 
 def _normalize_payload(payload: Any, *, strip_debug: bool = False) -> dict[str, Any]:
@@ -95,9 +162,138 @@ def web_health() -> dict[str, Any]:
             "headless": _default_headless(),
             "quality_threshold": _default_quality_threshold(),
             "save_outputs": _default_save_outputs(),
+            "script_db_path": _script_db_path(),
+            "script_vector_config": _script_vector_config_path(),
         },
         "capabilities": capabilities(),
     }
+
+
+@mcp.tool()
+def create_script(
+    name: str,
+    description: str,
+    code: str,
+    params_schema: dict[str, Any] | None = None,
+    result_schema: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create or update a reusable browser data extraction script.
+
+    Scripts extract structured data only. Do not include answer text, summaries,
+    or response templates; skills decide how to explain the extracted data.
+    """
+    if not name.strip() or not description.strip() or not code.strip():
+        return {"ok": False, "error": "invalid_input", "message": "name, description, and code are required"}
+    if _contains_response_key(params_schema or {}) or _contains_response_key(result_schema or {}):
+        return {
+            "ok": False,
+            "error": "invalid_script",
+            "message": "script schemas must describe extracted data, not response text or answer templates",
+        }
+    try:
+        NanoScriptValidator().validate(code)
+        store = _build_script_store()
+        script = store.create(
+            name=name.strip(),
+            description=description.strip(),
+            code=code,
+            params_schema=params_schema or {},
+            result_schema=result_schema or {},
+            tags=tags or [],
+            overwrite=overwrite,
+        )
+    except (NanoScriptValidationError, ValueError) as exc:
+        return {"ok": False, "error": "invalid_script", "message": str(exc)}
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("Failed to create web script name=%s", name)
+        return {"ok": False, "error": "store_failed", "message": str(exc)}
+
+    vector_indexed = False
+    vector_error: str | None = None
+    vector_store = _build_script_vector_store()
+    if vector_store is not None:
+        try:
+            vector_id = vector_store.store_script(script)
+            updated = store.update(script.id, vector_id=vector_id)
+            if updated is not None:
+                script = updated
+            vector_indexed = True
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception("Failed to index web script name=%s", script.name)
+            vector_error = str(exc)
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "script": _script_metadata(script),
+        "vector_indexed": vector_indexed,
+    }
+    if vector_error is not None:
+        payload["vector_error"] = vector_error
+    return payload
+
+
+@mcp.tool()
+def search_scripts(query: str, limit: int = 5) -> dict[str, Any]:
+    """Find reusable browser data extraction scripts for a task."""
+    store = _build_script_store()
+    scripts = []
+    used_vector = False
+    vector_store = _build_script_vector_store()
+    if vector_store is not None:
+        try:
+            names = vector_store.search_scripts(query, limit=limit)
+            for script_name in names:
+                script = store.get_by_name(script_name)
+                if script is not None and script.is_active:
+                    scripts.append(script)
+            used_vector = True
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to search web scripts via vector store query=%s", query)
+            scripts = []
+            used_vector = False
+    if not scripts:
+        scripts = store.search(query, limit=limit)
+    return {
+        "ok": True,
+        "query": query,
+        "used_vector": used_vector,
+        "scripts": [_script_metadata(script) for script in scripts[:limit]],
+    }
+
+
+@mcp.tool()
+async def invoke_script(
+    name: str,
+    params: dict[str, Any] | None = None,
+    headless: bool | None = None,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Invoke a reusable browser data extraction script and return structured data only."""
+    store = _build_script_store()
+    script = store.get_by_name(name)
+    if script is None or not script.is_active:
+        return {"ok": False, "error": "not_found", "message": f"Web script not found: {name}"}
+    try:
+        runner = NanoScriptRunner(headless=_default_headless() if headless is None else headless)
+        return await runner.run(script, params=params or {}, timeout_seconds=timeout_seconds)
+    except TimeoutError:
+        return {
+            "ok": False,
+            "script": name,
+            "error": "timeout",
+            "message": f"Script timed out after {timeout_seconds}s",
+        }
+    except NanoScriptInvalidResultError as exc:
+        return {"ok": False, "script": name, "error": "invalid_result", "message": str(exc)}
+    except NanoScriptValidationError as exc:
+        return {"ok": False, "script": name, "error": "invalid_script", "message": str(exc)}
+    except NanoScriptRuntimeError as exc:
+        return {"ok": False, "script": name, "error": "runtime_error", "message": str(exc)}
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("Failed to invoke web script name=%s", name)
+        return {"ok": False, "script": name, "error": "runtime_error", "message": str(exc)}
 
 
 @mcp.tool()

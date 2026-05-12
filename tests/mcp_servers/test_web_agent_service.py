@@ -115,3 +115,103 @@ def test_final_payload_marks_navigation_heavy_article_mismatch() -> None:
     assert payload["ok"] is False
     assert payload["error"] == "content_not_relevant"
     assert "navigation_heavy_listing" in payload["warnings"]
+
+
+def test_final_payload_hacker_news_like_200_is_success() -> None:
+    tool = WebAgentTool()
+    content = "\n".join(
+        [
+            "Hacker News",
+            "Postmortem: TanStack npm supply-chain compromise",
+            "580 points by varunsharma07",
+            "215 comments",
+            "Claude Platform on AWS",
+            "29 points",
+            "Show HN: A useful project",
+            "new | past | comments | ask | show | jobs | submit",
+        ]
+    )
+    flow = FlowState(
+        fetch=FetchResult(
+            strategy="httpx",
+            url="https://news.ycombinator.com",
+            final_url="https://news.ycombinator.com",
+            status_code=200,
+            html="",
+            title="Hacker News",
+            used_browser=False,
+            weak_content=False,
+            errors=[],
+        ),
+        page_type="unknown",
+        steps=[],
+        best_result=_build_result(page_type="unknown", content=content, title="Hacker News"),
+        fallback_used=False,
+    )
+
+    payload = tool._final_payload(flow, actions_taken=[])
+
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["status_code"] == 200
+    assert payload["title"] == "Hacker News"
+    assert payload["content"]
+
+
+def test_final_payload_200_with_clear_error_markers_is_not_found() -> None:
+    tool = WebAgentTool()
+    content = "404 Not Found\nThe requested URL was not found on this server."
+    flow = FlowState(
+        fetch=FetchResult(
+            strategy="httpx",
+            url="https://example.com/whatever",
+            final_url="https://example.com/whatever",
+            status_code=200,
+            html="",
+            title="404 Not Found",
+            used_browser=False,
+            weak_content=False,
+            errors=[],
+        ),
+        page_type="unknown",
+        steps=[],
+        best_result=_build_result(page_type="unknown", content=content, title="404 Not Found"),
+        fallback_used=False,
+    )
+
+    payload = tool._final_payload(flow, actions_taken=[])
+
+    assert payload["ok"] is False
+    assert payload["error"] == "page_not_found"
+    assert "error_page" in payload["warnings"]
+
+
+def test_final_payload_200_unknown_with_meaningful_content_is_success() -> None:
+    tool = WebAgentTool()
+    content = (
+        "This page provides detailed information about a public event, including speakers, "
+        "schedule, venue notes, registration guidance, and follow-up resources for attendees."
+    )
+    flow = FlowState(
+        fetch=FetchResult(
+            strategy="httpx",
+            url="https://example.com/event",
+            final_url="https://example.com/event",
+            status_code=200,
+            html="",
+            title="Community Event Updates",
+            used_browser=False,
+            weak_content=False,
+            errors=[],
+        ),
+        page_type="unknown",
+        steps=[],
+        best_result=_build_result(page_type="unknown", content=content, title="Community Event Updates"),
+        fallback_used=False,
+    )
+
+    payload = tool._final_payload(flow, actions_taken=[])
+
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["status_code"] == 200

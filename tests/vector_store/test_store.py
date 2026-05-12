@@ -9,6 +9,7 @@ import pytest
 from nanobot.vector_store import (
     COLLECTION_MEMORIES,
     COLLECTION_SKILLS,
+    COLLECTION_WEB_SCRIPTS,
     ConfigLoadError,
     ConfigNotFoundError,
     VectorStore,
@@ -100,9 +101,11 @@ vector_store:
 
                 assert vs._get_collection_name("memories") == "nanobot_memories"
                 assert vs._get_collection_name("skills") == "nanobot_skills"
+                assert vs._get_collection_name("web_scripts") == "nanobot_web_scripts"
 
 
 class TestConstants:
     def test_collection_constants(self) -> None:
         assert COLLECTION_MEMORIES == "memories"
         assert COLLECTION_SKILLS == "skills"
+        assert COLLECTION_WEB_SCRIPTS == "web_scripts"
