@@ -6,11 +6,13 @@ from types import SimpleNamespace
 from typing import Any
 
 from nanobot.agent_run import (
+    MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN,
     REPEATED_TOOL_CALL_ABORT_REPLY,
     AgentRun,
     _normalize_roles,
     prepare_messages_for_chat,
 )
+from nanobot.agent_tool_guards import ToolCallContext, ToolGuard, WebScriptGuard
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
 from nanobot.tools.base import Tool
@@ -120,6 +122,7 @@ class _FakeHost:
         self.tools = ToolRegistry()
         self.active_requests: dict[str, Any] = {}
         self.tool_hooks: list[Any] = []
+        self.tool_guards: list[ToolGuard] = []
         self.events: list[ToolCallEvent] = []
         self._temp_dir = tempfile.mkdtemp()
         self.prompts = PromptStore(f"{self._temp_dir}/prompts.db", seed_defaults=True)
@@ -491,3 +494,996 @@ def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
     assert final_tools == []
     final_messages = llm.calls_messages[-1]
     assert any("completed your research" in str(m.get("content", "")) for m in final_messages)
+
+
+def test_agent_run_aborts_after_scratchpad_tool_call_limit() -> None:
+    replies: list[dict[str, Any]] = []
+    for idx in range(MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN + 1):
+        replies.append(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": SCRATCHPAD_TOOL_NAME,
+                            "arguments": json.dumps(
+                                {
+                                    "mode": "append",
+                                    "current_step": f"step {idx}",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            }
+        )
+    replies.append({"content": "Partial progress from finalize.", "tool_calls": None})
+    llm = _RecordingFakeLlm(replies)
+    host = _FakeHost(llm)
+    host.contexts.put("chat", "telegram:1", "scratchpad", {"goal": "Test scratchpad loop guard"})
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "loop scratchpad"}],
+            tools=[{"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}}],
+        )
+        assert text == "Partial progress from finalize."
+        assert len(trace) == MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN
+        assert all(item["name"] == SCRATCHPAD_TOOL_NAME for item in trace)
+
+    asyncio.run(_go())
+
+    final_tools = llm.calls_tools[-1]
+    assert final_tools == []
+
+
+def test_memory_save_can_claim_script_saved_after_create_script_success() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {"name": "web__create_script", "arguments": json.dumps({"name": "hn_frontpage"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_mem",
+                        "type": "function",
+                        "function": {
+                            "name": "memory__save",
+                            "arguments": json.dumps(
+                                {
+                                    "text": "Hacker News front page extraction script saved as 'hn_frontpage'.",
+                                    "user_id": "123",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    recorded_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _CreateScriptOkTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(("web__create_script", dict(args)))
+            return json.dumps({"ok": True, "script": {"name": "hn_frontpage"}}, ensure_ascii=True)
+
+    class _MemorySaveRecorder(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(("memory__save", dict(args)))
+            return json.dumps({"ok": True}, ensure_ascii=True)
+
+    host.tools.register(_CreateScriptOkTool("web__create_script"))
+    host.tools.register(_MemorySaveRecorder("memory__save"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "do it"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__create_script"}},
+                {"type": "function", "function": {"name": "memory__save"}},
+            ],
+        )
+        assert text == "Done."
+
+    asyncio.run(_go())
+
+    memory_calls = [args for name, args in recorded_calls if name == "memory__save"]
+    assert len(memory_calls) == 1
+    assert "saved as" in memory_calls[0]["text"].lower()
+    assert memory_calls[0]["user_id"] == "telegram:123"
+
+
+def test_memory_save_claim_blocked_after_create_script_failure() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {"name": "web__create_script", "arguments": json.dumps({"name": "hn_frontpage"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_mem",
+                        "type": "function",
+                        "function": {
+                            "name": "memory__save",
+                            "arguments": json.dumps(
+                                {
+                                    "text": "Hacker News front page extraction script saved as 'hn_frontpage'.",
+                                    "user_id": "123",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    called_memory = {"value": False}
+
+    class _CreateScriptFailTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            del args
+            return json.dumps(
+                {"ok": False, "error": "invalid_script", "message": "Syntax error: invalid syntax"},
+                ensure_ascii=True,
+            )
+
+    class _MemorySaveTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            called_memory["value"] = True
+            return await super().call(args)
+
+    host.tools.register(_CreateScriptFailTool("web__create_script"))
+    host.tools.register(_MemorySaveTool("memory__save"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "do it"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__create_script"}},
+                {"type": "function", "function": {"name": "memory__save"}},
+            ],
+        )
+        assert text == "Done."
+        mem_trace = [item for item in trace if item["name"] == "memory__save"]
+        assert len(mem_trace) == 1
+        assert "blocked_false_memory" in mem_trace[0]["result_preview"]
+
+    asyncio.run(_go())
+    assert called_memory["value"] is False
+
+
+def test_create_script_failure_can_still_end_with_honest_user_response() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://news.ycombinator.com"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {"name": "web__create_script", "arguments": json.dumps({"name": "hn_frontpage"})},
+                    }
+                ],
+            },
+            {
+                "content": (
+                    "Here are the top stories. I could fetch and parse the page, "
+                    "but saving the reusable script failed."
+                ),
+                "tool_calls": None,
+            },
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(_FakeTool("web__read_page", result=json.dumps({"ok": True, "items": [{"title": "A"}]})))
+    host.tools.register(
+        _FakeTool(
+            "web__create_script",
+            result=json.dumps({"ok": False, "error": "invalid_script", "message": "Syntax error: invalid syntax"}),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "extract and save"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__read_page"}},
+                {"type": "function", "function": {"name": "web__create_script"}},
+            ],
+        )
+        assert "saving the reusable script failed" in text.lower()
+
+    asyncio.run(_go())
+
+
+def test_web_create_script_blocks_javascript_before_tool_call() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_frontpage",
+                                    "description": "Extract HN",
+                                    "code": (
+                                        "const rows = Array.from(document.querySelectorAll('tr.athing')); "
+                                        "return rows;"
+                                    ),
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "I extracted data, but reusable script creation failed.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    called = {"create_called": False}
+
+    class _CreateScriptTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            called["create_called"] = True
+            return await super().call(args)
+
+    host.tools.register(_CreateScriptTool("web__create_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "save script"}],
+            tools=[{"type": "function", "function": {"name": "web__create_script"}}],
+        )
+        assert "script creation failed" in text.lower()
+        assert trace[0]["name"] == "web__create_script"
+        assert "invalid_script" in trace[0]["result_preview"]
+
+    asyncio.run(_go())
+    assert called["create_called"] is False
+
+
+def test_web_create_script_allows_python_nanoscript() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_frontpage",
+                                    "description": "Extract HN",
+                                    "code": (
+                                        "async def script(page: Page, params: dict[str, Any]) -> dict[str, Any]:\n"
+                                        "    await page.goto(params['url'])\n"
+                                        "    return {'items': [], 'metadata': {'source': params['url']}}"
+                                    ),
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "saved", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    called = {"create_called": False}
+
+    class _CreateScriptTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            called["create_called"] = True
+            return json.dumps({"ok": True, "script": {"name": "hn_frontpage"}}, ensure_ascii=True)
+
+    host.tools.register(_CreateScriptTool("web__create_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "save script"}],
+            tools=[{"type": "function", "function": {"name": "web__create_script"}}],
+        )
+        assert text == "saved"
+
+    asyncio.run(_go())
+    assert called["create_called"] is True
+
+
+def test_agent_run_rewrites_data_loss_reply_when_web_data_already_available() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://news.ycombinator.com"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": (
+                    "I saved the script. Unfortunately, the story titles and links from earlier didn't survive this "
+                    "session. I’d need to re-run now."
+                ),
+                "tool_calls": None,
+            },
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__read_page",
+            result=json.dumps({"ok": True, "items": [{"title": "Example Story", "url": "https://example.com"}]}),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get stories"}],
+            tools=[{"type": "function", "function": {"name": "web__read_page"}}],
+        )
+        assert "didn't survive" not in text.lower()
+        assert "re-run" not in text.lower()
+        assert "top stories" in text.lower()
+        assert "example story" in text.lower()
+        assert "https://example.com" in text.lower()
+
+    asyncio.run(_go())
+
+
+def test_existing_script_invoke_with_items_finalizes_without_read_or_create() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {"name": "web__search_scripts", "arguments": json.dumps({"query": "hn"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {"name": "web__invoke_script", "arguments": json.dumps({"name": "hn_top_stories"})},
+                    }
+                ],
+            },
+            {"content": "1. Story A - https://a", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__search_scripts",
+            result=json.dumps({"ok": True, "scripts": [{"name": "hn_top_stories"}]}),
+        )
+    )
+    host.tools.register(
+        _FakeTool(
+            "web__invoke_script",
+            result=json.dumps({"ok": True, "data": {"items": [{"title": "Story A", "url": "https://a"}]}}),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "hn top stories"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__search_scripts"}},
+                {"type": "function", "function": {"name": "web__invoke_script"}},
+                {"type": "function", "function": {"name": "web__read_page"}},
+                {"type": "function", "function": {"name": "web__create_script"}},
+            ],
+        )
+        names = [item["name"] for item in trace]
+        assert names == ["web__search_scripts", "web__invoke_script"]
+        assert "Story A" in text
+
+    asyncio.run(_go())
+
+
+def test_read_then_create_success_force_finalize_with_items_and_saved_note() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "web__read_page", "arguments": json.dumps({"url": "https://news.ycombinator.com"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {
+                            "name": "web__create_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "code": "async def script(page, params):\n    return {'items': []}",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__read_page",
+            result=json.dumps({"ok": True, "items": [{"title": "Story B", "url": "https://b"}]}),
+        )
+    )
+    host.tools.register(
+        _FakeTool(
+            "web__create_script",
+            result=json.dumps({"ok": True, "script": {"name": "hn_top_stories"}}),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "hn top stories and save script"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__read_page"}},
+                {"type": "function", "function": {"name": "web__create_script"}},
+                {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
+            ],
+        )
+        assert "Story B" in text
+        assert "hn_top_stories saved" in text
+
+    asyncio.run(_go())
+
+
+def test_search_hit_with_empty_params_schema_allows_invoke_with_url_param() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {"name": "web__search_scripts", "arguments": json.dumps({"query": "hn page 2"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": {"url": "https://news.ycombinator.com/?p=2"},
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "1. P2 Story - https://example.com/p2", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__search_scripts",
+            result=json.dumps({"ok": True, "scripts": [{"name": "hn_top_stories", "params_schema": {}}]}),
+        )
+    )
+    host.tools.register(
+        _FakeTool(
+            "web__invoke_script",
+            result=json.dumps({"ok": True, "data": {"items": [{"title": "P2 Story", "url": "https://example.com/p2"}]}}),
+        )
+    )
+    read_called = {"value": False}
+
+    class _ReadTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            read_called["value"] = True
+            return await super().call(args)
+
+    host.tools.register(_ReadTool("web__read_page", result=json.dumps({"ok": True, "content": "fallback"})))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get HN page 2 stories"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__search_scripts"}},
+                {"type": "function", "function": {"name": "web__invoke_script"}},
+                {"type": "function", "function": {"name": "web__read_page"}},
+            ],
+        )
+        assert "P2 Story" in text
+        invoke_call = [t for t in trace if t["name"] == "web__invoke_script"][0]
+        assert invoke_call["args"]["params"]["url"] == "https://news.ycombinator.com/?p=2"
+
+    asyncio.run(_go())
+    assert read_called["value"] is False
+
+
+def test_script_reuse_falls_back_to_read_when_invoke_fails() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {"name": "web__search_scripts", "arguments": json.dumps({"query": "hn page 2"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": {"url": "https://news.ycombinator.com/?p=2"},
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read2",
+                        "type": "function",
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://news.ycombinator.com/?p=2"}),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__search_scripts",
+            result=json.dumps({"ok": True, "scripts": [{"name": "hn_top_stories"}]}),
+        )
+    )
+    host.tools.register(_FakeTool("web__invoke_script", result=json.dumps({"ok": False, "error": "runtime_error"})))
+    read_calls = {"count": 0}
+
+    class _ReadTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            read_calls["count"] += 1
+            return await super().call(args)
+
+    host.tools.register(_ReadTool("web__read_page", result=json.dumps({"ok": True, "items": [{"title": "Fallback"}]})))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get HN page 2 stories"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__search_scripts"}},
+                {"type": "function", "function": {"name": "web__invoke_script"}},
+                {"type": "function", "function": {"name": "web__read_page"}},
+            ],
+        )
+        assert text
+        names = [t["name"] for t in trace]
+        assert names[:2] == ["web__search_scripts", "web__invoke_script"]
+        assert "web__read_page" in names
+
+    asyncio.run(_go())
+    assert read_calls["count"] == 1
+
+
+def test_script_items_can_be_formatted_as_vietnamese_only_five_bullets() -> None:
+    final_answer = "\n".join(
+        [
+            "- Tin 1: https://example.com/1",
+            "- Tin 2: https://example.com/2",
+            "- Tin 3: https://example.com/3",
+            "- Tin 4: https://example.com/4",
+            "- Tin 5: https://example.com/5",
+        ]
+    )
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps({"name": "hn_top_stories", "params": {"limit": 5}}),
+                        },
+                    }
+                ],
+            },
+            {"content": final_answer, "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__invoke_script",
+            result=json.dumps(
+                {
+                    "ok": True,
+                    "data": {
+                        "items": [
+                            {"title": f"Tin {index}", "url": f"https://example.com/{index}"}
+                            for index in range(1, 6)
+                        ]
+                    },
+                }
+            ),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "Tra loi tieng Viet, chi 5 gach dau dong ve HN"}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
+        )
+        lines = text.splitlines()
+        assert [item["name"] for item in trace] == ["web__invoke_script"]
+        assert len(lines) == 5
+        assert all(line.startswith("- ") for line in lines)
+        assert text == final_answer
+
+    asyncio.run(_go())
+
+
+def test_invoke_script_params_string_is_normalized_from_dsml() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": "<|DSML|limit>10</|DSML|limit>",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    recorded_calls: list[dict[str, Any]] = []
+
+    class _InvokeTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(dict(args))
+            return json.dumps({"ok": True, "data": {"items": [{"title": "A"}]}})
+
+    host.tools.register(_InvokeTool("web__invoke_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get 10 HN stories"}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
+        )
+        assert text == "Done."
+        assert trace[0]["args"]["params"] == {"limit": 10}
+
+    asyncio.run(_go())
+    assert recorded_calls[0]["params"] == {"limit": 10}
+
+
+def test_invoke_script_params_json_string_is_normalized_to_dict() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": "{\"limit\": 5}",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    recorded_calls: list[dict[str, Any]] = []
+
+    class _InvokeTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(dict(args))
+            return json.dumps({"ok": True, "data": {"items": [{"title": "A"}]}})
+
+    host.tools.register(_InvokeTool("web__invoke_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get 5 HN stories"}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
+        )
+        assert text == "Done."
+        assert trace[0]["args"]["params"] == {"limit": 5}
+
+    asyncio.run(_go())
+    assert recorded_calls[0]["params"] == {"limit": 5}
+
+
+def test_web_script_guard_runs_when_host_has_custom_guards() -> None:
+    class _CustomGuard(ToolGuard):
+        def pre_call(self, fn_name: str, args: dict[str, Any], ctx: ToolCallContext) -> None:
+            del fn_name, args
+            ctx.guard_state("custom")["called"] = True
+
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": "<|DSML|limit>10</|DSML|limit>",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tool_guards = [_CustomGuard()]
+    recorded_calls: list[dict[str, Any]] = []
+
+    class _InvokeTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(dict(args))
+            return json.dumps({"ok": True, "data": {"items": [{"title": "A"}]}})
+
+    host.tools.register(_InvokeTool("web__invoke_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get 10 HN stories"}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
+        )
+        assert text == "Done."
+        assert trace[0]["args"]["params"] == {"limit": 10}
+
+    asyncio.run(_go())
+    assert recorded_calls[0]["params"] == {"limit": 10}
+
+
+def test_false_memory_guard_runs_when_host_has_custom_guards() -> None:
+    class _CustomGuard(ToolGuard):
+        pass
+
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {"name": "web__create_script", "arguments": json.dumps({"name": "hn_frontpage"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_mem",
+                        "type": "function",
+                        "function": {
+                            "name": "memory__save",
+                            "arguments": json.dumps(
+                                {
+                                    "text": "Hacker News script saved as hn_frontpage.",
+                                    "user_id": "123",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tool_guards = [_CustomGuard()]
+    called_memory = {"value": False}
+    host.tools.register(
+        _FakeTool(
+            "web__create_script",
+            result=json.dumps({"ok": False, "error": "invalid_script"}),
+        )
+    )
+
+    class _MemoryTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            called_memory["value"] = True
+            return await super().call(args)
+
+    host.tools.register(_MemoryTool("memory__save"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        _text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "save script"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__create_script"}},
+                {"type": "function", "function": {"name": "memory__save"}},
+            ],
+        )
+        mem_trace = [item for item in trace if item["name"] == "memory__save"]
+        assert "blocked_false_memory" in mem_trace[0]["result_preview"]
+
+    asyncio.run(_go())
+    assert called_memory["value"] is False
+
+
+def test_agent_run_does_not_duplicate_web_script_guard_when_host_provides_it() -> None:
+    llm = _FakeLlm([{"content": "ok", "tool_calls": None}])
+    host = _FakeHost(llm)
+    host.tool_guards = [WebScriptGuard()]
+
+    run = AgentRun(host)
+
+    web_script_guard_count = sum(1 for guard in run._tool_guards if isinstance(guard, WebScriptGuard))
+    assert web_script_guard_count == 1
+
+
+def test_web_script_guard_does_not_force_finalize_when_scratchpad_threshold_hit_on_non_scratchpad_tool() -> None:
+    guard = WebScriptGuard()
+    ctx = ToolCallContext(scope="telegram:1", scratchpad_calls=3, current_tool_name="web__read_page")
+    # Seed prior usable web data state to ensure only tool-name gating decides the outcome.
+    ctx.guard_state("web_script")["had_usable_web_data"] = True
+    ctx.guard_state("web_script")["latest_web_items"] = [{"title": "Story", "url": "https://example.com"}]
+
+    action = guard.post_result(
+        fn_name="web__read_page",
+        args={},
+        result={"ok": True, "items": [{"title": "Story", "url": "https://example.com"}]},
+        ctx=ctx,
+    )
+
+    assert action is None or action.force_finalize is False

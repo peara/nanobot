@@ -4,6 +4,14 @@ import json
 import logging
 from typing import Any
 
+from nanobot.agent_tool_guards import (
+    PostResultAction,
+    PreCallResult,
+    ToolCallContext,
+    ToolGuard,
+    WebScriptGuard,
+    parse_tool_result_json,
+)
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
     apply_scratchpad_append_from_content,
@@ -18,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 30
 MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
+MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN = 8
 REPEATED_TOOL_CALL_ABORT_REPLY = (
     "I got stuck repeating the same tool call in this turn. "
     "The source may be redirecting or returning unhelpful content. Please try another source or rephrase the request."
@@ -25,7 +34,6 @@ REPEATED_TOOL_CALL_ABORT_REPLY = (
 TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
-
 
 def _tool_call_limit_finalize_message(host: Any, scope: str) -> dict[str, str] | None:
     scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
@@ -139,6 +147,48 @@ class AgentRun:
 
     def __init__(self, host: Any) -> None:
         self._host = host
+        host_guards = list(getattr(host, "tool_guards", None) or [])
+        has_web_script_guard = any(isinstance(guard, WebScriptGuard) for guard in host_guards)
+        default_guards: list[ToolGuard] = [] if has_web_script_guard else [WebScriptGuard()]
+        self._tool_guards = [*default_guards, *host_guards]
+
+    def _pre_call_guard(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        ctx: ToolCallContext,
+    ) -> PreCallResult:
+        result = PreCallResult(normalized_args=args)
+        for guard in self._tool_guards:
+            action = guard.pre_call(fn_name, args, ctx)
+            if action is None:
+                continue
+            if action.normalized_args is not None:
+                args = action.normalized_args
+                result.normalized_args = args
+            if action.block:
+                return action
+        return result
+
+    def _post_result_guard(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        payload: dict[str, Any] | None,
+        ctx: ToolCallContext,
+    ) -> PostResultAction | None:
+        for guard in self._tool_guards:
+            action = guard.post_result(fn_name, args, payload, ctx)
+            if action is not None and action.force_finalize:
+                return action
+        return None
+
+    def _rewrite_finalize_reply(self, reply: str, ctx: ToolCallContext) -> str:
+        for guard in self._tool_guards:
+            rewritten = guard.rewrite_finalize_reply(reply, ctx)
+            if rewritten is not None:
+                return rewritten
+        return reply
 
     @staticmethod
     def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
@@ -178,6 +228,8 @@ class AgentRun:
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
         total_tool_calls = 0
+        scratchpad_tool_calls = 0
+        guard_ctx = ToolCallContext(scope=scope_for_tools)
         previous_round_signatures: list[tuple[str, str]] | None = None
         identical_round_repeats = 0
         while assistant_message.get("tool_calls"):
@@ -234,8 +286,10 @@ class AgentRun:
             )
             round_used_external_tool = False
             round_finalized_scratchpad = False
+            post_finalize_reply: str | None = None
             for tool_call in requested_calls:
                 total_tool_calls += 1
+                guard_ctx.total_calls = total_tool_calls
                 if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
                     logger.warning(
                         "Aborting tool loop after limit scope=%s total_tool_calls=%d",
@@ -253,8 +307,28 @@ class AgentRun:
                     reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
                     return reply, tool_trace
                 fn_name = tool_call["function"]["name"]
+                guard_ctx.current_tool_name = fn_name
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
+                if fn_name == SCRATCHPAD_TOOL_NAME:
+                    scratchpad_tool_calls += 1
+                    guard_ctx.scratchpad_calls = scratchpad_tool_calls
+                    if scratchpad_tool_calls > MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN:
+                        logger.warning(
+                            "Aborting tool loop after scratchpad limit scope=%s scratchpad_calls=%d",
+                            scope_for_tools,
+                            scratchpad_tool_calls,
+                        )
+                        finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools)
+                        trimmed = trim_to_last_tool_round(messages)
+                        to_send = trimmed + ([finalize_msg] if finalize_msg else [])
+                        prepared_messages = prepare_messages_for_chat(to_send)
+                        final_message = await self._host.llm.chat(
+                            messages=prepared_messages,
+                            tools=[],
+                        )
+                        reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
+                        return reply, tool_trace
                 if fn_name.endswith("__schedule_task"):
                     chat_id = str(args.get("chat_id", "")).strip()
                     if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
@@ -262,11 +336,24 @@ class AgentRun:
                 ok = True
                 error: str | None = None
                 try:
-                    active = getattr(self._host, "active_requests", None)
-                    if isinstance(active, dict) and scope_for_tools in active:
-                        active[scope_for_tools].current_step = f"calling {fn_name}"
-                    logger.info("Calling tool=%s args=%s", fn_name, args)
-                    if fn_name == SCRATCHPAD_TOOL_NAME:
+                    pre_action = self._pre_call_guard(fn_name, args, guard_ctx)
+                    if pre_action.normalized_args is not None:
+                        args = pre_action.normalized_args
+                    if pre_action.block:
+                        ok = False
+                        error = pre_action.block_error
+                        result = json.dumps(pre_action.block_payload or {"ok": False}, ensure_ascii=True)
+                        logger.warning(
+                            "Blocked tool call via guard scope=%s tool=%s error=%s",
+                            scope_for_tools,
+                            fn_name,
+                            error,
+                        )
+                    elif fn_name == SCRATCHPAD_TOOL_NAME:
+                        active = getattr(self._host, "active_requests", None)
+                        if isinstance(active, dict) and scope_for_tools in active:
+                            active[scope_for_tools].current_step = f"calling {fn_name}"
+                        logger.info("Calling tool=%s args=%s", fn_name, args)
                         scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args)
                         scratchpad_mode = str(args.get("mode", "")).strip().lower()
                         result = json.dumps(
@@ -276,11 +363,16 @@ class AgentRun:
                         needs_scratchpad_update = False
                         if scratchpad_mode == "finalize":
                             round_finalized_scratchpad = True
+                        logger.info("Tool succeeded tool=%s", fn_name)
                     else:
+                        active = getattr(self._host, "active_requests", None)
+                        if isinstance(active, dict) and scope_for_tools in active:
+                            active[scope_for_tools].current_step = f"calling {fn_name}"
+                        logger.info("Calling tool=%s args=%s", fn_name, args)
                         result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
                         needs_scratchpad_update = True
                         round_used_external_tool = True
-                    logger.info("Tool succeeded tool=%s", fn_name)
+                        logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
                     ok = False
@@ -289,6 +381,10 @@ class AgentRun:
                     if fn_name != SCRATCHPAD_TOOL_NAME:
                         needs_scratchpad_update = True
                 result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
+                payload = parse_tool_result_json(result_text)
+                post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)
+                if post_action is not None and post_action.force_finalize:
+                    post_finalize_reply = post_action.finalize_reply or ""
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
@@ -345,7 +441,10 @@ class AgentRun:
                         finish_reason,
                     )
                     reply = "I could not generate a response."
+                reply = self._rewrite_finalize_reply(reply, guard_ctx)
                 return reply, tool_trace
+            if post_finalize_reply is not None:
+                return post_finalize_reply, tool_trace
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
                 scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None
@@ -366,4 +465,4 @@ class AgentRun:
                 finish_reason,
             )
             reply = "I could not generate a response."
-        return reply, tool_trace
+        return self._rewrite_finalize_reply(reply, guard_ctx), tool_trace

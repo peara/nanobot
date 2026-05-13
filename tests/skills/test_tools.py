@@ -202,3 +202,21 @@ class TestRegisterSkillTools:
             assert registry.has("skill__update")
             assert registry.has("skill__activate")
             assert registry.has("skill__delete")
+
+    def test_skill_tool_descriptions_separate_workflow_from_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+
+            create_description = SkillCreateTool(store).description.lower()
+            update_description = SkillUpdateTool(store).description.lower()
+            instructions_description = (
+                SkillCreateTool(store).schema["properties"]["instructions"]["description"].lower()
+            )
+
+            assert "workflow" in create_description
+            assert "parameter mapping" in create_description
+            assert "formatting" in create_description
+            assert "web__create_script" in create_description
+            assert "executable scraping code" in create_description
+            assert "executable extraction code" in update_description
+            assert "do not include executable scraping code" in instructions_description

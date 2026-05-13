@@ -465,20 +465,32 @@ class WebAgentTool:
         status_code = flow.fetch.status_code
         final_url = flow.fetch.final_url
         requested_url = flow.fetch.url
+        has_content = self._has_meaningful_content(content)
 
         if status_code is not None and status_code >= 400:
             warnings.append(f"http_status_{status_code}")
-        if self._looks_like_error_page(final_url, title, content):
+        if self._looks_like_error_page(final_url, title, content, status_code):
             warnings.append("error_page")
         if self._is_redirect_mismatch(requested_url, final_url):
             warnings.append("redirect_mismatch")
         if result and self._looks_like_navigation_listing(requested_url, result, content):
             warnings.append("navigation_heavy_listing")
 
+        if (
+            status_code is not None
+            and 200 <= status_code < 300
+            and has_content
+            and "error_page" not in warnings
+            and "redirect_mismatch" not in warnings
+            and "navigation_heavy_listing" not in warnings
+        ):
+            return True, None, None, warnings
+
         if not warnings:
             return True, None, None, []
 
-        if "http_status_404" in warnings or "error_page" in warnings:
+        has_http_error = any(item.startswith("http_status_") for item in warnings)
+        if has_http_error or "error_page" in warnings:
             return False, "page_not_found", "The requested page resolved to a 404 or error page.", warnings
         if "redirect_mismatch" in warnings:
             return False, "redirect_mismatch", "The requested page redirected to different content.", warnings
@@ -490,24 +502,38 @@ class WebAgentTool:
         )
 
     @staticmethod
-    def _looks_like_error_page(final_url: str, title: str, content: str) -> bool:
+    def _looks_like_error_page(final_url: str, title: str, content: str, status_code: int | None) -> bool:
+        if status_code is not None and status_code >= 400:
+            return True
         lowered_url = final_url.lower()
         lowered_title = title.lower()
         lowered_content = content.lower()
-        markers = (
-            "404",
-            "not found",
-            "trang thông báo lỗi",
-            "nội dung này đã bị gỡ",
-            "khong ton tai",
-            "không tồn tại",
+        title_markers = ("404", "410", "500", "not found", "error", "page not found")
+        content_markers = (
+            "404 not found",
+            "410 gone",
+            "500 internal server error",
             "requested url was not found",
-            "page not found",
+            "page not found"
         )
         if "/404" in lowered_url or lowered_url.endswith("404.html"):
             return True
-        combined = f"{lowered_title}\n{lowered_content}"
-        return any(marker in combined for marker in markers)
+        title_has_marker = any(marker in lowered_title for marker in title_markers)
+        content_has_strong_marker = any(marker in lowered_content for marker in content_markers)
+        if title_has_marker and content_has_strong_marker:
+            return True
+        if title_has_marker and not WebAgentTool._has_meaningful_content(content):
+            return True
+        return False
+
+    @staticmethod
+    def _has_meaningful_content(content: str) -> bool:
+        cleaned = " ".join(part.strip() for part in content.splitlines() if part.strip())
+        if not cleaned:
+            return False
+        if word_count(cleaned) >= 40:
+            return True
+        return len(cleaned) >= 280
 
     @staticmethod
     def _url_tokens(url: str) -> set[str]:
