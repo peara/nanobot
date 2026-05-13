@@ -5,17 +5,12 @@ import logging
 from typing import Any
 
 from nanobot.agent_tool_guards import (
-    contains_script_saved_claim,
-    extract_web_items,
-    has_usable_web_data,
-    looks_like_javascript_script,
-    looks_like_successful_script_create,
-    normalize_invoke_script_params,
-    normalize_memory_user_id,
+    PostResultAction,
+    PreCallResult,
+    ToolCallContext,
+    ToolGuard,
+    WebScriptGuard,
     parse_tool_result_json,
-    reply_claims_data_lost,
-    rewrite_data_loss_reply,
-    synthesize_web_data_reply,
 )
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
@@ -152,6 +147,45 @@ class AgentRun:
 
     def __init__(self, host: Any) -> None:
         self._host = host
+        self._tool_guards: list[ToolGuard] = list(getattr(host, "tool_guards", None) or [WebScriptGuard()])
+
+    def _pre_call_guard(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        ctx: ToolCallContext,
+    ) -> PreCallResult:
+        result = PreCallResult(normalized_args=args)
+        for guard in self._tool_guards:
+            action = guard.pre_call(fn_name, args, ctx)
+            if action is None:
+                continue
+            if action.normalized_args is not None:
+                args = action.normalized_args
+                result.normalized_args = args
+            if action.block:
+                return action
+        return result
+
+    def _post_result_guard(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        payload: dict[str, Any] | None,
+        ctx: ToolCallContext,
+    ) -> PostResultAction | None:
+        for guard in self._tool_guards:
+            action = guard.post_result(fn_name, args, payload, ctx)
+            if action is not None and action.force_finalize:
+                return action
+        return None
+
+    def _rewrite_finalize_reply(self, reply: str, ctx: ToolCallContext) -> str:
+        for guard in self._tool_guards:
+            rewritten = guard.rewrite_finalize_reply(reply, ctx)
+            if rewritten is not None:
+                return rewritten
+        return reply
 
     @staticmethod
     def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
@@ -192,10 +226,7 @@ class AgentRun:
         needs_scratchpad_update = False
         total_tool_calls = 0
         scratchpad_tool_calls = 0
-        last_create_script_ok: bool | None = None
-        had_usable_web_data = False
-        latest_web_items: list[dict[str, Any]] = []
-        latest_script_status: str | None = None
+        guard_ctx = ToolCallContext(scope=scope_for_tools)
         previous_round_signatures: list[tuple[str, str]] | None = None
         identical_round_repeats = 0
         while assistant_message.get("tool_calls"):
@@ -252,9 +283,10 @@ class AgentRun:
             )
             round_used_external_tool = False
             round_finalized_scratchpad = False
-            force_finalize_after_round = False
+            post_finalize_reply: str | None = None
             for tool_call in requested_calls:
                 total_tool_calls += 1
+                guard_ctx.total_calls = total_tool_calls
                 if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
                     logger.warning(
                         "Aborting tool loop after limit scope=%s total_tool_calls=%d",
@@ -276,6 +308,7 @@ class AgentRun:
                 args = json.loads(raw_args)
                 if fn_name == SCRATCHPAD_TOOL_NAME:
                     scratchpad_tool_calls += 1
+                    guard_ctx.scratchpad_calls = scratchpad_tool_calls
                     if scratchpad_tool_calls > MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN:
                         logger.warning(
                             "Aborting tool loop after scratchpad limit scope=%s scratchpad_calls=%d",
@@ -296,87 +329,45 @@ class AgentRun:
                     chat_id = str(args.get("chat_id", "")).strip()
                     if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
                         args["chat_id"] = scope_for_tools
-                if fn_name == "web__invoke_script":
-                    normalize_invoke_script_params(args)
-                if fn_name == "memory__save":
-                    normalize_memory_user_id(args, scope_for_tools)
                 ok = True
                 error: str | None = None
                 try:
-                    if fn_name == "web__create_script":
-                        script_code = str(args.get("code", ""))
-                        if looks_like_javascript_script(script_code):
-                            ok = False
-                            error = "invalid_script_language"
-                            result = json.dumps(
-                                {
-                                    "ok": False,
-                                    "error": "invalid_script",
-                                    "message": (
-                                        "web__create_script expects Python NanoScript only. "
-                                        "JavaScript syntax detected. Use: async def script(page, params) -> dict."
-                                    ),
-                                },
-                                ensure_ascii=True,
-                            )
-                            logger.warning(
-                                "Blocked web__create_script with JavaScript-like code scope=%s",
-                                scope_for_tools,
-                            )
-                        else:
-                            active = getattr(self._host, "active_requests", None)
-                            if isinstance(active, dict) and scope_for_tools in active:
-                                active[scope_for_tools].current_step = f"calling {fn_name}"
-                            logger.info("Calling tool=%s args=%s", fn_name, args)
-                            result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
-                            needs_scratchpad_update = True
-                            round_used_external_tool = True
-                            logger.info("Tool succeeded tool=%s", fn_name)
-                    elif fn_name == "memory__save" and last_create_script_ok is False:
-                        text = str(args.get("text", ""))
-                        if contains_script_saved_claim(text):
-                            ok = False
-                            error = "blocked_false_memory"
-                            result = json.dumps(
-                                {
-                                    "ok": False,
-                                    "error": "blocked_false_memory",
-                                    "message": (
-                                        "Blocked memory__save: previous web__create_script failed, "
-                                        "so script-saved claims are not allowed."
-                                    ),
-                                },
-                                ensure_ascii=True,
-                            )
-                            logger.warning(
-                                "Blocked contradictory memory__save after failed web__create_script scope=%s",
-                                scope_for_tools,
-                            )
-                        else:
-                            result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
-                            needs_scratchpad_update = True
-                            round_used_external_tool = True
-                            logger.info("Calling tool=%s args=%s", fn_name, args)
-                            logger.info("Tool succeeded tool=%s", fn_name)
+                    pre_action = self._pre_call_guard(fn_name, args, guard_ctx)
+                    if pre_action.normalized_args is not None:
+                        args = pre_action.normalized_args
+                    if pre_action.block:
+                        ok = False
+                        error = pre_action.block_error
+                        result = json.dumps(pre_action.block_payload or {"ok": False}, ensure_ascii=True)
+                        logger.warning(
+                            "Blocked tool call via guard scope=%s tool=%s error=%s",
+                            scope_for_tools,
+                            fn_name,
+                            error,
+                        )
+                    elif fn_name == SCRATCHPAD_TOOL_NAME:
+                        active = getattr(self._host, "active_requests", None)
+                        if isinstance(active, dict) and scope_for_tools in active:
+                            active[scope_for_tools].current_step = f"calling {fn_name}"
+                        logger.info("Calling tool=%s args=%s", fn_name, args)
+                        scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args)
+                        scratchpad_mode = str(args.get("mode", "")).strip().lower()
+                        result = json.dumps(
+                            scratchpad_tool_result(scratchpad_mode, scratchpad),
+                            ensure_ascii=True,
+                        )
+                        needs_scratchpad_update = False
+                        if scratchpad_mode == "finalize":
+                            round_finalized_scratchpad = True
+                        logger.info("Tool succeeded tool=%s", fn_name)
                     else:
                         active = getattr(self._host, "active_requests", None)
                         if isinstance(active, dict) and scope_for_tools in active:
                             active[scope_for_tools].current_step = f"calling {fn_name}"
                         logger.info("Calling tool=%s args=%s", fn_name, args)
-                        if fn_name == SCRATCHPAD_TOOL_NAME:
-                            scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args)
-                            scratchpad_mode = str(args.get("mode", "")).strip().lower()
-                            result = json.dumps(
-                                scratchpad_tool_result(scratchpad_mode, scratchpad),
-                                ensure_ascii=True,
-                            )
-                            needs_scratchpad_update = False
-                            if scratchpad_mode == "finalize":
-                                round_finalized_scratchpad = True
-                        else:
-                            result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
-                            needs_scratchpad_update = True
-                            round_used_external_tool = True
+                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
+                        needs_scratchpad_update = True
+                        round_used_external_tool = True
                         logger.info("Tool succeeded tool=%s", fn_name)
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.exception("Tool failed tool=%s", fn_name)
@@ -386,22 +377,10 @@ class AgentRun:
                     if fn_name != SCRATCHPAD_TOOL_NAME:
                         needs_scratchpad_update = True
                 result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
-                if fn_name == "web__create_script":
-                    payload = parse_tool_result_json(result_text)
-                    if payload is not None and isinstance(payload.get("ok"), bool):
-                        last_create_script_ok = bool(payload["ok"])
                 payload = parse_tool_result_json(result_text)
-                if payload is not None and has_usable_web_data(fn_name, payload):
-                    had_usable_web_data = True
-                    extracted_items = extract_web_items(fn_name, payload)
-                    if extracted_items:
-                        latest_web_items = extracted_items
-                if payload is not None and looks_like_successful_script_create(fn_name, payload):
-                    script = payload.get("script")
-                    if isinstance(script, dict):
-                        name = str(script.get("name", "")).strip()
-                        if name:
-                            latest_script_status = f"{name} saved"
+                post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)
+                if post_action is not None and post_action.force_finalize:
+                    post_finalize_reply = post_action.finalize_reply or ""
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
@@ -438,15 +417,6 @@ class AgentRun:
                         "content": result_text,
                     }
                 )
-                if (
-                    scratchpad_tool_calls >= 3
-                    and had_usable_web_data
-                    and fn_name == SCRATCHPAD_TOOL_NAME
-                    and not force_finalize_after_round
-                ):
-                    force_finalize_after_round = True
-            if had_usable_web_data and latest_web_items and last_create_script_ok is True:
-                force_finalize_after_round = True
             if round_used_external_tool:
                 include_scratchpad_prompt = True
             elif round_finalized_scratchpad:
@@ -467,17 +437,10 @@ class AgentRun:
                         finish_reason,
                     )
                     reply = "I could not generate a response."
-                if had_usable_web_data:
-                    if reply_claims_data_lost(reply):
-                        reply = synthesize_web_data_reply(latest_web_items, reply)
-                    else:
-                        reply = rewrite_data_loss_reply(reply)
+                reply = self._rewrite_finalize_reply(reply, guard_ctx)
                 return reply, tool_trace
-            if force_finalize_after_round and had_usable_web_data:
-                lines = synthesize_web_data_reply(latest_web_items, "").splitlines()
-                if latest_script_status:
-                    lines.append(f"\nReusable script: {latest_script_status}.")
-                return "\n".join(lines), tool_trace
+            if post_finalize_reply is not None:
+                return post_finalize_reply, tool_trace
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
                 scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None
@@ -498,9 +461,4 @@ class AgentRun:
                 finish_reason,
             )
             reply = "I could not generate a response."
-        if had_usable_web_data:
-            if reply_claims_data_lost(reply):
-                reply = synthesize_web_data_reply(latest_web_items, reply)
-            else:
-                reply = rewrite_data_loss_reply(reply)
-        return reply, tool_trace
+        return self._rewrite_finalize_reply(reply, guard_ctx), tool_trace

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
+
+WEB_CREATE_SCRIPT_TOOL = "web__create_script"
+WEB_INVOKE_SCRIPT_TOOL = "web__invoke_script"
+WEB_READ_PAGE_TOOL = "web__read_page"
+MEMORY_SAVE_TOOL = "memory__save"
 
 SCRIPT_SAVED_PATTERNS = (
     r"\bscript saved\b",
@@ -24,6 +30,55 @@ BLOCKED_WHEN_ITEMS_EXIST = (
     "no actual web work done yet",
 )
 DSML_PARAM_PATTERN = re.compile(r"<\|DSML\|([^>]+)>(.*?)</\|DSML\|\1>", re.DOTALL)
+
+
+@dataclass
+class ToolCallContext:
+    """State shared across one agent turn."""
+
+    scope: str
+    scratchpad_calls: int = 0
+    total_calls: int = 0
+    _guard_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def guard_state(self, name: str) -> dict[str, Any]:
+        return self._guard_state.setdefault(name, {})
+
+
+@dataclass
+class PreCallResult:
+    block: bool = False
+    block_error: str | None = None
+    block_payload: dict[str, Any] | None = None
+    normalized_args: dict[str, Any] | None = None
+
+
+@dataclass
+class PostResultAction:
+    force_finalize: bool = False
+    finalize_reply: str | None = None
+
+
+class ToolGuard:
+    """Base hook for tool-call argument/result handling."""
+
+    def pre_call(self, fn_name: str, args: dict[str, Any], ctx: ToolCallContext) -> PreCallResult | None:
+        del fn_name, args, ctx
+        return None
+
+    def post_result(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any] | None,
+        ctx: ToolCallContext,
+    ) -> PostResultAction | None:
+        del fn_name, args, result, ctx
+        return None
+
+    def rewrite_finalize_reply(self, reply: str, ctx: ToolCallContext) -> str | None:
+        del reply, ctx
+        return None
 
 
 def parse_tool_result_json(text: str) -> dict[str, Any] | None:
@@ -106,11 +161,11 @@ def looks_like_javascript_script(code: str) -> bool:
 
 
 def has_usable_web_data(tool_name: str, payload: dict[str, Any]) -> bool:
-    if tool_name not in {"web__read_page", "web__invoke_script"}:
+    if tool_name not in {WEB_READ_PAGE_TOOL, WEB_INVOKE_SCRIPT_TOOL}:
         return False
     if payload.get("ok") is not True:
         return False
-    if tool_name == "web__invoke_script":
+    if tool_name == WEB_INVOKE_SCRIPT_TOOL:
         data = payload.get("data")
         if not isinstance(data, dict):
             return False
@@ -139,7 +194,7 @@ def rewrite_data_loss_reply(text: str) -> str:
 
 
 def extract_web_items(tool_name: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    if tool_name == "web__invoke_script":
+    if tool_name == WEB_INVOKE_SCRIPT_TOOL:
         data = payload.get("data")
         if isinstance(data, dict):
             items = data.get("items")
@@ -167,4 +222,98 @@ def synthesize_web_data_reply(items: list[dict[str, Any]], fallback: str) -> str
 
 
 def looks_like_successful_script_create(tool_name: str, payload: dict[str, Any]) -> bool:
-    return tool_name == "web__create_script" and payload.get("ok") is True
+    return tool_name == WEB_CREATE_SCRIPT_TOOL and payload.get("ok") is True
+
+
+class WebScriptGuard(ToolGuard):
+    """NanoScript-specific interception and turn state."""
+
+    _state_name = "web_script"
+
+    def pre_call(self, fn_name: str, args: dict[str, Any], ctx: ToolCallContext) -> PreCallResult | None:
+        state = ctx.guard_state(self._state_name)
+
+        if fn_name == WEB_CREATE_SCRIPT_TOOL and looks_like_javascript_script(str(args.get("code", ""))):
+            return PreCallResult(
+                block=True,
+                block_error="invalid_script_language",
+                block_payload={
+                    "ok": False,
+                    "error": "invalid_script",
+                    "message": (
+                        "web__create_script expects Python NanoScript only. "
+                        "JavaScript syntax detected. Use: async def script(page, params) -> dict."
+                    ),
+                },
+            )
+
+        if fn_name == WEB_INVOKE_SCRIPT_TOOL:
+            normalize_invoke_script_params(args)
+            return PreCallResult(normalized_args=args)
+
+        if fn_name == MEMORY_SAVE_TOOL:
+            normalize_memory_user_id(args, ctx.scope)
+            if state.get("last_create_ok") is False and contains_script_saved_claim(str(args.get("text", ""))):
+                return PreCallResult(
+                    block=True,
+                    block_error="blocked_false_memory",
+                    block_payload={
+                        "ok": False,
+                        "error": "blocked_false_memory",
+                        "message": (
+                            "Blocked memory__save: previous web__create_script failed, "
+                            "so script-saved claims are not allowed."
+                        ),
+                    },
+                )
+            return PreCallResult(normalized_args=args)
+
+        return None
+
+    def post_result(
+        self,
+        fn_name: str,
+        args: dict[str, Any],
+        result: dict[str, Any] | None,
+        ctx: ToolCallContext,
+    ) -> PostResultAction | None:
+        del args
+        if result is None:
+            return None
+        state = ctx.guard_state(self._state_name)
+
+        if fn_name == WEB_CREATE_SCRIPT_TOOL and isinstance(result.get("ok"), bool):
+            state["last_create_ok"] = bool(result["ok"])
+
+        if has_usable_web_data(fn_name, result):
+            state["had_usable_web_data"] = True
+            extracted_items = extract_web_items(fn_name, result)
+            if extracted_items:
+                state["latest_web_items"] = extracted_items
+
+        if looks_like_successful_script_create(fn_name, result):
+            script = result.get("script")
+            if isinstance(script, dict):
+                name = str(script.get("name", "")).strip()
+                if name:
+                    state["latest_script_status"] = f"{name} saved"
+
+        if state.get("had_usable_web_data") and state.get("latest_web_items") and state.get("last_create_ok") is True:
+            reply = synthesize_web_data_reply(state["latest_web_items"], "")
+            if state.get("latest_script_status"):
+                reply += f"\nReusable script: {state['latest_script_status']}."
+            return PostResultAction(force_finalize=True, finalize_reply=reply)
+
+        if ctx.scratchpad_calls >= 3 and state.get("had_usable_web_data"):
+            reply = synthesize_web_data_reply(state.get("latest_web_items", []), "")
+            return PostResultAction(force_finalize=True, finalize_reply=reply)
+
+        return None
+
+    def rewrite_finalize_reply(self, reply: str, ctx: ToolCallContext) -> str | None:
+        state = ctx.guard_state(self._state_name)
+        if not state.get("had_usable_web_data"):
+            return None
+        if reply_claims_data_lost(reply):
+            return synthesize_web_data_reply(state.get("latest_web_items", []), reply)
+        return rewrite_data_loss_reply(reply)
