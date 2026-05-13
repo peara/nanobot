@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
+
 WEB_CREATE_SCRIPT_TOOL = "web__create_script"
 WEB_INVOKE_SCRIPT_TOOL = "web__invoke_script"
 WEB_READ_PAGE_TOOL = "web__read_page"
@@ -39,6 +41,7 @@ class ToolCallContext:
     scope: str
     scratchpad_calls: int = 0
     total_calls: int = 0
+    current_tool_name: str = ""
     _guard_state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def guard_state(self, name: str) -> dict[str, Any]:
@@ -304,7 +307,11 @@ class WebScriptGuard(ToolGuard):
                 reply += f"\nReusable script: {state['latest_script_status']}."
             return PostResultAction(force_finalize=True, finalize_reply=reply)
 
-        if ctx.scratchpad_calls >= 3 and state.get("had_usable_web_data"):
+        if (
+            ctx.current_tool_name == SCRATCHPAD_TOOL_NAME
+            and ctx.scratchpad_calls >= 3
+            and state.get("had_usable_web_data")
+        ):
             reply = synthesize_web_data_reply(state.get("latest_web_items", []), "")
             return PostResultAction(force_finalize=True, finalize_reply=reply)
 

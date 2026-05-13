@@ -147,7 +147,10 @@ class AgentRun:
 
     def __init__(self, host: Any) -> None:
         self._host = host
-        self._tool_guards: list[ToolGuard] = list(getattr(host, "tool_guards", None) or [WebScriptGuard()])
+        host_guards = list(getattr(host, "tool_guards", None) or [])
+        has_web_script_guard = any(isinstance(guard, WebScriptGuard) for guard in host_guards)
+        default_guards: list[ToolGuard] = [] if has_web_script_guard else [WebScriptGuard()]
+        self._tool_guards = [*default_guards, *host_guards]
 
     def _pre_call_guard(
         self,
@@ -304,6 +307,7 @@ class AgentRun:
                     reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
                     return reply, tool_trace
                 fn_name = tool_call["function"]["name"]
+                guard_ctx.current_tool_name = fn_name
                 raw_args = tool_call["function"].get("arguments") or "{}"
                 args = json.loads(raw_args)
                 if fn_name == SCRATCHPAD_TOOL_NAME:

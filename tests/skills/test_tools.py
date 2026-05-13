@@ -209,7 +209,9 @@ class TestRegisterSkillTools:
 
             create_description = SkillCreateTool(store).description.lower()
             update_description = SkillUpdateTool(store).description.lower()
-            instructions_description = SkillCreateTool(store).schema["properties"]["instructions"]["description"].lower()
+            instructions_description = (
+                SkillCreateTool(store).schema["properties"]["instructions"]["description"].lower()
+            )
 
             assert "workflow" in create_description
             assert "parameter mapping" in create_description

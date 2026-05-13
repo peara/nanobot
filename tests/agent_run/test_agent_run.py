@@ -12,6 +12,7 @@ from nanobot.agent_run import (
     _normalize_roles,
     prepare_messages_for_chat,
 )
+from nanobot.agent_tool_guards import ToolCallContext, ToolGuard, WebScriptGuard
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
 from nanobot.tools.base import Tool
@@ -121,6 +122,7 @@ class _FakeHost:
         self.tools = ToolRegistry()
         self.active_requests: dict[str, Any] = {}
         self.tool_hooks: list[Any] = []
+        self.tool_guards: list[ToolGuard] = []
         self.events: list[ToolCallEvent] = []
         self._temp_dir = tempfile.mkdtemp()
         self.prompts = PromptStore(f"{self._temp_dir}/prompts.db", seed_defaults=True)
@@ -1332,3 +1334,156 @@ def test_invoke_script_params_json_string_is_normalized_to_dict() -> None:
 
     asyncio.run(_go())
     assert recorded_calls[0]["params"] == {"limit": 5}
+
+
+def test_web_script_guard_runs_when_host_has_custom_guards() -> None:
+    class _CustomGuard(ToolGuard):
+        def pre_call(self, fn_name: str, args: dict[str, Any], ctx: ToolCallContext) -> None:
+            del fn_name, args
+            ctx.guard_state("custom")["called"] = True
+
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_invoke",
+                        "type": "function",
+                        "function": {
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps(
+                                {
+                                    "name": "hn_top_stories",
+                                    "params": "<|DSML|limit>10</|DSML|limit>",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tool_guards = [_CustomGuard()]
+    recorded_calls: list[dict[str, Any]] = []
+
+    class _InvokeTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            recorded_calls.append(dict(args))
+            return json.dumps({"ok": True, "data": {"items": [{"title": "A"}]}})
+
+    host.tools.register(_InvokeTool("web__invoke_script"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "get 10 HN stories"}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
+        )
+        assert text == "Done."
+        assert trace[0]["args"]["params"] == {"limit": 10}
+
+    asyncio.run(_go())
+    assert recorded_calls[0]["params"] == {"limit": 10}
+
+
+def test_false_memory_guard_runs_when_host_has_custom_guards() -> None:
+    class _CustomGuard(ToolGuard):
+        pass
+
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create",
+                        "type": "function",
+                        "function": {"name": "web__create_script", "arguments": json.dumps({"name": "hn_frontpage"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_mem",
+                        "type": "function",
+                        "function": {
+                            "name": "memory__save",
+                            "arguments": json.dumps(
+                                {
+                                    "text": "Hacker News script saved as hn_frontpage.",
+                                    "user_id": "123",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {"content": "Done.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tool_guards = [_CustomGuard()]
+    called_memory = {"value": False}
+    host.tools.register(
+        _FakeTool(
+            "web__create_script",
+            result=json.dumps({"ok": False, "error": "invalid_script"}),
+        )
+    )
+
+    class _MemoryTool(_FakeTool):
+        async def call(self, args: dict[str, Any]) -> str:
+            called_memory["value"] = True
+            return await super().call(args)
+
+    host.tools.register(_MemoryTool("memory__save"))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        _text, trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "save script"}],
+            tools=[
+                {"type": "function", "function": {"name": "web__create_script"}},
+                {"type": "function", "function": {"name": "memory__save"}},
+            ],
+        )
+        mem_trace = [item for item in trace if item["name"] == "memory__save"]
+        assert "blocked_false_memory" in mem_trace[0]["result_preview"]
+
+    asyncio.run(_go())
+    assert called_memory["value"] is False
+
+
+def test_agent_run_does_not_duplicate_web_script_guard_when_host_provides_it() -> None:
+    llm = _FakeLlm([{"content": "ok", "tool_calls": None}])
+    host = _FakeHost(llm)
+    host.tool_guards = [WebScriptGuard()]
+
+    run = AgentRun(host)
+
+    web_script_guard_count = sum(1 for guard in run._tool_guards if isinstance(guard, WebScriptGuard))
+    assert web_script_guard_count == 1
+
+
+def test_web_script_guard_does_not_force_finalize_when_scratchpad_threshold_hit_on_non_scratchpad_tool() -> None:
+    guard = WebScriptGuard()
+    ctx = ToolCallContext(scope="telegram:1", scratchpad_calls=3, current_tool_name="web__read_page")
+    # Seed prior usable web data state to ensure only tool-name gating decides the outcome.
+    ctx.guard_state("web_script")["had_usable_web_data"] = True
+    ctx.guard_state("web_script")["latest_web_items"] = [{"title": "Story", "url": "https://example.com"}]
+
+    action = guard.post_result(
+        fn_name="web__read_page",
+        args={},
+        result={"ok": True, "items": [{"title": "Story", "url": "https://example.com"}]},
+        ctx=ctx,
+    )
+
+    assert action is None or action.force_finalize is False
