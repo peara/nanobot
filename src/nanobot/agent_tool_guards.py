@@ -27,7 +27,6 @@ DATA_LOSS_REPLY_PATTERNS = (
     "would need to rerun",
 )
 BLOCKED_WHEN_ITEMS_EXIST = (
-    "would you like me to fetch",
     "i don't have the actual",
     "no actual web work done yet",
 )
@@ -176,9 +175,8 @@ def has_usable_web_data(tool_name: str, payload: dict[str, Any]) -> bool:
         if isinstance(items, list) and items:
             return True
         return bool(str(data.get("content", "")).strip())
-    items = payload.get("items")
-    if isinstance(items, list) and items:
-        return True
+    # web__read_page.items may contain navigation chrome; do not treat it as
+    # trustworthy structured extraction output for synthesis/finalization.
     return bool(str(payload.get("content", "")).strip())
 
 
@@ -203,10 +201,7 @@ def extract_web_items(tool_name: str, payload: dict[str, Any]) -> list[dict[str,
             items = data.get("items")
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
-        return []
-    items = payload.get("items")
-    if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
+    # Never synthesize from web__read_page items.
     return []
 
 
@@ -301,7 +296,7 @@ class WebScriptGuard(ToolGuard):
                 if name:
                     state["latest_script_status"] = f"{name} saved"
 
-        if state.get("had_usable_web_data") and state.get("latest_web_items") and state.get("last_create_ok") is True:
+        if state.get("latest_web_items") and state.get("last_create_ok") is True:
             reply = synthesize_web_data_reply(state["latest_web_items"], "")
             if state.get("latest_script_status"):
                 reply += f"\nReusable script: {state['latest_script_status']}."
@@ -310,7 +305,7 @@ class WebScriptGuard(ToolGuard):
         if (
             ctx.current_tool_name == SCRATCHPAD_TOOL_NAME
             and ctx.scratchpad_calls >= 3
-            and state.get("had_usable_web_data")
+            and state.get("latest_web_items")
         ):
             reply = synthesize_web_data_reply(state.get("latest_web_items", []), "")
             return PostResultAction(force_finalize=True, finalize_reply=reply)

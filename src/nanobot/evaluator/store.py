@@ -293,6 +293,23 @@ def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
 
 def parse_lifecycle_from_json(content: str) -> list[SkillOperation]:
     """Parse JSON string from LLM response into list of SkillOperation."""
-    data = json.loads(content)
+    stripped = content.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+        if not stripped:
+            return []
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
     raw_operations = data.get("operations", [])
     return [parse_skill_operation(item) for item in raw_operations]

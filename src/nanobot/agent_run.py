@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 30
 MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
-MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN = 8
 REPEATED_TOOL_CALL_ABORT_REPLY = (
     "I got stuck repeating the same tool call in this turn. "
     "The source may be redirecting or returning unhelpful content. Please try another source or rephrase the request."
@@ -313,22 +312,6 @@ class AgentRun:
                 if fn_name == SCRATCHPAD_TOOL_NAME:
                     scratchpad_tool_calls += 1
                     guard_ctx.scratchpad_calls = scratchpad_tool_calls
-                    if scratchpad_tool_calls > MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN:
-                        logger.warning(
-                            "Aborting tool loop after scratchpad limit scope=%s scratchpad_calls=%d",
-                            scope_for_tools,
-                            scratchpad_tool_calls,
-                        )
-                        finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools)
-                        trimmed = trim_to_last_tool_round(messages)
-                        to_send = trimmed + ([finalize_msg] if finalize_msg else [])
-                        prepared_messages = prepare_messages_for_chat(to_send)
-                        final_message = await self._host.llm.chat(
-                            messages=prepared_messages,
-                            tools=[],
-                        )
-                        reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
-                        return reply, tool_trace
                 if fn_name.endswith("__schedule_task"):
                     chat_id = str(args.get("chat_id", "")).strip()
                     if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
