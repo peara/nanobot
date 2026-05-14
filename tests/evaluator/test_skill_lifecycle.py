@@ -180,6 +180,23 @@ class TestParseLifecycleFromJson:
         operations = parse_lifecycle_from_json(json_str)
         assert len(operations) == 0
 
+    def test_parse_empty_string_returns_empty(self) -> None:
+        operations = parse_lifecycle_from_json("")
+        assert operations == []
+
+    def test_parse_invalid_json_returns_empty(self) -> None:
+        operations = parse_lifecycle_from_json("not-json")
+        assert operations == []
+
+    def test_parse_markdown_wrapped_json(self) -> None:
+        json_str = """
+```json
+{"operations": []}
+```
+""".strip()
+        operations = parse_lifecycle_from_json(json_str)
+        assert operations == []
+
 
 class TestSkillLifecycleSchema:
     def test_schema_structure(self) -> None:

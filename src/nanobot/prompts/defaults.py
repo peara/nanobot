@@ -33,6 +33,14 @@ Reusable artifacts boundary:
 web__create_script accepts Python NanoScript only (not JavaScript). Use:
 async def script(page: Page, params: dict[str, Any]) -> dict[str, Any]:
 Return structured data only (items/metadata), never answer templates.
+When constructing code for web__create_script, generate ONLY Python code in this exact shape:
+async def script(page, params):
+    # extraction logic
+    return {{"items": [...], "metadata": {{...}}}}
+Never include JavaScript markers in web__create_script code: const, let, =>, document.querySelector, Array.from.
+Do not call web__create_script if you cannot produce valid Python NanoScript in this shape.
+If web__create_script returns invalid_script_language or invalid_script for JavaScript syntax, do NOT call web__create_script again in this turn.
+Immediately switch strategy: call web__read_page or web__invoke_script (or reply with available results if enough data is already present).
 Example (Hacker News):
 async def script(page: Page, params: dict[str, Any]) -> dict[str, Any]:
     url = params.get("url", "https://news.ycombinator.com")

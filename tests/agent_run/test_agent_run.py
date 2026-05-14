@@ -6,13 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from nanobot.agent_run import (
-    MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN,
     REPEATED_TOOL_CALL_ABORT_REPLY,
     AgentRun,
     _normalize_roles,
     prepare_messages_for_chat,
 )
-from nanobot.agent_tool_guards import ToolCallContext, ToolGuard, WebScriptGuard
+from nanobot.agent_tool_guards import ToolCallContext, ToolGuard, WebScriptGuard, reply_claims_data_lost
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
 from nanobot.tools.base import Tool
@@ -496,9 +495,9 @@ def test_agent_run_finalize_makes_explicit_no_tools_call() -> None:
     assert any("completed your research" in str(m.get("content", "")) for m in final_messages)
 
 
-def test_agent_run_aborts_after_scratchpad_tool_call_limit() -> None:
+def test_agent_run_does_not_abort_on_many_scratchpad_tool_calls() -> None:
     replies: list[dict[str, Any]] = []
-    for idx in range(MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN + 1):
+    for idx in range(17):
         replies.append(
             {
                 "content": "",
@@ -532,7 +531,7 @@ def test_agent_run_aborts_after_scratchpad_tool_call_limit() -> None:
             tools=[{"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}}],
         )
         assert text == "Partial progress from finalize."
-        assert len(trace) == MAX_SCRATCHPAD_TOOL_CALLS_PER_TURN
+        assert len(trace) == 17
         assert all(item["name"] == SCRATCHPAD_TOOL_NAME for item in trace)
 
     asyncio.run(_go())
@@ -854,11 +853,11 @@ def test_agent_run_rewrites_data_loss_reply_when_web_data_already_available() ->
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "call_read",
+                        "id": "call_invoke",
                         "type": "function",
                         "function": {
-                            "name": "web__read_page",
-                            "arguments": json.dumps({"url": "https://news.ycombinator.com"}),
+                            "name": "web__invoke_script",
+                            "arguments": json.dumps({"name": "hn_top_stories"}),
                         },
                     }
                 ],
@@ -875,8 +874,8 @@ def test_agent_run_rewrites_data_loss_reply_when_web_data_already_available() ->
     host = _FakeHost(llm)
     host.tools.register(
         _FakeTool(
-            "web__read_page",
-            result=json.dumps({"ok": True, "items": [{"title": "Example Story", "url": "https://example.com"}]}),
+            "web__invoke_script",
+            result=json.dumps({"ok": True, "data": {"items": [{"title": "Example Story", "url": "https://example.com"}]}}),
         )
     )
     run = AgentRun(host)
@@ -885,7 +884,7 @@ def test_agent_run_rewrites_data_loss_reply_when_web_data_already_available() ->
         text, _trace = await run.run(
             scope_for_tools="telegram:1",
             messages=[{"role": "user", "content": "get stories"}],
-            tools=[{"type": "function", "function": {"name": "web__read_page"}}],
+            tools=[{"type": "function", "function": {"name": "web__invoke_script"}}],
         )
         assert "didn't survive" not in text.lower()
         assert "re-run" not in text.lower()
@@ -955,7 +954,7 @@ def test_existing_script_invoke_with_items_finalizes_without_read_or_create() ->
     asyncio.run(_go())
 
 
-def test_read_then_create_success_force_finalize_with_items_and_saved_note() -> None:
+def test_read_then_create_success_does_not_force_finalize_from_read_items_only() -> None:
     llm = _FakeLlm(
         [
             {
@@ -969,22 +968,8 @@ def test_read_then_create_success_force_finalize_with_items_and_saved_note() -> 
                 ],
             },
             {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_create",
-                        "type": "function",
-                        "function": {
-                            "name": "web__create_script",
-                            "arguments": json.dumps(
-                                {
-                                    "name": "hn_top_stories",
-                                    "code": "async def script(page, params):\n    return {'items': []}",
-                                }
-                            ),
-                        },
-                    }
-                ],
+                "content": "Script saved, and I can fetch more details if you want.",
+                "tool_calls": None,
             },
         ]
     )
@@ -1013,10 +998,159 @@ def test_read_then_create_success_force_finalize_with_items_and_saved_note() -> 
                 {"type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME}},
             ],
         )
-        assert "Story B" in text
-        assert "hn_top_stories saved" in text
+        assert "i already extracted the results in this turn" not in text.lower()
+        assert "script saved" in text.lower()
+        assert "fetch more details" in text.lower()
 
     asyncio.run(_go())
+
+
+def test_agent_run_does_not_synthesize_navigation_items_after_read_page_and_scratchpad_finalize() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "web__read_page", "arguments": json.dumps({"url": "https://auctions.yahoo.co.jp"})},
+                    }
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "s1", "type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME, "arguments": "{}"}}
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "s2", "type": "function", "function": {"name": SCRATCHPAD_TOOL_NAME, "arguments": "{}"}}
+                ],
+            },
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "s3",
+                        "type": "function",
+                        "function": {"name": SCRATCHPAD_TOOL_NAME, "arguments": json.dumps({"mode": "finalize"})},
+                    }
+                ],
+            },
+            {"content": "I can fetch the actual listings next if you want.", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(
+        _FakeTool(
+            "web__read_page",
+            result=json.dumps(
+                {"ok": True, "items": [{"title": "マイオク"}, {"title": "ウォッチ"}, {"title": "出品"}], "content": ""}
+            ),
+        )
+    )
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "find minolta 85 1.7"}],
+            tools=[{"type": "function", "function": {"name": "web__read_page"}}],
+        )
+        lowered = text.lower()
+        assert "i already extracted the results in this turn" not in lowered
+        assert "top stories" not in lowered
+        assert "マイオク" not in text
+        assert "ウォッチ" not in text
+        assert "出品" not in text
+
+    asyncio.run(_go())
+
+
+def test_agent_run_preserves_fetch_followup_phrase_after_read_page() -> None:
+    llm = _FakeLlm(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "web__read_page", "arguments": json.dumps({"url": "https://example.com"})},
+                    }
+                ],
+            },
+            {"content": "Would you like me to fetch more details from the listing page?", "tool_calls": None},
+        ]
+    )
+    host = _FakeHost(llm)
+    host.tools.register(_FakeTool("web__read_page", result=json.dumps({"ok": True, "items": [{"title": "Home"}]})))
+    run = AgentRun(host)
+
+    async def _go() -> None:
+        text, _trace = await run.run(
+            scope_for_tools="telegram:1",
+            messages=[{"role": "user", "content": "check this page"}],
+            tools=[{"type": "function", "function": {"name": "web__read_page"}}],
+        )
+        assert "would you like me to fetch more details" in text.lower()
+        assert "i already fetched and parsed the page in this turn" not in text.lower()
+
+    asyncio.run(_go())
+
+
+def test_reply_claims_data_lost_does_not_match_fetch_followup_phrase() -> None:
+    assert reply_claims_data_lost("Would you like me to fetch more details?") is False
+
+
+def test_web_script_guard_read_page_items_do_not_drive_synthesis_or_force_finalize() -> None:
+    guard = WebScriptGuard()
+    ctx = ToolCallContext(scope="telegram:1")
+    state = ctx.guard_state("web_script")
+    state["had_usable_web_data"] = True
+    state["latest_web_items"] = [{"title": "Existing", "url": "https://existing"}]
+
+    action = guard.post_result(
+        fn_name="web__read_page",
+        args={},
+        result={"ok": True, "items": [{"title": "マイオク"}, {"title": "ウォッチ"}, {"title": "出品"}], "content": ""},
+        ctx=ctx,
+    )
+
+    assert action is None
+    assert state["latest_web_items"] == [{"title": "Existing", "url": "https://existing"}]
+
+
+def test_web_script_guard_scratchpad_force_finalize_requires_structured_invoke_items() -> None:
+    guard = WebScriptGuard()
+    ctx = ToolCallContext(scope="telegram:1", scratchpad_calls=3, current_tool_name=SCRATCHPAD_TOOL_NAME)
+
+    no_item_action = guard.post_result(
+        fn_name=SCRATCHPAD_TOOL_NAME,
+        args={},
+        result={"ok": True},
+        ctx=ctx,
+    )
+    assert no_item_action is None
+
+    guard.post_result(
+        fn_name="web__invoke_script",
+        args={},
+        result={"ok": True, "data": {"items": [{"title": "Auction A", "url": "https://a"}]}},
+        ctx=ctx,
+    )
+    with_item_action = guard.post_result(
+        fn_name=SCRATCHPAD_TOOL_NAME,
+        args={},
+        result={"ok": True},
+        ctx=ctx,
+    )
+    assert with_item_action is not None
+    assert with_item_action.force_finalize is True
+    assert "Auction A" in (with_item_action.finalize_reply or "")
 
 
 def test_search_hit_with_empty_params_schema_allows_invoke_with_url_param() -> None:
