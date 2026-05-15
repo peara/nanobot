@@ -68,9 +68,8 @@ class BotCore:
                 server.env = dict(server.env)
                 server.env.setdefault("SCHEDULER_DB_PATH", config.scheduler_db_path)
                 server.env.setdefault("SCHEDULER_TIMEZONE", config.working_timezone)
-            if server.name == "web" and config.mem0_config_path:
-                server.env = dict(server.env)
-                server.env.setdefault("WEB_SCRIPT_VECTOR_CONFIG", config.mem0_config_path)
+            # Web scripts use a separate VectorStore config (config.web-scripts.mem0.yaml)
+            # to avoid Qdrant lock contention — see docs/mem0-vector-store-patterns.md.
         self._mcp_source = McpToolSource(config.mcp_servers)
         self.tool_stats = ToolStatsStore(config.database_path) if config.enable_tool_stats else None
         self.tools = ToolRegistry(stats_store=self.tool_stats)

@@ -73,7 +73,15 @@ def _script_db_path() -> str:
 
 
 def _script_vector_config_path() -> str | None:
-    return os.environ.get("WEB_SCRIPT_VECTOR_CONFIG") or os.environ.get("MEM0_CONFIG_PATH")
+    path = os.environ.get("WEB_SCRIPT_VECTOR_CONFIG")
+    if path:
+        return path
+    # Use the dedicated web-scripts config (separate Qdrant path from mem0).
+    # Do NOT fall back to MEM0_CONFIG_PATH — that would create a second
+    # QdrantClient on the same data directory, causing lock contention.
+    default = os.environ.get("NANOBOT_ROOT", ".")
+    candidate = os.path.join(default, "config.web-scripts.mem0.yaml")
+    return candidate if os.path.exists(candidate) else None
 
 
 def _build_script_store() -> WebScriptStore:
