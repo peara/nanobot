@@ -29,6 +29,7 @@ SAFE_BUILTINS = MappingProxyType(
         "list": list,
         "max": max,
         "min": min,
+        "next": next,
         "range": range,
         "set": set,
         "sorted": sorted,
