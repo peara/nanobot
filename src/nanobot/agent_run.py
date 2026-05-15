@@ -367,7 +367,11 @@ class AgentRun:
                 payload = parse_tool_result_json(result_text)
                 post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)
                 if post_action is not None and post_action.force_finalize:
-                    post_finalize_reply = post_action.finalize_reply or ""
+                    logger.info(
+                        "Guard force-finalize suppressed (letting LLM decide) scope=%s tool=%s",
+                        scope_for_tools,
+                        fn_name,
+                    )
                 logger.info(
                     "Tool result tool=%s chars=%d preview=%s",
                     fn_name,
@@ -427,7 +431,9 @@ class AgentRun:
                 reply = self._rewrite_finalize_reply(reply, guard_ctx)
                 return reply, tool_trace
             if post_finalize_reply is not None:
-                return post_finalize_reply, tool_trace
+                logger.warning(
+                    "Guard force-finalize reached (disabled) scope=%s", scope_for_tools
+                )
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
                 scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None

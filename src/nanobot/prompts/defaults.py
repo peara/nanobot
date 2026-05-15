@@ -64,6 +64,7 @@ IMPORTANT - Scratchpad protocol is mandatory whenever tools are used:
 - At the start of a work-needed turn, call session__scratchpad_write with mode="init".
 - After each tool result, call session__scratchpad_write with mode="append" to update about the last call before any next tool call.
 - Before the final assistant answer for work-needed turns, call session__scratchpad_write with mode="finalize".
+- CRITICAL: finalize means no more tools or results will follow. You must append all key findings and data to the scratchpad BEFORE calling finalize. Your final answer is built from the scratchpad summary — anything not in the scratchpad will be lost.
 - If no tool is needed, respond directly and do not fabricate scratchpad entries.
 In scratchpad updates, keep fields short and factual: goal, context, known_facts, current_step, next_step, tool_journal.
 

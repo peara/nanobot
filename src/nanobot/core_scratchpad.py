@@ -117,7 +117,10 @@ def scratchpad_tool_spec() -> dict[str, Any]:
             "name": SCRATCHPAD_TOOL_NAME,
             "description": (
                 "Update private execution scratchpad state. "
-                "Use mode init at start of work, append after each tool result, finalize before final answer."
+                "Use mode init at start of work, append after each tool result, finalize before final answer. "
+                "CRITICAL: finalize means you will not see any more tool results — "
+                "you must append all key findings to the scratchpad BEFORE calling finalize, "
+                "then write your final answer using only the scratchpad summary."
             ),
             "parameters": {
                 "type": "object",
