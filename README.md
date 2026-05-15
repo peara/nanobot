@@ -1,56 +1,99 @@
 # nanobot
 
-Minimal personal assistant bot with Telegram chat, OpenAI-compatible local LLM backend (Ollama/vLLM), and MCP tool extensibility.
+A personal AI agent that orchestrates subagents, browses the web autonomously, runs sandboxed scripts, and learns from every conversation — all on your own hardware, over a chat interface.
+
+## Why nanobot?
+
+I wanted an AI assistant that actually lives on my machine — no cloud dependency, no vendor lock-in, no sending everything to someone else's API. Something that remembers what I care about, can browse the web for me, and gets better at helping over time.
+
+NanoBot runs locally, talks to local LLMs (Ollama, vLLM, anything OpenAI-compatible), and keeps a scratchpad so it doesn't lose track mid-conversation — structured working state for its goal, current step, and what it's learned from tools so far. Longer-term memory: SQLite for exact history, and a vector store for semantic recall of facts and preferences. It doesn't try to be a full operating system — it handles the things I actually need help with through chat: searching, browsing, scheduling, running scripts, and delegating multi-step work to subagents.
+
+## Key Concepts
+
+- **Channels** — Telegram, GitHub, and FileChannel all share a common `Channel` abstraction. Messages from any surface flow through the same orchestrator.
+- **Orchestration** — The main agent can spawn specialized subagents for focused tasks, each with its own tool access and run tracking.
+- **Skills** — Auto-learned behaviors that persist across conversations. Three trigger modes let the bot inject relevant context at the right time, and a learning evaluator extracts new skills from good turns.
+- **Scratchpad** — The bot's structured working memory during a turn: goal, current step, accumulated facts, and a tool journal. Init at start, append after each tool call, finalize before the answer. Not long-term storage — it's how the bot keeps its place in multi-step tasks.
+- **Memory** — SQLite for exact transcript and structured facts. VectorStore (Qdrant) for semantic recall across three collections (memories, skills, web scripts).
+- **MCP Extensibility** — Plug in any Model Context Protocol server for new capabilities. Built-in servers for timer, scheduler, web search, and browser automation via Playwright.
+
+## How It Works
+
+```mermaid
+flowchart LR
+    subgraph chat["Chat surface"]
+        TG[Telegram / GitHub / File]
+    end
+
+    subgraph core["Orchestrator"]
+        O[Main agent]
+        EV[LearningEvaluator]
+    end
+
+    subgraph workers["Delegated agents"]
+        W1[Task agent]
+        W2[...]
+    end
+
+    subgraph substrate["Shared substrate"]
+        SP[Scratchpad + context policy]
+        MCP[MCP + tools]
+        SK[Skills]
+        PS[Prompts]
+    end
+
+    subgraph data["Memory"]
+        SQL[(SQLite)]
+        VS[(VectorStore)]
+    end
+
+    subgraph sidecar["Sidecars"]
+        SCH[Scheduler]
+        BR[Browser]
+    end
+
+    TG --> O
+    O --> W1
+    O --> W2
+    O --> SP
+    O --> MCP
+    O --> SQL
+    O --> VS
+    EV --> O
+    SCH --> TG
+```
+
+Messages flow from channels through an async queue into the orchestrator, which dispatches to subagents or handles commands directly. Each subagent gets access to the shared substrate — tools, scratchpad, skills, and prompts. After each turn, the learning evaluator may extract skills from the conversation.
+
+> For full architecture details — storage boundaries, hook system, agent loop exit paths, and implementation specifics — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Features
 
 ### Multi-channel
 
-Telegram, GitHub, and FileChannel implementations share a common `Channel` abstraction. Messages from any channel flow through the same BotCore orchestrator.
+Telegram, GitHub, and FileChannel share a common `Channel` abstraction. Messages from any channel flow through the same orchestrator.
 
 ### Skills system
 
-Three trigger modes: `always` (inject every turn), `pattern` (regex match against user message), `intelligent` (semantic similarity via `SkillVectorStore`). `SkillMatcher` resolves which skills apply, then injects relevant context into the prompt. Six CRUD tools let the bot manage its own skills at runtime: `skill__create`, `skill__get`, `skill__update`, `skill__delete`, `skill__list`, `skill__activate`.
+Three trigger modes: `always` (inject every turn), `pattern` (regex match), `intelligent` (semantic similarity via vector store). The bot can manage its own skills at runtime through built-in CRUD tools.
 
 ### Learning evaluator
 
-Three-phase pipeline: quality assessment (was the turn useful?), learning extraction (what can be generalized?), skill lifecycle (create/update/deprecate skills). Enabled via `enable_evaluator: true` in config. Extracted learnings become reusable skills over time.
+Three-phase pipeline: quality assessment, learning extraction, and skill lifecycle (create/update/deprecate). Over time, the evaluator turns good conversations into reusable skills. Enable via `enable_evaluator: true` in config.
 
 ### Plans
 
-`/plan` command creates structured plans with steps, constraints, risk flags, and required inputs. `PlanStore` persists plans with success/failure tracking. `plan_run` context traces capture intake, execution, and recovery phases for each run.
+The `/plan` command creates structured plans with steps, constraints, and success/failure tracking. Each plan run captures intake, execution, and recovery phases.
 
 ### Web scripts / NanoScripts
 
-Sandboxed Python extraction scripts stored via MCP tools. `create_script`/`search_scripts`/`invoke_script` with an AST validator that blocks unsafe imports and calls. `ScriptVectorStore` indexes scripts for semantic search. Uses a separate `config.web-scripts.mem0.yaml` to avoid Qdrant lock contention.
+Sandboxed Python extraction scripts stored via MCP tools. An AST validator blocks unsafe imports and calls. Scripts are indexed for semantic search, so the bot can find and reuse relevant scripts automatically.
 
 ### Memory & vector store
 
-Native `VectorStore` (Qdrant local + mem0 embedder) configured via `config.mem0.yaml`. Three Qdrant collections: `nanobot_memories` (facts/preferences), `nanobot_skills` (skill embeddings), `nanobot_web_scripts` (script embeddings). Seven built-in memory tools (not an MCP server): `memory__search`, `memory__save`, `memory__save_turn`, `memory__list`, `memory__delete`, `memory__update`, `memory__health`.
+Native `VectorStore` backed by Qdrant with three collections: memories (facts/preferences), skills (skill embeddings), and web_scripts (script embeddings). Seven built-in memory tools handle search, save, update, and health — not an MCP server, but direct built-in tools.
 
 **Embedding dimensions must match.** `embedding_dims` in the embedder config must equal the model's actual output. `mxbai-embed-large` = 1024 dims. Must also match `embedding_model_dims` in the vector_store config. If you change embedding models, re-create Qdrant collections. Recommended: `mxbai-embed-large` (1024 dims, best quality) or `nomic-embed-text` (lighter/faster fallback).
-
-## Architecture
-
-- `nanobot.core` -- BotCore orchestrator: message queue, command dispatch, SubagentManager, evaluator integration
-- `nanobot.agent_run` -- AgentRun: LLM chat loop with tool calling, scratchpad protocol, and finalize exit path
-- `nanobot.subagents` -- SubagentManager (spawn/execute) + SubagentRunStore (run tracking)
-- `nanobot.channels` -- Channel abstraction + Telegram, GitHub, File implementations
-- `nanobot.tools` -- ToolRegistry + McpToolSource + ToolStatsStore (tool call statistics)
-- `nanobot.mcp_hub` -- Connects to configured MCP servers and routes tool calls
-- `nanobot.skills` -- SkillMatcher (always/pattern/intelligent modes) + SkillStore + SkillVectorStore
-- `nanobot.evaluator` -- LearningEvaluator: quality assessment, learning extraction, skill lifecycle
-- `nanobot.plans` -- PlanStore (persistent plans) + plan runner + plan tools
-- `nanobot.web_scripts` -- NanoScript system: store, AST validator, sandboxed runner, script vector store
-- `nanobot.vector_store` -- Native VectorStore (Qdrant + mem0 embedder, multi-collection)
-- `nanobot.memstore` -- Built-in memory tools (search/save/save_turn/list/delete/update/health)
-- `nanobot.prompts` -- PromptStore: centralized prompt templates with versioning & variable rendering
-- `nanobot.hooks` -- After-tool-call hooks (ToolResultRecorderHook, BrowseEventRecorderHook, FileTraceHook)
-- `nanobot.core_commands` -- Built-in slash commands: help, ctx, reset, plan, scratchpad, reload, status, session
-- `nanobot.mcp_servers` -- MCP server implementations: timer, scheduler, web
-- `nanobot.memory` -- ConversationStore (SQLite)
-- `nanobot.context_store` -- ContextStore (scoped JSON: scratchpad, run metadata, traces)
-- `nanobot.scheduler_runner` -- Executes due scheduled tasks from scheduler DB
 
 ## Quick start
 
