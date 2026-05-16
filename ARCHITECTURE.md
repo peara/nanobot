@@ -119,68 +119,56 @@ Efficiency means **aggressive budgeting** (what goes into the prompt, how often,
 
 ## Current runtime (implementation)
 
-User messages flow through `BotCore` → `asyncio.Queue` → `_process_queue_loop` → `SubagentManager` → `AgentRun`. Each non-command message creates a `SubagentRun` record for observability.
+### Message flow
 
 ```mermaid
 flowchart TD
-    A[Channel adapter] -->|on_incoming| Q[asyncio.Queue]
-    Q -->|_process_queue_loop| B{msg type?}
-    B -->|UserMessage| C[_handle_user_message]
-    B -->|SubagentResultMessage| CR[_handle_subagent_result]
-    C -->|command| D[CommandManager.handle]
-    C -->|else| E[_process]
-    E --> F[SubagentManager.spawn]
-    F --> G[SubagentManager.execute]
-    G --> H[AgentRun.run]
-    H --> I[LlmClient.chat]
-    I -->|tool_calls| J[ToolRegistry.call]
-    J --> K[after_tool_call hooks]
-    K --> K1[ToolResultRecorderHook]
-    K --> K2[BrowseEventRecorderHook]
-    K --> K3[FileTraceHook — conditional]
-    K --> H
-    I -->|final text| L[persist assistant + send]
-    E --> EV[_evaluate_turn]
-    L --> EV
+    CH[Channel] -->|user message| Q[asyncio.Queue]
+    SCH[Scheduler] -->|due task| Q
 
-    CR --> EV2[_evaluate_turn]
+    Q --> BCore[BotCore]
 
-    D --> M[no SubagentRun created]
+    BCore -->|slash command| CMD[CommandManager]
+    CMD --> REPLY1[reply via channel]
 
-    subgraph Storage
-        N[(SubagentRunStore)]
-        O[(ToolStatsStore)]
-        P[(ConversationStore)]
-        Q2[(ContextStore)]
-        PS[(PromptStore)]
-        PLS[(PlanStore)]
-        SKS[(SkillStore)]
-        VS[(VectorStore)]
-    end
+    BCore -->|regular message| SM[SubagentManager]
+    SM --> AR[AgentRun]
 
-    F --> N
-    J --> O
-    E --> P
-    E --> Q2
-    E --> PS
-    E --> PLS
-    E --> SKS
-    E --> VS
+    AR <-->|tool_calls + results| TOOLS[ToolRegistry → MCP / built-in tools]
+    AR <-->|read / write| SP[Scratchpad]
+
+    AR -->|final reply| SEND[persist + send via channel]
+
+    SEND --> EV[LearningEvaluator]
+    EV -->|create / update skill| SK[SkillStore + VectorStore]
 ```
 
-**Message flow:**
+**Step by step:**
 
-1. **`main.py`** — Loads config, builds channels and `BotCore`, wires `Channel.set_handler(core.on_incoming)`.
-2. **`BotCore.on_incoming`** — Enqueues `UserMessage` to `asyncio.Queue`. Similarly, `on_subagent_result` enqueues `SubagentResultMessage`.
-3. **`_process_queue_loop`** — Async loop that dequeues messages one at a time, dispatching `UserMessage` to `_handle_user_message` or `SubagentResultMessage` to `_handle_subagent_result`.
-4. **`BotCore._handle_user_message`** — Routes to `CommandManager` for slash commands, else `_process`.
-5. **`_process`** — Persists user message, clears scratchpad, builds messages with history.
-6. **`SubagentManager.spawn`** — Creates `SubagentRun` record in SQLite (`subagent_runs` table).
-7. **`SubagentManager.execute`** — Calls `AgentRun.run()` with messages and tools, records completion.
-8. **`AgentRun.run`** — LLM chat loop; tool calls through `ToolRegistry.call()` (records to `tool_calls` with `run_id`). When scratchpad is finalized, the loop breaks and makes one explicit no-tools LLM call with the `finalize_response` prompt to produce the final answer.
-9. **After turn** — Persist assistant message, update context, send reply via `_send`. Then `_evaluate_turn` runs the `LearningEvaluator` if enabled, which may auto-create or update skills based on learnings extracted from the turn.
+1. **Incoming** — A channel calls `self.emit(IncomingMessage)` → `BotCore.on_incoming` wraps it as `UserMessage` and enqueues to `asyncio.Queue`. The scheduler also enqueues due tasks. The queue serializes everything.
+2. **Dispatch** — `_process_queue_loop` dequeues one message at a time. Slash commands go to `CommandManager` (no subagent run created). Everything else goes to `_process`.
+3. **SubagentManager** — `_process` persists the user message, clears the scratchpad, then `spawn()` creates a `SubagentRun` record for observability. `execute()` hands off to `AgentRun`.
+4. **AgentRun** — The LLM chat loop. Each turn: send messages to LLM, if it returns `tool_calls` execute them through `ToolRegistry` and loop, if it returns text exit with the reply. The scratchpad is updated via `session__scratchpad_write` throughout (init → append → finalize). See [SCRATCHPAD.md](docs/SCRATCHPAD.md) for the full lifecycle.
+5. **Reply** — Persist the assistant message, update context store, send reply via `channel.send()`.
+6. **Evaluate** — After the reply is sent, `_evaluate_turn` runs the `LearningEvaluator` (if enabled). This may auto-create or update skills. See [EVALUATOR.md](docs/EVALUATOR.md) for the three-phase pipeline.
 
-**Slash commands bypass SubagentManager** — they execute directly without creating run records.
+### Component map
+
+| Component | Source | Role |
+|-----------|--------|------|
+| **BotCore** | `core.py` | Orchestrator: message queue, command dispatch, evaluator integration |
+| **AgentRun** | `agent_run.py` | LLM chat loop with tool calling, scratchpad protocol, finalize exit path |
+| **SubagentManager** | `subagents/` | Spawn/execute subagent runs with observability tracking |
+| **CommandManager** | `core_commands/` | Slash commands: help, ctx, reset, plan, scratchpad, reload, status, session |
+| **Scratchpad** | `core_scratchpad.py` | Per-turn structured working state (goal, steps, facts, tool journal) |
+| **SkillMatcher** | `skills/matcher.py` | Resolves which skills to inject (always/pattern/intelligent) |
+| **LearningEvaluator** | `evaluator/runner.py` | Turns good conversations into skills (quality → learning → lifecycle) |
+| **McpHub** | `mcp_hub.py` | Connects to configured MCP servers, routes tool calls |
+| **ToolRegistry** | `tools/` | Registers and dispatches all tools (MCP + built-in), records stats |
+| **PromptStore** | `prompts/` | Centralized prompt templates with variable rendering |
+| **SchedulerRunner** | `scheduler_runner.py` | Polls due tasks from scheduler DB, enqueues to BotCore |
+
+Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/SCRATCHPAD.md), [SKILLS.md](docs/SKILLS.md), [EVALUATOR.md](docs/EVALUATOR.md), [CHANNELS.md](docs/CHANNELS.md), [WEB_AGENT.md](docs/WEB_AGENT.md).
 
 ### Storage boundaries
 
@@ -201,51 +189,37 @@ flowchart TD
 - `subagent_runs.scope` — Chat scope (e.g. `telegram:500506690`)
 - `contexts` — Stores run goal/status/result under `subagent_run:{id}` scope
 
-### Hooks (`src/nanobot/hooks/`)
+### Hooks
 
-- **Channel → core**: `Channel.set_handler` in `channels/base.py`.
-- **Scheduler → core**: `SchedulerRunner(..., on_due_task=...)` → `_handle_scheduled_task`.
-- **After each tool call**: `ToolCallEvent` in `hooks/tool_hooks.py`; `ToolHook.after_tool_call(event, bot)`; `BotCore._dispatch_after_tool_call`. Built-ins: `ToolResultRecorderHook`, `BrowseEventRecorderHook` (playwright tools). **`FileTraceHook`** is conditionally registered when a `FileChannel` has `capture_tool_calls=true`, writing tool call/result events to the session output file.
-- **Prompt shaping**: `scratchpad_system_message` (standalone function in `core_scratchpad.py`), `scratchpad_assistant_message` (standalone function in `core_scratchpad.py`, renders user-role message), `prepare_messages_for_chat` (standalone function in `agent_run.py`), `_system_messages` (method on `BotCore`).
+Three integration points connect components to the core:
 
-**Hook event fields** (`after_tool_call`): `scope`, `call_id`, `tool_name`, `args`, `result`, `result_preview`, `ok`, `error`, `at`.
+- **Channel → core**: `Channel.set_handler` → `BotCore.on_incoming`.
+- **Scheduler → core**: `SchedulerRunner(on_due_task=...)` → message queue.
+- **After each tool call**: `ToolHook.after_tool_call(event, bot)` dispatched by `BotCore._dispatch_after_tool_call`. Built-in hooks: `ToolResultRecorderHook` (all tool calls), `BrowseEventRecorderHook` (`playwright__*` only), `FileTraceHook` (conditional, when FileChannel has `capture_tool_calls=true`).
+
+**Event fields**: `scope`, `call_id`, `tool_name`, `args`, `result`, `result_preview`, `ok`, `error`, `at`.
 
 **Policy**: Hook failures are isolated; a failing hook must not break the tool loop or the user turn.
 
-### Agent loop exit paths (`AgentRun.run`)
+### Agent loop exit paths
 
-The tool-calling loop has four exit conditions:
+The tool-calling loop has four exit conditions. Two use the scratchpad to produce a final answer:
 
 1. **Implicit text response** — Model returns no `tool_calls`; loop exits with the text reply.
-2. **Scratchpad finalize** — When `scratchpad_write(mode=finalize)` is called, the loop breaks and makes one explicit LLM call with **no tools** and the `finalize_response` prompt (goal + summary from scratchpad state). The model must return a plain text answer.
-3. **Tool call limit** (30) — `MAX_TOOL_CALLS_PER_TURN` exceeded triggers a soft landing: the loop makes a no-tools LLM call with the `tool_call_limit_finalize` prompt (goal + accumulated summary from scratchpad). The model gets to summarize and produce a final answer rather than receiving a hard abort.
-4. **Identical tool call repeat** (3x) — `MAX_IDENTICAL_TOOL_CALL_REPEATS` exceeded returns a fixed error reply. This is a hard abort.
+2. **Scratchpad finalize** — `scratchpad_write(mode=finalize)` breaks the loop and makes one no-tools LLM call with the `finalize_response` prompt (goal + summary from scratchpad). See [SCRATCHPAD.md](docs/SCRATCHPAD.md).
+3. **Tool call limit** (30) — Soft landing: no-tools LLM call with `tool_call_limit_finalize` prompt so the model can summarize partial progress.
+4. **Identical tool call repeat** (3x) — Hard abort with a fixed error reply.
 
-The finalize path is critical for local/smaller models: without an explicit no-tools call, models tend to hallucinate `scratchpad_write(init)` after finalize, which wipes all accumulated state.
+### Browser
 
-### Browser multi-tab (`web_agent/browser/interactor.py`)
+Two browser capabilities coexist. See [WEB_AGENT.md](docs/WEB_AGENT.md) for full details.
 
-The system provides **two browser capabilities**:
-
-**External Playwright MCP** — A standalone MCP server (`@playwright/mcp`) configured in `config.yaml`. Provides raw browser interaction tools (`playwright__navigate`, `playwright__click`, etc.) with multi-tab support. `BrowseEventRecorderHook` records all `playwright__` tool events.
-
-**Built-in web_agent** — The `interact_page` MCP tool wrapping `BrowserInteractor` for structured page interaction. `BrowserInteractor.click()` uses `context.expect_page()` to detect new tabs opened by `target="_blank"` links. When detected:
-
-1. The old page is compressed to `{url, title}` and stored in `_background_tabs`.
-2. `self.page` switches to the new tab automatically.
-3. `switch_tab(index)` returns to a background tab by `context.pages` index.
-
-The `interact_page` MCP tool reports `background_tabs` (url+title for each) and `step_urls` (compact step summary) so the LLM knows what tabs are available.
+- **External Playwright MCP** — Standalone MCP server with raw browser tools (`playwright__*`). Multi-tab support, auto-popup detection.
+- **Built-in web agent** — `interact_page` tool wrapping `BrowserInteractor` for structured page interaction, content extraction, and multi-tab navigation.
 
 ### After turn: evaluator
 
-After each completed subagent turn, `BotCore._evaluate_turn` runs (if `enable_evaluator: true` in config):
-
-1. **Quality Assessment** — Evaluates the turn for completeness and usefulness.
-2. **Learning Extraction** — Conditionally extracts learnings from the turn when quality is sufficient.
-3. **Skill Lifecycle** — Makes decisions about skill creation, update, or skip based on extracted learnings.
-
-The evaluator may auto-create skills in `SkillStore` and sync them to `SkillVectorStore` for semantic matching. Each operation is independent and fault-tolerant; a failing skill operation does not block others.
+After each completed subagent turn, the `LearningEvaluator` runs (if enabled) and may auto-create or update skills. See [EVALUATOR.md](docs/EVALUATOR.md) for the three-phase pipeline.
 
 ### Future hooks (suggested, not contracted)
 
@@ -256,3 +230,8 @@ The evaluator may auto-create skills in `SkillStore` and sync them to `SkillVect
 ## Related documents
 
 - [ROADMAP.md](ROADMAP.md) — Phases, milestones, and open design choices.
+- [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md) — Scratchpad lifecycle, modes, and limits.
+- [docs/SKILLS.md](docs/SKILLS.md) — Skill schema, trigger modes, matching, and CRUD tools.
+- [docs/EVALUATOR.md](docs/EVALUATOR.md) — Three-phase evaluation pipeline and fault tolerance.
+- [docs/CHANNELS.md](docs/CHANNELS.md) — Channel interface and how to add a new one.
+- [docs/WEB_AGENT.md](docs/WEB_AGENT.md) — Dual browser system, actions, and content extraction pipeline.
