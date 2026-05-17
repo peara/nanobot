@@ -96,6 +96,45 @@ Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go 
 | Top-level modules (core.py, etc.) | `tests/test_*.py` (top-level) |
 
 ## Commands
+
+This project uses [just](https://github.com/casey/just) as a command runner. Run `just --list` to see all recipes.
+
+```bash
+just install                    # Install dependencies (dev group included)
+just setup                      # Install deps + pre-commit hooks
+just run                        # Start the bot (uses config.yaml by default)
+just run config.staging.yaml    # Start with alternate config
+
+just check                      # Lint + format + typecheck (all quality gates)
+just lint                       # Ruff lint only
+just format                     # Ruff format only
+just typecheck                   # mypy only
+
+just test                       # Run all tests
+just test-pkg subagents          # Run tests for a package
+just test-file plans/test_plan_store.py  # Run specific test file
+just test-name test_plan_store    # Run tests matching a name
+
+just reset                      # Full state reset (scheduler + history + mem0)
+just reset-dry                  # Preview what reset clears
+just reset-local                # Reset local SQLite only (keep mem0)
+just resync-skills              # Re-index intelligent skills to mem0
+
+just scopes                     # List message scopes
+just ctx <scope>                # Show context report
+just scheduler-list             # List scheduled tasks
+just plan-list                  # List plan runs
+
+just eval-list                  # List eval fixtures
+just eval-run <fixture>         # Run eval against a fixture
+
+just chat "hello bot"           # Send message via FileChannel
+just pre-commit                 # Run pre-commit hooks
+```
+
+<details>
+<summary>Raw commands (without just)</summary>
+
 ```bash
 uv sync --group dev                    # Install dependencies
 uv run pytest                          # Run tests
@@ -106,6 +145,7 @@ uv run mypy                            # Type check
 python -m nanobot.main --config config.yaml  # Run bot
 uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 ```
+</details>
 
 ## Conventions
 
@@ -175,7 +215,8 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - **Commit without issue reference**: Ask about GitHub issue linkage first
 
 ## Notes
-- No GitHub Actions CI - all testing/linting is local via `uv run`
-- `reset_state.py` at project root (not in src/) - utility script
+- Uses [just](https://github.com/casey/just) as command runner - `just --list` for all recipes
+- No GitHub Actions CI - all testing/linting is local via `uv run` or `just`
+- `reset_state.py` at project root (not in src/) - utility script (also available as `just reset`)
 - `.agents/skills/` contains project-specific AI agent skills
 - Entry points: `python -m nanobot.main` and `python -m nanobot.debug_cli`

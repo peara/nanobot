@@ -144,10 +144,13 @@ def read_session(session_id: str) -> dict:
 ### Use the test script
 ```bash
 # Auto-discovers active session, sends message, waits for response
-uv run python scripts/file_channel_test.py "search for good minolta 58 1.2 on yahoo auction"
+just chat "search for good minolta 58 1.2 on yahoo auction"
 
 # With custom message
-uv run python scripts/file_channel_test.py "what tools are available?"
+just chat "what tools are available?"
+
+# Raw command (if just not available)
+uv run python scripts/file_channel_test.py "search for good minolta 58 1.2 on yahoo auction"
 ```
 
 ## Complete Workflow Example
@@ -203,8 +206,7 @@ Before using FileChannel:
 After a conversation:
 ```bash
 # Check what was stored in context
-uv run python -m nanobot.debug_cli --config config.yaml ctx --scope "file:$SESSION_ID"
+just ctx "file:$SESSION_ID"
 
-# See tool result history
-uv run python -m nanobot.debug_cli --config config.yaml tools --scope "file:$SESSION_ID" --full
+# See tool result history (add --full manually via debug_cli)
 ```

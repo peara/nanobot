@@ -41,52 +41,51 @@ When debugging unexpected /plan behavior:
 ### Inspect conversation context
 ```bash
 # List all chat scopes
-uv run python -m nanobot.debug_cli --config config.yaml scopes
+just scopes
 
 # Show context for specific scope
-uv run python -m nanobot.debug_cli --config config.yaml ctx --scope telegram:500506690
+just ctx telegram:500506690
 
 # Show what would be sent to LLM (full payload)
-uv run python -m nanobot.debug_cli --config config.yaml ctx --scope telegram:500506690 --full
+just ctx telegram:500506690  # add --full manually via debug_cli
 
 # Use latest scope automatically
-uv run python -m nanobot.debug_cli --config config.yaml ctx --latest --tail 10
+just ctx --latest  # add --tail 10 manually via debug_cli
 ```
 
 ### Debug plan runs
 ```bash
 # List recent plan executions
-uv run python -m nanobot.debug_cli --config config.yaml plan list --limit 20
+just plan-list
 
 # Show detailed execution trace
-uv run python -m nanobot.debug_cli --config config.yaml plan show --run-id run-abc123
+just plan-show run-abc123
 
-# Show latest plan run
-uv run python -m nanobot.debug_cli --config config.yaml plan show --latest
+# Show latest plan run (add --latest manually via debug_cli)
 ```
 
 ### Check scheduler state
 ```bash
 # List scheduled tasks
-uv run python -m nanobot.debug_cli --config config.yaml scheduler list
+just scheduler-list
 
 # Clear all tasks
-uv run python -m nanobot.debug_cli --config config.yaml scheduler clear
+just scheduler-clear
 
-# Remove invalid placeholder scopes
-uv run python -m nanobot.debug_cli --config config.yaml scheduler clear-invalid --purge-messages
+# Remove invalid placeholder scopes (add --purge-messages manually)
+just scheduler-clear-invalid
 ```
 
 ### Reset state (nuclear option)
 ```bash
 # Preview what would be deleted
-uv run python reset_state.py --dry-run
+just reset-dry
 
 # Full reset (local DB + scheduler + mem0)
-uv run python reset_state.py
+just reset
 
 # Skip mem0 reset
-uv run python reset_state.py --skip-mem0
+just reset-local
 ```
 
 ### Query SQLite directly
