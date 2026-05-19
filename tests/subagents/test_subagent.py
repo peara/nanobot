@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
+import pytest
+
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
 from nanobot.core import BotCore
 from nanobot.subagents import SubagentRunResult
+from nanobot.subagents.manager import SKILL_CRUD_TOOL_NAMES
 from nanobot.tools.base import Tool
 
 
@@ -283,3 +286,112 @@ def test_subagent_manager_spawn_creates_run_record(tmp_path) -> None:
     retrieved = bot.subagent_manager.get(run.id)
     assert retrieved is not None
     assert retrieved.id == run.id
+
+
+class TestToolCatalogInjection:
+    """Tests for conditional tool catalog injection in SubagentManager.execute()."""
+
+    def test_skill_crud_tool_names_constant(self) -> None:
+        assert "skill__create" in SKILL_CRUD_TOOL_NAMES
+        assert "skill__update" in SKILL_CRUD_TOOL_NAMES
+        assert "skill__delete" not in SKILL_CRUD_TOOL_NAMES
+        assert "skill__activate" not in SKILL_CRUD_TOOL_NAMES
+
+    @pytest.mark.asyncio
+    async def test_catalog_injected_when_skill_create_in_tools(self, tmp_path: Any) -> None:
+        config = _build_config(tmp_path)
+        channel = _FakeChannel()
+        bot = BotCore(config=config, channels={"telegram": channel})
+        tool_specs = bot._list_openai_tools(skill_names=None) + [
+            {
+                "type": "function",
+                "function": {
+                    "name": "skill__create",
+                    "description": "Create a skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        run = bot.subagent_manager.spawn(scope="telegram:cat1", goal="Manage skills")
+        captured_messages: list[dict] = []
+
+        class _CapturingLlm:
+            async def chat(self, messages, tools, response_format=None):
+                captured_messages.extend(messages)
+                return {"content": "Done", "tool_calls": None}
+
+        bot.llm = cast(Any, _CapturingLlm())
+        await bot.subagent_manager.execute(
+            run,
+            [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Create a skill"}],
+            tool_specs,
+        )
+
+        system_contents = [m["content"] for m in captured_messages if m["role"] == "system"]
+        catalog_found = any("Available tools:" in c for c in system_contents)
+        assert catalog_found, "Tool catalog should be injected when skill__create is in tools"
+
+    @pytest.mark.asyncio
+    async def test_catalog_not_injected_when_no_skill_crud_tools(self, tmp_path: Any) -> None:
+        config = _build_config(tmp_path)
+        channel = _FakeChannel()
+        bot = BotCore(config=config, channels={"telegram": channel})
+        tool_specs = bot._list_openai_tools(skill_names=None)
+        tool_names = {t["function"]["name"] for t in tool_specs if "function" in t}
+        assert not (SKILL_CRUD_TOOL_NAMES & tool_names), "Core tools should not include skill CRUD"
+
+        run = bot.subagent_manager.spawn(scope="telegram:cat2", goal="Just chat")
+        captured_messages: list[dict] = []
+
+        class _CapturingLlm:
+            async def chat(self, messages, tools, response_format=None):
+                captured_messages.extend(messages)
+                return {"content": "Hi", "tool_calls": None}
+
+        bot.llm = cast(Any, _CapturingLlm())
+        await bot.subagent_manager.execute(
+            run,
+            [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Hello"}],
+            tool_specs,
+        )
+
+        system_contents = [m["content"] for m in captured_messages if m["role"] == "system"]
+        catalog_found = any("Available tools:" in c for c in system_contents)
+        assert not catalog_found, "Tool catalog should NOT be injected when skill CRUD tools are absent"
+
+    @pytest.mark.asyncio
+    async def test_catalog_contains_tool_names(self, tmp_path: Any) -> None:
+        config = _build_config(tmp_path)
+        channel = _FakeChannel()
+        bot = BotCore(config=config, channels={"telegram": channel})
+        tool_specs = bot._list_openai_tools(skill_names=None) + [
+            {
+                "type": "function",
+                "function": {
+                    "name": "skill__create",
+                    "description": "Create a skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        run = bot.subagent_manager.spawn(scope="telegram:cat3", goal="Manage skills")
+        captured_messages: list[dict] = []
+
+        class _CapturingLlm:
+            async def chat(self, messages, tools, response_format=None):
+                captured_messages.extend(messages)
+                return {"content": "Done", "tool_calls": None}
+
+        bot.llm = cast(Any, _CapturingLlm())
+        await bot.subagent_manager.execute(
+            run,
+            [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Create a skill"}],
+            tool_specs,
+        )
+
+        system_contents = [m["content"] for m in captured_messages if m["role"] == "system"]
+        catalog_msgs = [c for c in system_contents if "Available tools:" in c]
+        assert len(catalog_msgs) == 1
+        catalog = catalog_msgs[0]
+        core_names_in_catalog = any(name in catalog for name in ["plan__get", "plan__list", "skill__list"])
+        assert core_names_in_catalog, f"Catalog should contain core tool names, got: {catalog[:200]}"

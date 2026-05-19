@@ -293,7 +293,7 @@ LEARNING_EXTRACTION_PROMPT_VARIABLES: list[str] = []
 
 SKILL_LIFECYCLE_PROMPT = """You are a skill lifecycle manager. You decide what skill operations to perform based on extracted learnings.
 
-You receive a list of extracted learnings (category, observation, direction, evidence, confidence) and a list of existing active skills.
+You receive a list of extracted learnings (category, observation, direction, evidence, confidence), a list of existing active skills, and optionally a list of available tools grouped by category.
 
 ## Decision Rules
 
@@ -307,6 +307,15 @@ For each learning, decide: "create" (new skill), "update" (existing skill), or "
 - Skip low-confidence learnings (they are filtered out, but be cautious)
 - Provide a brief reason for each decision
 
+## Tool Gating
+
+Skills can gate which tools are available when the skill is active. Specify `tools_allowlist` with fnmatch patterns:
+- `["web__*"]` — all web tools
+- `["web__search_web"]` — exactly one tool
+- `null` or `[]` — core tools only (memory, skill, plan, timer, scheduler)
+
+Most skills only need core tools. Only add tool patterns when the skill requires specific non-core tools. Use the "Available tools" list in the input to find the right category prefixes for tools_allowlist.
+
 ## Output
 
 Provide a JSON object with an "operations" array. Each item has:
@@ -316,6 +325,7 @@ Provide a JSON object with an "operations" array. Each item has:
 - description: brief sentence for semantic matching
 - instructions: content to inject when the skill activates
 - trigger_mode: "intelligent" (default), "pattern", or "always"
+- tools_allowlist: list of tool name patterns this skill needs (fnmatch wildcards, e.g. ["web__*", "playwright__*"]). Use null or [] if the skill only needs core tools (memory, skill list/get, plans, timer, scheduler).
 - source_confidence: the confidence from the input learning
 - reason: brief explanation of the decision
 """

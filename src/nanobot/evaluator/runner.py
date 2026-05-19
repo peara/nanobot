@@ -25,8 +25,36 @@ if TYPE_CHECKING:
     from nanobot.prompts import PromptStore
     from nanobot.skills.models import Skill
     from nanobot.subagents.manager import SubagentRunResult
+    from nanobot.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _build_tool_catalog_text(registry: ToolRegistry) -> str:
+    """Build a compact tool catalog text grouped by namespace prefix.
+
+    Returns an empty string if the registry has no tools.
+    """
+    from collections import defaultdict
+
+    tools = registry.list_tools(patterns=None)
+    if not tools:
+        return ""
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for tool in tools:
+        name = tool.name
+        if "__" in name:
+            prefix = name.split("__", 1)[0]
+        else:
+            prefix = name
+        groups[prefix].append(name)
+
+    lines = []
+    for prefix in sorted(groups):
+        tools_str = ", ".join(sorted(groups[prefix]))
+        lines.append(f"  - {prefix}: {tools_str}")
+    return "\n".join(lines)
 
 _eval_logger: logging.Logger | None = None
 
@@ -62,9 +90,11 @@ class LearningEvaluator:
         self,
         llm: LlmClient,
         prompts: PromptStore,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._prompts = prompts
+        self._tool_registry = tool_registry
         self._eval_log = _get_eval_logger()
 
     def _log_phase(self, scope: str, phase: str, user_message: str, raw_response: str) -> None:
@@ -174,7 +204,7 @@ class LearningEvaluator:
     ) -> list[SkillOperation]:
         """Phase 3: Decide what skill operations to perform from extracted learnings."""
         system_prompt = self._get_prompt("skill_lifecycle", "SKILL_LIFECYCLE_PROMPT")
-        user_message = self._build_lifecycle_input(learnings, active_skills)
+        user_message = self._build_lifecycle_input(learnings, active_skills, self._tool_registry)
 
         response = await self._llm.chat(
             messages=[
@@ -198,6 +228,7 @@ class LearningEvaluator:
     def _build_lifecycle_input(
         learnings: list[LearningItem],
         active_skills: list[Skill],
+        tool_registry: ToolRegistry | None = None,
     ) -> str:
         parts = [
             "Extracted learnings:",
@@ -209,6 +240,11 @@ class LearningEvaluator:
 
         skills_summary = LearningEvaluator._summarize_active_skills(active_skills)
         parts.extend(["", "Existing active skills:", skills_summary])
+
+        if tool_registry is not None:
+            catalog = _build_tool_catalog_text(tool_registry)
+            if catalog:
+                parts.extend(["", "Available tools:", catalog])
 
         parts.append("")
         parts.append("Decide which learnings warrant skill creation or update. Output operations.")

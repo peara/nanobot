@@ -134,7 +134,7 @@ class BotCore:
         )
         self.evaluator: LearningEvaluator | None = None
         if config.enable_evaluator:
-            self.evaluator = LearningEvaluator(llm=self.llm, prompts=self.prompts)
+            self.evaluator = LearningEvaluator(llm=self.llm, prompts=self.prompts, tool_registry=self.tools)
             logger.info("LearningEvaluator enabled")
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None
@@ -383,6 +383,7 @@ class BotCore:
                         description=op.description,
                         instructions=op.instructions,
                         trigger_mode=op.trigger_mode,
+                        tools_allowlist=op.tools_allowlist,
                         is_active=True,
                     )
                     if op.trigger_mode == "intelligent" and self.mem0_skill_store:
@@ -403,6 +404,8 @@ class BotCore:
                         update_kwargs["instructions"] = op.instructions
                     if op.trigger_mode:
                         update_kwargs["trigger_mode"] = op.trigger_mode
+                    if op.tools_allowlist is not None:
+                        update_kwargs["tools_allowlist"] = op.tools_allowlist
                     updated = self.skills.update(existing.id, **update_kwargs)
                     if updated and updated.trigger_mode == "intelligent" and self.mem0_skill_store:
                         try:

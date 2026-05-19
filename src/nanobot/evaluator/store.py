@@ -190,6 +190,7 @@ class SkillOperation:
     trigger_mode: str  # "always" | "pattern" | "intelligent"
     source_confidence: str  # "high" | "medium" | "low"
     reason: str
+    tools_allowlist: list[str] | None = None
 
 
 @dataclass
@@ -235,6 +236,15 @@ SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
                                 "enum": ["always", "pattern", "intelligent"],
                                 "description": "How this skill should be triggered",
                             },
+                            "tools_allowlist": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Tool name patterns this skill should make available "
+                                    "(fnmatch wildcards, e.g. ['web__*', 'playwright__*']). "
+                                    "Null or empty means core tools only."
+                                ),
+                            },
                             "source_confidence": {
                                 "type": "string",
                                 "enum": ["high", "medium", "low"],
@@ -251,6 +261,7 @@ SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
                             "description",
                             "instructions",
                             "trigger_mode",
+                            "tools_allowlist",
                             "source_confidence",
                             "reason",
                         ],
@@ -280,12 +291,17 @@ def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
     if source_confidence not in ("high", "medium", "low"):
         raise ValueError(f"invalid source_confidence: {source_confidence}")
 
+    tools_allowlist = item.get("tools_allowlist")
+    if tools_allowlist is not None and not isinstance(tools_allowlist, list):
+        tools_allowlist = [str(tools_allowlist)]
+
     return SkillOperation(
         action=action,
         name=str(item["name"]),
         description=str(item["description"]),
         instructions=str(item["instructions"]),
         trigger_mode=trigger_mode,
+        tools_allowlist=tools_allowlist,
         source_confidence=source_confidence,
         reason=str(item["reason"]),
     )

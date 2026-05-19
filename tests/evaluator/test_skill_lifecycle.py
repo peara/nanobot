@@ -14,23 +14,35 @@ from nanobot.evaluator.store import (
     parse_lifecycle_from_json,
     parse_skill_operation,
 )
+from nanobot.tools.base import Tool
+from nanobot.tools.registry import ToolRegistry
 
 
 class TestSkillOperation:
-    def test_creation(self) -> None:
+    def test_creation_with_tools_allowlist(self) -> None:
         op = SkillOperation(
             action="create",
-            name="user_pref_typescript",
-            description="User prefers TypeScript over JavaScript",
-            instructions="Use TypeScript for all code examples",
+            name="web_research",
+            description="Research web topics",
+            instructions="Use web tools for research",
+            trigger_mode="pattern",
+            tools_allowlist=["web__*", "playwright__*"],
+            source_confidence="high",
+            reason="User needs web research",
+        )
+        assert op.tools_allowlist == ["web__*", "playwright__*"]
+
+    def test_creation_without_tools_allowlist(self) -> None:
+        op = SkillOperation(
+            action="create",
+            name="pref_concise",
+            description="User prefers concise",
+            instructions="Be brief",
             trigger_mode="intelligent",
             source_confidence="high",
-            reason="User explicitly requested TypeScript",
+            reason="User preference",
         )
-        assert op.action == "create"
-        assert op.name == "user_pref_typescript"
-        assert op.trigger_mode == "intelligent"
-        assert op.source_confidence == "high"
+        assert op.tools_allowlist is None
 
     def test_frozen(self) -> None:
         op = SkillOperation(
@@ -69,6 +81,7 @@ class TestEvaluationResult:
         assert result.quality.quality_score == 4
         assert len(result.decisions) == 1
         assert result.decisions[0].name == "pref_concise"
+        assert result.decisions[0].tools_allowlist is None
 
     def test_creation_without_decisions(self) -> None:
         quality = QualityAssessment(
@@ -83,21 +96,51 @@ class TestEvaluationResult:
 
 
 class TestParseSkillOperation:
-    def test_parse_valid_operation(self) -> None:
+    def test_parse_valid_operation_with_tools_allowlist(self) -> None:
         data = {
             "action": "create",
-            "name": "workflow_git_commit",
-            "description": "Git commit workflow",
-            "instructions": "Always link to GitHub issues",
+            "name": "web_research",
+            "description": "Research web topics",
+            "instructions": "Use web tools",
             "trigger_mode": "pattern",
+            "tools_allowlist": ["web__*", "playwright__*"],
             "source_confidence": "high",
-            "reason": "User requested issue linking",
+            "reason": "User needs web research",
         }
         op = parse_skill_operation(data)
         assert op.action == "create"
-        assert op.name == "workflow_git_commit"
+        assert op.name == "web_research"
         assert op.trigger_mode == "pattern"
         assert op.source_confidence == "high"
+        assert op.tools_allowlist == ["web__*", "playwright__*"]
+
+    def test_parse_operation_without_tools_allowlist(self) -> None:
+        data = {
+            "action": "create",
+            "name": "test_skill",
+            "description": "Test",
+            "instructions": "Test",
+            "trigger_mode": "intelligent",
+            "tools_allowlist": None,
+            "source_confidence": "high",
+            "reason": "Test",
+        }
+        op = parse_skill_operation(data)
+        assert op.tools_allowlist is None
+
+    def test_parse_operation_with_empty_tools_allowlist(self) -> None:
+        data = {
+            "action": "create",
+            "name": "test_skill",
+            "description": "Test",
+            "instructions": "Test",
+            "trigger_mode": "intelligent",
+            "tools_allowlist": [],
+            "source_confidence": "high",
+            "reason": "Test",
+        }
+        op = parse_skill_operation(data)
+        assert op.tools_allowlist == []
 
     def test_parse_invalid_action(self) -> None:
         data = {
@@ -150,6 +193,7 @@ class TestParseLifecycleFromJson:
                         "description": "User prefers dark mode",
                         "instructions": "Use dark theme in examples",
                         "trigger_mode": "intelligent",
+                        "tools_allowlist": None,
                         "source_confidence": "high",
                         "reason": "User explicitly stated preference",
                     },
@@ -159,6 +203,7 @@ class TestParseLifecycleFromJson:
                         "description": "Temporary context",
                         "instructions": "Skip this",
                         "trigger_mode": "intelligent",
+                        "tools_allowlist": [],
                         "source_confidence": "low",
                         "reason": "Not a persistent preference",
                     },
@@ -168,7 +213,9 @@ class TestParseLifecycleFromJson:
         operations = parse_lifecycle_from_json(json_str)
         assert len(operations) == 2
         assert operations[0].action == "create"
+        assert operations[0].tools_allowlist is None
         assert operations[1].action == "skip"
+        assert operations[1].tools_allowlist == []
 
     def test_parse_empty_operations(self) -> None:
         json_str = '{"operations": []}'
@@ -226,6 +273,15 @@ class TestSkillLifecycleSchema:
         assert item_props["trigger_mode"]["enum"] == ["always", "pattern", "intelligent"]
         assert item_props["source_confidence"]["enum"] == ["high", "medium", "low"]
 
+    def test_operation_item_schema_has_tools_allowlist(self) -> None:
+        item_schema = SKILL_LIFECYCLE_SCHEMA["json_schema"]["schema"]["properties"]["operations"]["items"]
+        assert "tools_allowlist" in item_schema["properties"]
+        assert item_schema["properties"]["tools_allowlist"]["type"] == "array"
+
+    def test_tools_allowlist_in_required(self) -> None:
+        item_schema = SKILL_LIFECYCLE_SCHEMA["json_schema"]["schema"]["properties"]["operations"]["items"]
+        assert "tools_allowlist" in item_schema["required"]
+
     def test_strict_schema(self) -> None:
         schema_obj = SKILL_LIFECYCLE_SCHEMA["json_schema"]["schema"]
         assert schema_obj["additionalProperties"] is False
@@ -272,6 +328,7 @@ class TestDecideLifecycle:
                         "description": "User prefers Python for code",
                         "instructions": "Use Python for all code examples unless specified",
                         "trigger_mode": "intelligent",
+                        "tools_allowlist": None,
                         "source_confidence": "high",
                         "reason": "User explicitly stated preference",
                     },
@@ -330,3 +387,82 @@ class TestDecideLifecycle:
         )
 
         assert len(operations) == 0
+
+
+
+class _FakeToolForCatalog(Tool):
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        return "ok"
+
+
+class TestBuildLifecycleInputWithToolCatalog:
+    def test_lifecycle_input_includes_tool_catalog_when_registry_provided(self) -> None:
+        registry = ToolRegistry()
+        registry.register(_FakeToolForCatalog("memory__search"))
+        registry.register(_FakeToolForCatalog("web__search_web"))
+        registry.register(_FakeToolForCatalog("web__read_page"))
+
+        learnings = [
+            LearningItem(
+                category="workflow_pattern",
+                observation="User searches web for restaurant recommendations",
+                direction="create_skill",
+                evidence="User asked to search for restaurants",
+                confidence="high",
+            ),
+        ]
+
+        result = LearningEvaluator._build_lifecycle_input(learnings, active_skills=[], tool_registry=registry)
+
+        assert "Available tools:" in result
+        assert "memory: memory__search" in result
+        assert "web: web__read_page, web__search_web" in result
+
+    def test_lifecycle_input_excludes_tool_catalog_when_no_registry(self) -> None:
+        learnings = [
+            LearningItem(
+                category="user_preference",
+                observation="User prefers concise answers",
+                direction="create_skill",
+                evidence="User said 'keep it brief'",
+                confidence="high",
+            ),
+        ]
+
+        result = LearningEvaluator._build_lifecycle_input(learnings, active_skills=[], tool_registry=None)
+
+        assert "Available tools:" not in result
+        assert "Extracted learnings:" in result
+
+    def test_lifecycle_input_excludes_tool_catalog_for_empty_registry(self) -> None:
+        registry = ToolRegistry()
+
+        learnings = [
+            LearningItem(
+                category="user_preference",
+                observation="User prefers concise answers",
+                direction="create_skill",
+                evidence="User said 'keep it brief'",
+                confidence="high",
+            ),
+        ]
+
+        result = LearningEvaluator._build_lifecycle_input(learnings, active_skills=[], tool_registry=registry)
+
+        assert "Available tools:" not in result
+

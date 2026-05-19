@@ -21,7 +21,7 @@ The skills system has three components:
 | `instructions` | string | required | Full skill content (~1000-5000 tokens) injected into the prompt |
 | `trigger_mode` | string | `"pattern"` | How this skill activates: `always`, `pattern`, or `intelligent` |
 | `trigger_patterns` | string[] | `[]` | Regex patterns for `pattern` mode (case-insensitive) |
-| `tools_allowlist` | string[]? | `null` | Optional tool names this skill can use (stored but not currently enforced) |
+| `tools_allowlist` | string[]? | `null` | Tool name patterns (fnmatch) this skill gates — matched tools are available when this skill is active |
 | `priority` | int | `0` | Higher priority skills are included first when multiple match |
 | `is_active` | bool | `true` | Whether this skill participates in matching |
 | `created_at` | datetime | auto | Creation timestamp |
@@ -80,7 +80,7 @@ The bot manages its own skills at runtime through 6 MCP tools:
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
-| `skill__create` | Create a new skill | `name`, `description`, `instructions`, `trigger_mode`, `trigger_patterns`, `priority` |
+| `skill__create` | Create a new skill | `name`, `description`, `instructions`, `trigger_mode`, `trigger_patterns`, `tools_allowlist`, `priority` |
 | `skill__get` | Get full skill details | `name` or `skill_id` |
 | `skill__update` | Update an existing skill | `name` (required), plus any updatable field |
 | `skill__delete` | Delete a skill by name | `name` |
@@ -100,6 +100,45 @@ If the Qdrant sync fails, the SQLite operation still succeeds. The skill remains
 ## Evaluator-driven lifecycle
 
 The [learning evaluator](EVALUATOR.md) can automatically create, update, or deprecate skills after each subagent turn. When `enable_evaluator: true` in config, the evaluator runs after every completed turn and may produce `SkillOperation` decisions that directly modify the skill store.
+
+## Tool filtering
+
+Not every tool is sent to the LLM on every call. Tools are gated by a **core + skill-allowlist** pattern system to keep the tool list under the ~20-tool accuracy threshold.
+
+### Core tool set
+
+`CORE_TOOL_PATTERNS` in `core.py` defines tools that are **always available** regardless of which skills are active:
+
+| Pattern | Tools |
+|---------|-------|
+| `memory__search`, `memory__save`, `memory__save_turn` | 3 memory read/write tools |
+| `skill__list`, `skill__get` | 2 skill discovery tools |
+| `plan__get`, `plan__list` | 2 plan read-only tools |
+| `timer__*` | All timer tools |
+| `scheduler__*` | All scheduler tools |
+
+`session__scratchpad_write` is also always available (prepended separately). This gives ~14-16 always-on tools — under the 20-tool threshold.
+
+### Skill-gated tools
+
+When a skill has `tools_allowlist` set, its patterns are **merged with core** when that skill is active. Tools not matching any core or active-skill pattern are invisible to the LLM.
+
+**Example**: A `web_research` skill with `tools_allowlist: ["web__*", "playwright__*"]` makes web and browser tools available only when that skill is matched.
+
+**`tools_allowlist = null`** → no additional tools beyond core for this skill.
+
+### Computation flow
+
+1. `SkillMatcher.find_relevant_skills(goal)` matches skills at spawn time
+2. `_list_openai_tools(skill_names)` merges `CORE_TOOL_PATTERNS` + each active skill's `tools_allowlist`
+3. `ToolRegistry.list_openai_specs(patterns)` filters via `fnmatch` union matching
+4. Only matched tool schemas are sent to the LLM
+
+### Current limitations
+
+- Skills are matched **once at spawn time** — if the conversation topic shifts, new skills are not discovered mid-run
+- There is no runtime tool for the LLM to request loading a skill it hasn't been matched with
+- The Tier 1 skill catalog (`build_skill_catalog_message`) exists in code but is not wired into the prompt flow
 
 ## Storage
 

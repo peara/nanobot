@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
-from nanobot.skills.injection import build_skill_messages
+from nanobot.skills.injection import build_skill_messages, build_tool_catalog_message
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
 
 if TYPE_CHECKING:
@@ -16,6 +16,11 @@ if TYPE_CHECKING:
     from nanobot.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Skill CRUD tool names that indicate the agent can create/update skills.
+# When these tools are in the active tool set, we inject the tool catalog
+# so the LLM can discover tool names for filling tools_allowlist.
+SKILL_CRUD_TOOL_NAMES = {"skill__create", "skill__update"}
 
 
 @dataclass
@@ -103,11 +108,19 @@ class SubagentManager:
                 if skill_messages:
                     logger.info("Injecting %d skill messages for run_id=%s", len(skill_messages), run.id)
 
-        # Insert skill messages after only the first system message (static prompt)
+        # Insert skill messages (and optionally tool catalog) after the first system message
         # so they sit between the cacheable static prefix and the dynamic time block.
-        if skill_messages and messages:
+        inject_messages: list[dict] = list(skill_messages)
+        tool_names_in_run = {t["function"]["name"] for t in tools if "function" in t}
+        if SKILL_CRUD_TOOL_NAMES & tool_names_in_run:
+            catalog_msg = build_tool_catalog_message(self._tools)
+            if catalog_msg:
+                inject_messages.append(catalog_msg)
+                logger.info("Injecting tool catalog for run_id=%s", run.id)
+
+        if inject_messages and messages:
             insert_at = 1 if str(messages[0].get("role", "")) == "system" else 0
-            enhanced_messages = messages[:insert_at] + skill_messages + messages[insert_at:]
+            enhanced_messages = messages[:insert_at] + inject_messages + messages[insert_at:]
         else:
             enhanced_messages = messages
 

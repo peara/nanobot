@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from nanobot.skills.models import Skill
+from nanobot.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from nanobot.prompts import PromptStore
@@ -83,6 +85,40 @@ def build_skill_catalog_message(skills: list[Skill]) -> dict[str, str] | None:
         if len(skill.description) > 100:
             desc = desc[:97] + "..."
         lines.append(f"- {skill.name}: {desc}")
+
+    content = "\n".join(lines)
+    return {"role": "system", "content": content}
+
+
+def build_tool_catalog_message(registry: ToolRegistry) -> dict[str, str] | None:
+    """Build a system message listing all registered tools grouped by namespace prefix.
+
+    Groups tool names by their namespace prefix (the part before ``__``),
+    sorts groups and tools alphabetically, and formats them as a compact catalog.
+
+    Args:
+        registry: ToolRegistry instance to enumerate tools from
+
+    Returns:
+        System message dict with tool catalog, or None if registry has no tools
+    """
+    tools = registry.list_tools(patterns=None)
+    if not tools:
+        return None
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for tool in tools:
+        name = tool.name
+        if "__" in name:
+            prefix = name.split("__", 1)[0]
+        else:
+            prefix = name
+        groups[prefix].append(name)
+
+    lines = ["Available tools:"]
+    for prefix in sorted(groups):
+        tools_str = ", ".join(sorted(groups[prefix]))
+        lines.append(f"- {prefix}: {tools_str}")
 
     content = "\n".join(lines)
     return {"role": "system", "content": content}
