@@ -39,6 +39,28 @@ from nanobot.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
+# Tool name patterns that are always available regardless of skill matching.
+# These form the "core tool set" — essential tools the agent needs on every turn.
+# Keep this under ~20 patterns to stay below the tool-count accuracy threshold.
+# session__scratchpad_write is not listed here because it's not in ToolRegistry;
+# it's always prepended separately by _list_openai_tools().
+CORE_TOOL_PATTERNS: list[str] = [
+    # Memory (essential for context retrieval and persistence)
+    "memory__search",
+    "memory__save",
+    "memory__save_turn",
+    # Skill management (essential for skill discovery)
+    "skill__list",
+    "skill__get",
+    # Plan read-only (agent may always need to check plan status)
+    "plan__get",
+    "plan__list",
+    # Timer (utility needed across conversations)
+    "timer__*",
+    # Scheduler (utility needed across conversations)
+    "scheduler__*",
+]
+
 
 @dataclass
 class ActiveRequest:
@@ -223,7 +245,8 @@ class BotCore:
             {"role": "user", "content": prompt},
         ]
         run = self.subagent_manager.spawn(scope=scoped_id, goal=prompt)
-        result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
+        skill_names = self._get_active_skill_names(run.id)
+        result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
         msg = SubagentResultMessage(
             run_id=result.run_id,
             parent_scope=scoped_id,
@@ -254,7 +277,8 @@ class BotCore:
             messages.extend(history)
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
-            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools())
+            skill_names = self._get_active_skill_names(run.id)
+            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
 
             final_reply = str(result.reply or "")
             if not final_reply.strip():
@@ -300,7 +324,21 @@ class BotCore:
             messages.append({"role": "system", "content": user_content})
         return messages
 
-    def _list_openai_tools(self, patterns: list[str] | None = None) -> list[dict]:
+    def _get_active_skill_names(self, run_id: str) -> list[str]:
+        active_skills_data = self.contexts.get("subagent_run", run_id, "active_skills")
+        if active_skills_data and isinstance(active_skills_data, dict):
+            skill_names = active_skills_data.get("skills", [])
+            if isinstance(skill_names, list):
+                return skill_names
+        return []
+
+    def _list_openai_tools(self, skill_names: list[str] | None = None) -> list[dict[str, Any]]:
+        patterns = list(CORE_TOOL_PATTERNS)
+        if skill_names:
+            for name in skill_names:
+                skill = self.skills.get_by_name(name)
+                if skill and skill.is_active and skill.tools_allowlist:
+                    patterns.extend(skill.tools_allowlist)
         return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]
 
     def _build_context_report(self, scope: str) -> str:

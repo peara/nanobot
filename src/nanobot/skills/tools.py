@@ -157,6 +157,15 @@ class SkillCreateTool(Tool):
                     "items": {"type": "string"},
                     "description": "Regex patterns for pattern mode",
                 },
+                "tools_allowlist": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Tool name patterns this skill should make available (fnmatch wildcards). "
+                        "When None, this skill adds no additional tools beyond the core set. "
+                        "Example: ['web__*', 'playwright__*']"
+                    ),
+                },
                 "priority": {
                     "type": "integer",
                     "description": "Higher priority skills are loaded first (default: 0)",
@@ -171,6 +180,7 @@ class SkillCreateTool(Tool):
         instructions = str(args.get("instructions", ""))
         trigger_mode = str(args.get("trigger_mode", "pattern"))
         trigger_patterns = args.get("trigger_patterns")
+        tools_allowlist = args.get("tools_allowlist")
         priority = int(args.get("priority", 0))
 
         if not name or not description or not instructions:
@@ -179,6 +189,9 @@ class SkillCreateTool(Tool):
         if trigger_patterns and not isinstance(trigger_patterns, list):
             trigger_patterns = [str(trigger_patterns)]
 
+        if tools_allowlist and not isinstance(tools_allowlist, list):
+            tools_allowlist = [str(tools_allowlist)]
+
         try:
             skill = self._store.create(
                 name=name,
@@ -186,6 +199,7 @@ class SkillCreateTool(Tool):
                 instructions=instructions,
                 trigger_mode=trigger_mode,
                 trigger_patterns=trigger_patterns,
+                tools_allowlist=tools_allowlist,
                 priority=priority,
                 is_active=True,
             )
@@ -247,6 +261,14 @@ class SkillUpdateTool(Tool):
                     "items": {"type": "string"},
                     "description": "New trigger patterns",
                 },
+                "tools_allowlist": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "New tool name patterns this skill should make available (fnmatch wildcards). "
+                        "When None, this skill adds no additional tools beyond the core set."
+                    ),
+                },
                 "priority": {
                     "type": "integer",
                     "description": "New priority",
@@ -270,6 +292,10 @@ class SkillUpdateTool(Tool):
         if trigger_patterns and not isinstance(trigger_patterns, list):
             trigger_patterns = [str(trigger_patterns)]
 
+        tools_allowlist = args.get("tools_allowlist")
+        if tools_allowlist and not isinstance(tools_allowlist, list):
+            tools_allowlist = [str(tools_allowlist)]
+
         new_trigger_mode = args.get("trigger_mode")
 
         updated = self._store.update(
@@ -278,6 +304,7 @@ class SkillUpdateTool(Tool):
             instructions=args.get("instructions"),
             trigger_mode=new_trigger_mode,
             trigger_patterns=trigger_patterns,
+            tools_allowlist=tools_allowlist,
             priority=args.get("priority"),
             is_active=args.get("is_active"),
         )

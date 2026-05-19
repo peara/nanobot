@@ -90,6 +90,14 @@ reset-scope scope config=config:
 resync-skills config=config:
     uv run python -m nanobot.debug_cli --config {{ config }} skills-resync
 
+# Seed predefined skills into the database (idempotent)
+seed-skills config=config:
+    uv run python scripts/seed_skills.py --config {{ config }}
+
+# Force re-seed skills (deletes existing seed skills first)
+seed-skills-force config=config:
+    uv run python scripts/seed_skills.py --config {{ config }} --force
+
 # List scheduled tasks
 scheduler-list config=config:
     uv run python -m nanobot.debug_cli --config {{ config }} scheduler list
