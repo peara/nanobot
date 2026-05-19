@@ -97,10 +97,10 @@ Native `VectorStore` backed by Qdrant with three collections: memories (facts/pr
 
 ## Quick start
 
-1. Install `uv` and sync dependencies:
+1. Install [uv](https://docs.astral.sh/uv/) and [just](https://github.com/casey/just), then set up:
 
 ```bash
-uv sync --group dev
+just setup
 ```
 
 2. Copy config and set env vars:
@@ -113,7 +113,7 @@ export TELEGRAM_BOT_TOKEN="..."
 3. Run:
 
 ```bash
-python -m nanobot.main --config config.yaml
+just run
 ```
 
 An OpenAI-compatible endpoint serving embedding models (e.g. LM Studio, Ollama) must be running at the configured URL for memory, skills, and web scripts to work. See `config.mem0.yaml` for embedder settings.
@@ -145,35 +145,28 @@ The `interact_page` tool (via `src/web_agent/`) provides structured page interac
 ## Debug CLI
 
 ```bash
-uv run python -m nanobot.debug_cli --config config.yaml <command> [options]
+just debug scopes
 ```
 
 | Command | Description |
 |---------|-------------|
-| `scopes` | List message scopes |
-| `ctx --scope <scope> [--latest] [--full] [--tail N]` | Show context report for a scope |
-| `reset --scope <scope> [--latest]` | Clear message history for a scope |
-| `scheduler list` | List scheduled tasks |
-| `scheduler clear` | Delete all scheduled tasks |
-| `scheduler clear-invalid [--purge-messages]` | Remove tasks with invalid placeholder scopes |
-| `plan list [--limit N]` | List recent plan_run context traces |
-| `plan show --run-id <id> [--latest]` | Show detailed plan run fields |
-| `plans list [--limit N]` | List saved persistent plans |
-| `plans show <id>` | Show plan details (goal, steps, stats) |
-| `skills-resync` | Re-index intelligent skills to mem0 |
-| `browse --scope <scope> [--latest] [--limit N] [--full]` | Browse conversation history |
-| `tools --scope <scope> [--latest] [--limit N] [--full]` | Show tool call history |
+| `just debug scopes` | List message scopes |
+| `just debug ctx <scope>` | Show context report for a scope |
+| `just scheduler-list` | List scheduled tasks |
+| `just plan-list` | List recent plan run context traces |
+
+Full command reference: `just --list`. For direct CLI usage, see `uv run python -m nanobot.debug_cli --config config.yaml --help`.
 
 ## Quick reset
 
 ```bash
-uv run python reset_state.py              # clear scheduler + history + context + mem0
-uv run python reset_state.py --dry-run    # preview counts only
-uv run python reset_state.py --skip-mem0  # clear local SQLite only, keep mem0
+just reset              # clear scheduler + history + context + mem0
+just reset-dry          # preview counts only
+just reset-local        # clear local SQLite only, keep mem0
 ```
 
 After a reset, re-index intelligent skills:
 
 ```bash
-uv run python -m nanobot.debug_cli --config config.yaml skills-resync
+just resync-skills
 ```
