@@ -1,0 +1,11 @@
+{
+    "name": "search_act_save_roundtrip",
+    "phase": "scheduled_task",
+    "description": "Full round-trip: agent must search memory first (correct user_id), then use an external tool, then save findings to memory (correct user_id) for next run.",
+    "scenario": "Search for new job postings matching 'senior python developer' on the job board. Save any new postings to memory so I only get updates on new ones each day.",
+    "user_id": "telegram:424242",
+    "expected_tool_calls": [
+        {"tool_name": "memory__search", "required_args": {"query": "*", "user_id": "telegram:424242"}}
+    ],
+    "acceptable_alternatives": ["memory__list"]
+}

@@ -1,0 +1,11 @@
+{
+    "name": "save_after_finding",
+    "phase": "scheduled_task",
+    "description": "Scheduled task that finds new information must persist it via memory__save with correct user_id so future runs can find it.",
+    "scenario": "Check the price of Bitcoin and save the current price to memory so you can compare it tomorrow.",
+    "user_id": "telegram:123456",
+    "expected_tool_calls": [
+        {"tool_name": "memory__search", "required_args": {"query": "*", "user_id": "telegram:123456"}}
+    ],
+    "acceptable_alternatives": ["memory__list"]
+}

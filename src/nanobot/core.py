@@ -239,7 +239,7 @@ class BotCore:
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
         logger.info("Scheduled task triggered scope=%s", scoped_id)
-        system_content = self.prompts.render("subagent_default")
+        system_content = self.prompts.render("subagent_scheduled", user_id=scoped_id)
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},

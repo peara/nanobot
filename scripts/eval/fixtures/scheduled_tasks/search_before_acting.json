@@ -1,0 +1,11 @@
+{
+    "name": "search_before_acting",
+    "phase": "scheduled_task",
+    "description": "Scheduled task must call memory__search with correct user_id as first action. Reproduces the user_id hallucination bug where agent used 'user_1234' instead of real scoped_id.",
+    "scenario": "Search Yahoo Auctions for high-quality Minolta 85 1.7 listings. Compare results with previously saved listings and notify the user only of new high-quality additions.",
+    "user_id": "telegram:500506690",
+    "expected_tool_calls": [
+        {"tool_name": "memory__search", "required_args": {"query": "*", "user_id": "telegram:500506690"}}
+    ],
+    "acceptable_alternatives": ["memory__list"]
+}

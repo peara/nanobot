@@ -1,0 +1,11 @@
+{
+    "name": "no_action_when_nothing_new",
+    "phase": "scheduled_task",
+    "description": "When there is nothing to do, the agent should still check memory first (correct user_id) before concluding NO_ACTION_NEEDED.",
+    "scenario": "Check if there are any new messages in the inactive channel. If nothing changed, no action is needed.",
+    "user_id": "telegram:999888",
+    "expected_tool_calls": [
+        {"tool_name": "memory__search", "required_args": {"query": "*", "user_id": "telegram:999888"}}
+    ],
+    "acceptable_alternatives": ["memory__list"]
+}

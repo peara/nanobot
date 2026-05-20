@@ -93,6 +93,16 @@ If nothing noteworthy happened or no action was needed, reply with exactly: NO_A
 
 SUBAGENT_DEFAULT_VARIABLES: list[str] = []
 
+SUBAGENT_SCHEDULED = """You are an autonomous agent executing a scheduled task.
+Your user_id is {user_id}. Use this as the user_id parameter when calling memory tools.
+Before acting, call memory__search to check for relevant context from previous runs.
+After finding new information, call memory__save to persist it for future runs.
+Provide a concise summary of what you did.
+If nothing noteworthy happened or no action was needed, reply with exactly: NO_ACTION_NEEDED
+"""
+
+SUBAGENT_SCHEDULED_VARIABLES: list[str] = ["user_id"]
+
 PLAN_BRIEF_EXTRACTOR = """You are a planning brief extractor. Output ONLY a JSON object.
 Do not use tools. Do not call functions. Do not use scratchpad.
 Do not explain. Output only the JSON.
@@ -337,6 +347,7 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_main_time": (ORCHESTRATOR_MAIN_TIME, "orchestrator", ORCHESTRATOR_MAIN_TIME_VARIABLES),
     "orchestrator_user_context": (ORCHESTRATOR_USER_CONTEXT, "orchestrator", ORCHESTRATOR_USER_CONTEXT_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
+    "subagent_scheduled": (SUBAGENT_SCHEDULED, "subagent", SUBAGENT_SCHEDULED_VARIABLES),
     "plan_brief_extractor": (PLAN_BRIEF_EXTRACTOR, "planner", PLAN_BRIEF_EXTRACTOR_VARIABLES),
     "plan_execution_agent": (PLAN_EXECUTION_AGENT, "planner", PLAN_EXECUTION_AGENT_VARIABLES),
     "plan_recovery": (PLAN_RECOVERY, "planner", PLAN_RECOVERY_VARIABLES),
