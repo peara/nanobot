@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.constants import ChatAction
 
 from nanobot.channels.base import Channel, IncomingMessage
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramChannel(Channel):
@@ -56,6 +60,14 @@ class TelegramChannel(Channel):
         normalized = self._normalize_for_telegram(text)
         for chunk in self._chunk_text(normalized):
             await self.app.bot.send_message(chat_id=chat_id, text=chunk)
+
+    async def send_typing(self, chat_id: str) -> None:
+        if self.app is None:
+            return
+        try:
+            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Failed to send typing indicator chat_id=%s", chat_id, exc_info=True)
 
     def _normalize_for_telegram(self, text: str) -> str:
         # Convert common HTML line breaks produced by models.

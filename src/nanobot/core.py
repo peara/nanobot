@@ -265,6 +265,7 @@ class BotCore:
             started_at=datetime.now(),
             current_step="processing user message",
         )
+        typing_task = asyncio.create_task(self._typing_heartbeat(scope))
         try:
             self.memory.add_message(scope, "user", user_text)
             self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
@@ -295,7 +296,29 @@ class BotCore:
 
             await self._evaluate_turn(scope, user_text, result)
         finally:
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
             self.active_requests.pop(scope, None)
+
+    async def _typing_heartbeat(self, scope: str) -> None:
+        """Periodically send a typing indicator to the channel while processing.
+
+        Telegram's chat_action typing indicator expires after 5 seconds, so
+        we re-send every 4 seconds to keep it alive. The task is cancelled
+        by _process() when the agent run completes.
+        """
+        while True:
+            try:
+                channel_name, raw_chat_id = unscoped_chat_id(scope)
+                channel = self.channels.get(channel_name)
+                if channel is not None:
+                    await channel.send_typing(raw_chat_id)
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("typing_heartbeat failed scope=%s", scope, exc_info=True)
+            await asyncio.sleep(4)
 
     def _system_messages(self, user_id: str = "") -> list[dict[str, str]]:
         """Build the ordered list of system messages for prompt caching.
