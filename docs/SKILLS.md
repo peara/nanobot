@@ -41,13 +41,76 @@ Skill activates when any of its `trigger_patterns` regex matches the user's mess
 
 Skill activates when the user's goal is semantically similar to the skill's description, as determined by vector similarity search. No explicit patterns needed — the `SkillVectorStore` matches the goal against skill embeddings.
 
-**How it works**: `SkillMatcher.find_by_intelligent(goal)` calls `SkillVectorStore.search_skills(goal)`, which embeds the goal, searches the `nanobot_skills` Qdrant collection, and returns matching skill names. Those names are then resolved to full `Skill` objects from SQLite.
+**How it works**: `SkillMatcher.find_by_intelligent(goal)` calls `SkillVectorStore.search_skills(goal)`, which:
+1. Prepends a retrieval prompt to the query (see [Embedding and retrieval prompt](#embedding-and-retrieval-prompt))
+2. Embeds the prompted query via the configured embedding model
+3. Searches the `nanobot_skills` Qdrant collection
+4. Filters results through the configured `ScoreFilter` (see [Score filtering](#score-filtering))
+5. Returns matching skill names, which are resolved to full `Skill` objects from SQLite
 
 **Re-indexing**: If the vector store is unavailable (no `config.mem0.yaml`), `intelligent` skills gracefully degrade — they simply won't match. Re-index with:
 
 ```bash
 uv run python -m nanobot.debug_cli --config config.yaml skills-resync
 ```
+
+## Embedding and retrieval prompt
+
+NanoBot uses `mxbai-embed-large` (1024 dims) for skill embeddings. This model requires a retrieval prompt prefix on **queries** (not documents) for optimal performance:
+
+```
+Represent this sentence for searching relevant passages:
+```
+
+Without this prefix, mxbai-embed-large produces inflated similarity scores for unrelated content. Empirical testing shows baseline cosine similarity of 0.35–0.50 between completely unrelated skill descriptions and user queries, making raw scores unreliable for threshold-based filtering.
+
+The prefix is applied in `SkillVectorStore.search_skills()` via `_build_query()`, which prepends `SKILL_RETRIEVAL_PROMPT` when `use_retrieval_prompt=True` (the default). It is **not** applied during document embedding (`store_skill()`), consistent with the model's asymmetric design — documents are embedded as-is, queries get the prefix.
+
+**Known gap**: The retrieval prompt is only applied to skill searches. Memory/fact searches via `mem0 Memory.search()` and web script searches via `WebScriptVectorStore.search_scripts()` both use `VectorStore.search_text()` or mem0's internal embedder, which do **not** prepend the prompt. This means memory and web script searches also suffer from inflated baseline similarity, though the impact has not been quantified yet.
+
+## Score filtering
+
+Raw vector similarity scores from `mxbai-embed-large` cannot be used directly — even completely unrelated queries score 0.35–0.50. Score filtering is the mechanism that discards false positives.
+
+The `ScoreFilter` abstraction (`src/nanobot/skills/score_filter.py`) provides a pluggable interface:
+
+```python
+class ScoreFilter(ABC):
+    @abstractmethod
+    def filter_results(self, results: list[dict]) -> list[dict]: ...
+```
+
+Three implementations:
+
+| Filter | Behavior | Use case |
+|--------|----------|----------|
+| `ThresholdFilter` | Passes all results through (identity filter) | Baseline — no filtering |
+| `CutoffFilter(min_score)` | Drops results below an absolute threshold | When you want a hard floor |
+| `RatioFilter(min_top_ratio, min_score)` | Keeps results within X% of the top score **and** above a floor | Production default — adapts to score distribution |
+
+### Why RatioFilter is the default
+
+Single-threshold filters don't work well with mxbai-embed-large:
+
+- A high cutoff (e.g., 0.65) correctly rejects unrelated queries but also rejects some relevant matches that score 0.50–0.55.
+- A low cutoff (e.g., 0.40) keeps relevant matches but also accepts unrelated skills at 0.42–0.49.
+
+`RatioFilter(min_top_ratio=0.7, min_score=0.45)` solves this with two complementary conditions:
+1. **`min_top_ratio=0.7`** — a result must score at least 70% of the top result's score. This adapts to the score distribution: when the top result is genuinely relevant (0.70), unrelated results at 0.40 (57% ratio) are dropped. When the top is mediocre (0.50), results at 0.35 (70% ratio) still fail the floor.
+2. **`min_score=0.45`** — absolute floor. Even if a result satisfies the ratio, it must exceed this minimum. This catches the degenerate case where all results are poor (e.g., "tell me a joke" where the top score is only 0.39).
+
+### Configuration in core.py
+
+The production default is set in `BotCore.__init__`:
+
+```python
+SkillVectorStore(
+    self.vector_store,
+    score_filter=RatioFilter(min_top_ratio=0.7, min_score=0.45),
+)
+```
+
+To swap to a different strategy (e.g., softmax-based selection), implement a new `ScoreFilter` subclass and change this one line.
 
 ## Matching flow
 
@@ -146,5 +209,20 @@ When a skill has `tools_allowlist` set, its patterns are **merged with core** wh
 |-----------|---------|----------|---------|
 | SkillStore | SQLite | `skills` table | Definitions, triggers, metadata (source of truth) |
 | SkillVectorStore | Qdrant | `nanobot_skills` collection | Semantic search index for `intelligent` mode |
+| ScoreFilter | (in-memory) | `skills/score_filter.py` | Pluggable filtering of vector search results |
 
 The `skills` table has indexes on `name`, `is_active`, and `trigger_mode` for efficient querying.
+
+### Intelligent search pipeline
+
+```
+User goal
+  → SkillMatcher.find_by_intelligent(goal)
+    → SkillVectorStore.search_skills(goal)
+      → _build_query(goal)               # prepend mxbai retrieval prompt
+      → VectorStore.search_text(...)      # embed + Qdrant search
+      → ScoreFilter.filter_results(...)   # drop false positives
+      → return skill names
+    → SkillStore.get_by_name(...)         # resolve to full Skill objects
+    → filter is_active=True
+```
