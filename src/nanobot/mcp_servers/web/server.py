@@ -194,6 +194,16 @@ def create_script(
     response templates. Use skills for reusable workflow, routing, param mapping,
     and user-facing response policy. If params_schema is empty, treat params as
     unspecified/flexible rather than unsupported.
+
+    Available Python builtins: all, any, bool, dict, enumerate, Exception, float,
+    int, isinstance, len, list, max, min, next, range, set, sorted, str, sum, tuple.
+    Other builtins (abs, print, type, round, KeyError, ValueError, etc.) are NOT
+    available and will cause NameError at runtime. Only use the builtins listed above.
+
+    Error handling: never use blanket `except Exception: continue` — it silently
+    swallows NameError from unavailable builtins and drops all items. Use specific
+    exception types (e.g. `except (KeyError, TypeError)`) or collect errors in an
+    `errors` list in the return dict so they are visible.
     """
     if not name.strip() or not description.strip() or not code.strip():
         return {"ok": False, "error": "invalid_input", "message": "name, description, and code are required"}

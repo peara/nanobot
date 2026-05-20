@@ -10,34 +10,17 @@ from typing import Any
 from playwright.async_api import Page
 
 from nanobot.web_scripts.models import WebScript
-from nanobot.web_scripts.validator import NanoScriptValidationError, NanoScriptValidator
+from nanobot.web_scripts.validator import SAFE_BUILTIN_NAMES, NanoScriptValidationError, NanoScriptValidator
 from web_agent.browser import BrowserInteractor
 
-SAFE_BUILTINS = MappingProxyType(
-    {
-        "__import__": None,
-        "all": all,
-        "any": any,
-        "bool": bool,
-        "dict": dict,
-        "enumerate": enumerate,
-        "Exception": Exception,
-        "float": float,
-        "int": int,
-        "isinstance": isinstance,
-        "len": len,
-        "list": list,
-        "max": max,
-        "min": min,
-        "next": next,
-        "range": range,
-        "set": set,
-        "sorted": sorted,
-        "str": str,
-        "sum": sum,
-        "tuple": tuple,
-    }
-)
+
+def _build_safe_builtins() -> dict[str, Any]:
+    import builtins as _builtins
+
+    return {"__import__": None} | {name: getattr(_builtins, name) for name in SAFE_BUILTIN_NAMES}
+
+
+SAFE_BUILTINS = MappingProxyType(_build_safe_builtins())
 RESERVED_RESPONSE_KEYS = {"answer", "answer_template", "message_to_user", "summary"}
 
 
