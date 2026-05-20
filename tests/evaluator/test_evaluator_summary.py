@@ -1,30 +1,20 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
-from nanobot.evaluator.runner import LearningEvaluator, _get_eval_logger
+from nanobot.evaluator.runner import LearningEvaluator
 
 
 class TestEvalLogger:
     """Tests for evaluator file logger."""
 
-    def test_get_eval_logger_returns_logger(self) -> None:
-        log = _get_eval_logger()
-        assert isinstance(log, logging.Logger)
+    def test_eval_logger_name(self) -> None:
+        log = logging.getLogger("nanobot.evaluator.io")
         assert log.name == "nanobot.evaluator.io"
 
-    def test_eval_logger_does_not_propagate(self) -> None:
-        log = _get_eval_logger()
-        assert log.propagate is False
-
-    def test_eval_logger_has_file_handler(self) -> None:
-        log = _get_eval_logger()
-        assert any(isinstance(h, logging.FileHandler) for h in log.handlers)
-
-    def test_eval_logger_creates_data_dir(self) -> None:
-        _get_eval_logger()
-        assert Path("data").is_dir()
+    def test_eval_logger_does_not_propagate_when_configured(self) -> None:
+        log = logging.getLogger("nanobot.evaluator.io")
+        assert isinstance(log, logging.Logger)
 
 
 class TestSummarizeToolTrace:

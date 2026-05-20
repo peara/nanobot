@@ -36,6 +36,27 @@ class McpServerConfig:
 
 
 @dataclass
+class HandlerConfig:
+    name: str
+    type: str
+    level: str = "NOTSET"
+    options: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LoggerConfig:
+    handlers: list[str] = field(default_factory=list)
+    level: str = "NOTSET"
+
+
+@dataclass
+class LoggingConfig:
+    format: str
+    handlers: list[HandlerConfig] = field(default_factory=list)
+    loggers: dict[str, LoggerConfig] = field(default_factory=dict)
+
+
+@dataclass
 class AppConfig:
     assistant_name: str
     database_path: str
@@ -54,6 +75,7 @@ class AppConfig:
     enable_evaluator: bool = False
     prompt_db_path: str = "./data/prompts.db"
     mem0_config_path: str | None = None
+    logging: LoggingConfig | None = None
 
 
 def _expand_env_value(value: Any) -> Any:
@@ -93,4 +115,38 @@ def load_config(config_path: str) -> AppConfig:
         enable_evaluator=bool(data.get("enable_evaluator", False)),
         prompt_db_path=data.get("prompt_db_path", "./data/prompts.db"),
         mem0_config_path=data.get("mem0_config_path"),
+        logging=_parse_logging(data.get("logging")),
+    )
+
+
+def _normalize_level(value: Any) -> str:
+    if isinstance(value, int):
+        import logging
+        return logging.getLevelName(value)
+    return str(value)
+
+
+def _parse_logging(raw: dict[str, Any] | None) -> LoggingConfig | None:
+    if raw is None:
+        return None
+    handlers = [
+        HandlerConfig(
+            name=h["name"],
+            type=h["type"],
+            level=_normalize_level(h.get("level", "NOTSET")),
+            options=h.get("options", {}),
+        )
+        for h in raw.get("handlers", [])
+    ]
+    loggers = {
+        name: LoggerConfig(
+            handlers=cfg.get("handlers", []),
+            level=_normalize_level(cfg.get("level", "NOTSET")),
+        )
+        for name, cfg in raw.get("loggers", {}).items()
+    }
+    return LoggingConfig(
+        format=raw.get("format", "%(asctime)s %(levelname)s %(name)s - %(message)s"),
+        handlers=handlers,
+        loggers=loggers,
     )

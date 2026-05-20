@@ -13,6 +13,36 @@ working_timezone: "Asia/Ho_Chi_Minh"
 enable_tool_stats: false
 enable_evaluator: false
 
+# Logging configuration — required. See docs/logging.md for full schema.
+logging:
+  format: "%(asctime)s %(levelname)s %(name)s - %(message)s"
+  handlers:
+    - name: console
+      type: console
+      level: INFO
+    - name: file
+      type: file
+      level: DEBUG
+      options:
+        filepath: "./data/nanobot.log"
+        max_bytes: 2000000
+        backup_count: 3
+        encoding: utf-8
+    # Uncomment to isolate evaluator LLM I/O to its own log file:
+    # - name: evaluator_file
+    #   type: file
+    #   level: DEBUG
+    #   options:
+    #     filepath: "./data/evaluator.log"
+    #     max_bytes: 2000000
+    #     backup_count: 3
+    #     encoding: utf-8
+  loggers: {}
+    # Uncomment to route evaluator logs to evaluator_file only (propagate=False):
+    # nanobot.evaluator.io:
+    #   handlers: [evaluator_file]
+    #   level: DEBUG
+
 model:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"

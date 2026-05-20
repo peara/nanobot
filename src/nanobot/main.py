@@ -2,35 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import signal
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from nanobot.channels.base import Channel
 from nanobot.channels.github import GithubChannel
 from nanobot.channels.telegram import TelegramChannel
 from nanobot.config import load_config
 from nanobot.core import BotCore
-
-
-def setup_logging() -> None:
-    log_dir = Path("data")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "nanobot.log"
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
-
-    file_handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    root.handlers.clear()
-    root.addHandler(file_handler)
-    root.addHandler(console_handler)
+from nanobot.logging import setup_logging
 
 
 def build_channels(config) -> tuple[dict[str, Channel], list]:
@@ -81,8 +60,7 @@ def build_channels(config) -> tuple[dict[str, Channel], list]:
     return channels, extra_hooks
 
 
-async def run(config_path: str) -> None:
-    config = load_config(config_path)
+async def run(config) -> None:
     channels, extra_hooks = build_channels(config)
     core = BotCore(config, channels)
 
@@ -113,11 +91,12 @@ async def run(config_path: str) -> None:
 
 
 def main() -> None:
-    setup_logging()
     parser = argparse.ArgumentParser(description="Run nanobot")
     parser.add_argument("--config", default="config.yaml", help="Path to config yaml")
     args = parser.parse_args()
-    asyncio.run(run(args.config))
+    config = load_config(args.config)
+    setup_logging(config)
+    asyncio.run(run(config))
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ Use this when:
 All persistent state lives in SQLite:
 - Main DB (`data/nanobot.db`): messages, contexts (including plan_run traces)
 - Scheduler DB (`data/scheduler.db`): scheduled tasks
-- Log files (`data/nanobot.log`, `.log.1`, `.log.2`, `.log.3`): RotatingFileHandler with 2MB max, 3 backups
+- Log files (`data/nanobot.log` by default, configured in `logging` section of `config.yaml`): rotation and paths are config-driven
 
 ### 2. Scopes are hierarchical
 - Chat scope: `telegram:<chat_id>` or `github:<issue_id>`
@@ -101,7 +101,7 @@ SELECT chat_id, cron_expr, enabled FROM scheduled_tasks;
 
 ### Read log files
 ```bash
-# View latest bot logs (rotating file, max 2MB per file, 3 backups)
+# View latest bot logs (paths and rotation configured in config.yaml → logging)
 tail -f data/nanobot.log
 
 # View specific backup
