@@ -1,0 +1,8 @@
+{
+  "name": "ambiguous_find",
+  "description": "Ambiguous 'find' request - could mean web search or in-file find. Tests false positive on 'find' keyword.",
+  "query": "help me find a good restaurant nearby",
+  "expected_skills": [],
+  "unexpected_skills": [],
+  "min_expected_score": 0.0
+}

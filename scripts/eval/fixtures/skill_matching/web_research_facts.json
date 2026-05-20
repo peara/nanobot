@@ -1,0 +1,8 @@
+{
+  "name": "web_research_facts",
+  "description": "Fact-checking request - should match web_research",
+  "query": "check online if Paris is the capital of France",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": [],
+  "min_expected_score": 0.4
+}

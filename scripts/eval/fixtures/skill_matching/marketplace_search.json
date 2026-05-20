@@ -1,0 +1,8 @@
+{
+  "name": "marketplace_search",
+  "description": "Second-hand marketplace search - should match marketplace_search_limitation and web_research. Tests platform-specific skill.",
+  "query": "search for second-hand electronics on online marketplace",
+  "expected_skills": ["marketplace_search_limitation", "web_research"],
+  "unexpected_skills": ["hw_constraint_filter", "memory_scoping_workflow"],
+  "min_expected_score": 0.5
+}

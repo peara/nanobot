@@ -1,0 +1,8 @@
+{
+  "name": "unrelated_math",
+  "description": "Math question - NO skill should match. Completely orthogonal to all skill domains.",
+  "query": "calculate 2^32 and explain binary representation",
+  "expected_skills": [],
+  "unexpected_skills": ["web_research", "marketplace_search_limitation", "auction_search_workflow", "script_structure_constraint"],
+  "min_expected_score": 0.0
+}

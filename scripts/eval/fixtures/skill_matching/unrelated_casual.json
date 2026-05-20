@@ -1,0 +1,8 @@
+{
+  "name": "unrelated_casual",
+  "description": "Casual conversation - NO skill should match. Tests that baseline similarity doesn't inject irrelevant skills.",
+  "query": "tell me a joke about programming",
+  "expected_skills": [],
+  "unexpected_skills": ["web_research", "marketplace_search_limitation", "auction_search_workflow", "listing_format_preference", "script_structure_constraint"],
+  "min_expected_score": 0.0
+}

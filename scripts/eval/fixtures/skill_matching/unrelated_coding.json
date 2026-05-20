@@ -1,0 +1,8 @@
+{
+  "name": "unrelated_coding",
+  "description": "Pure coding question - NO skill should match with high confidence. Baseline test for false positives.",
+  "query": "how do I fix this Python type error in my code",
+  "expected_skills": [],
+  "unexpected_skills": ["web_research", "marketplace_search_limitation", "auction_search_workflow", "listing_format_preference"],
+  "min_expected_score": 0.0
+}

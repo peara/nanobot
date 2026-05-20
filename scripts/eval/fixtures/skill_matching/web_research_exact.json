@@ -1,0 +1,8 @@
+{
+  "name": "web_research_exact",
+  "description": "Query that should strongly match web_research skill - direct web search request",
+  "query": "search the web for camera lens prices",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": [],
+  "min_expected_score": 0.5
+}

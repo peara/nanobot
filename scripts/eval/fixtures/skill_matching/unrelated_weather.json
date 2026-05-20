@@ -1,0 +1,8 @@
+{
+  "name": "unrelated_weather",
+  "description": "Weather question - NO skill should match. Pure off-topic query.",
+  "query": "what's the weather like today in Bangkok",
+  "expected_skills": [],
+  "unexpected_skills": ["web_research", "marketplace_search_limitation", "auction_search_workflow", "listing_format_preference"],
+  "min_expected_score": 0.0
+}

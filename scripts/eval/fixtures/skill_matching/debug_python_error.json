@@ -1,0 +1,8 @@
+{
+  "name": "debug_python_error",
+  "description": "Debugging question that should not match web-related skills. Tests that unrelated coding queries don't inject irrelevant skills.",
+  "query": "debug this Python type error",
+  "expected_skills": [],
+  "unexpected_skills": ["web_research", "auction_search_workflow", "marketplace_search_limitation"],
+  "min_expected_score": 0.0
+}

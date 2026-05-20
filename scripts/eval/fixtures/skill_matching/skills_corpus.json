@@ -1,0 +1,74 @@
+[
+  {
+    "name": "web_research",
+    "description": "Search the web, read web pages, and create reusable browser extraction scripts. Activate when the user asks to find information online, look something up, browse a website, search for prices, check facts, or compare items from web sources.",
+    "instructions": "Web research workflow — search first, read second, create scripts when reusable.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": ["search|lookup|look up|find info|browse|web|internet|url|website|price|check online|online|search for|find out|research|search web|google|bing|duckduckgo|auction|shopping|buy|compare|review"],
+    "tools_allowlist": ["web__*"],
+    "priority": 5
+  },
+  {
+    "name": "marketplace_search_limitation",
+    "description": "Constraints and limitations when searching marketplace and second-hand platforms with restricted access.",
+    "instructions": "When tasked with searching marketplace or second-hand platforms, avoid using external web search tools or 'site:' queries, as these platforms frequently block indexing and require user authentication. Instead, inform the user that these platforms are best accessed directly via their official apps or websites while logged in.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": null,
+    "priority": 0
+  },
+  {
+    "name": "memory_scoping_workflow",
+    "description": "Guidance for locating or deleting memories when general user-level searches are insufficient.",
+    "instructions": "When searching for memories, if a filtered search (e.g., using a specific category) and plural keywords fail to return results, implement a recovery strategy: broaden the search by removing the filter and using a singular version of the keyword.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": null,
+    "priority": 0
+  },
+  {
+    "name": "script_structure_constraint",
+    "description": "Technical requirements for creating extraction scripts via the browser automation tool.",
+    "instructions": "When using the browser script creation tool, the generated code must contain exactly one top-level asynchronous function with the specific signature required by the platform. Failure to follow this signature will result in a tool error.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": ["web__create_script"],
+    "priority": 0
+  },
+  {
+    "name": "trending_topics_workflow",
+    "description": "Retrieving trending topics and news from specific community forums and discussion boards.",
+    "instructions": "To retrieve current trending topics and news from a specific community, use the direct page reading tool for the forum's hot topics section.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": null,
+    "priority": 0
+  },
+  {
+    "name": "hw_constraint_filter",
+    "description": "Hardware constraints for local model recommendations and proactive filtering of technical updates.",
+    "instructions": "When providing news, technical updates, or model recommendations, proactively filter and highlight information relevant to the user's specific hardware constraints and stated technical interests to ensure high relevance.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": null,
+    "priority": 0
+  },
+  {
+    "name": "listing_format_preference",
+    "description": "User preference for the format of recommended listings, including direct URLs, price, and quality details.",
+    "instructions": "When providing listings, always include the direct URL, the price, and a short description highlighting key quality details and accessories.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": null,
+    "priority": 0
+  },
+  {
+    "name": "auction_search_workflow",
+    "description": "Optimized search and quality filtering for online auction platforms.",
+    "instructions": "Always use the quality search script for all online auction searches and tracking. Do not perform manual searches; the script is required to ensure correct quality filtering and to avoid hitting tool call limits during description extraction.",
+    "trigger_mode": "intelligent",
+    "trigger_patterns": [],
+    "tools_allowlist": ["web__*"],
+    "priority": 0
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "name": "auction_search_research",
+  "description": "Auction search research - should match auction_search_workflow highest, web_research second. Tests domain-specific skill ranking.",
+  "query": "research camera lens prices on auction sites",
+  "expected_skills": ["auction_search_workflow", "web_research"],
+  "unexpected_skills": ["hw_constraint_filter", "memory_scoping_workflow"],
+  "min_expected_score": 0.5
+}

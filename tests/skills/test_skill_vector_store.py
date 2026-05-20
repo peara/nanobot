@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
+from nanobot.skills.score_filter import CutoffFilter, RatioFilter
 from nanobot.vector_store import COLLECTION_SKILLS, VectorStore
 
 
@@ -58,7 +59,7 @@ class TestSkillVectorStore:
         mock_vs.search_text.assert_called_once()
         call_args = mock_vs.search_text.call_args
         assert call_args[0][0] == COLLECTION_SKILLS
-        assert call_args[0][1] == "I have a bug"
+        assert call_args[0][1].endswith("I have a bug")
         assert call_args[1]["limit"] == 3
 
     def test_search_skills_handles_empty_results(self) -> None:
@@ -70,6 +71,120 @@ class TestSkillVectorStore:
         results = mem0_store.search_skills("unknown topic", limit=5)
 
         assert len(results) == 0
+
+    def test_search_skills_prepends_retrieval_prompt(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.9, "metadata": {"skill_name": "test"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, use_retrieval_prompt=True)
+        mem0_store.search_skills("find bugs", limit=3)
+
+        call_args = mock_vs.search_text.call_args
+        assert call_args[0][1].startswith("Represent this sentence for searching relevant passages:")
+
+    def test_search_skills_skips_retrieval_prompt_when_disabled(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.9, "metadata": {"skill_name": "test"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, use_retrieval_prompt=False)
+        mem0_store.search_skills("find bugs", limit=3)
+
+        call_args = mock_vs.search_text.call_args
+        assert call_args[0][1] == "find bugs"
+
+    def test_search_skills_with_cutoff_filter(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.85, "metadata": {"skill_name": "web-research"}},
+            {"id": "2", "score": 0.42, "metadata": {"skill_name": "debug"}},
+            {"id": "3", "score": 0.30, "metadata": {"skill_name": "memory"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, score_filter=CutoffFilter(min_score=0.5))
+
+        results = mem0_store.search_skills("search the web", limit=3)
+
+        assert len(results) == 1
+        assert results[0] == "web-research"
+
+    def test_search_skills_with_ratio_filter(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.75, "metadata": {"skill_name": "web-research"}},
+            {"id": "2", "score": 0.55, "metadata": {"skill_name": "goofish"}},
+            {"id": "3", "score": 0.35, "metadata": {"skill_name": "memory"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, score_filter=RatioFilter(min_top_ratio=0.7, min_score=0.45))
+
+        results = mem0_store.search_skills("search the web", limit=3)
+
+        assert len(results) == 2
+        assert results[0] == "web-research"
+        assert results[1] == "goofish"
+
+    def test_search_skills_ratio_filter_drops_all_when_floor_not_met(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.42, "metadata": {"skill_name": "memory"}},
+            {"id": "2", "score": 0.38, "metadata": {"skill_name": "debug"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, score_filter=RatioFilter(min_top_ratio=0.7, min_score=0.45))
+
+        results = mem0_store.search_skills("tell me a joke", limit=3)
+
+        assert len(results) == 0
+
+    def test_search_skills_default_filter_passes_everything(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.10, "metadata": {"skill_name": "irrelevant"}},
+            {"id": "2", "score": 0.05, "metadata": {"skill_name": "noise"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs)
+
+        results = mem0_store.search_skills("anything", limit=3)
+
+        assert len(results) == 2
+
+    def test_search_skills_raw_returns_unfiltered_results(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mock_vs.search_text.return_value = [
+            {"id": "1", "score": 0.85, "metadata": {"skill_name": "web-research"}},
+            {"id": "2", "score": 0.42, "metadata": {"skill_name": "debug"}},
+            {"id": "3", "score": 0.30, "metadata": {"skill_name": "memory"}},
+        ]
+
+        mem0_store = SkillVectorStore(mock_vs, score_filter=CutoffFilter(min_score=0.5))
+
+        raw = mem0_store.search_skills_raw("search the web", limit=3)
+
+        assert len(raw) == 3
+        assert raw[0]["metadata"]["skill_name"] == "web-research"
+        mock_vs.search_text.assert_called_once()
+
+    def test_build_query_prepends_prompt_when_enabled(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mem0_store = SkillVectorStore(mock_vs, use_retrieval_prompt=True)
+
+        result = mem0_store._build_query("find bugs")
+
+        assert result.startswith("Represent this sentence for searching relevant passages: ")
+        assert result.endswith("find bugs")
+
+    def test_build_query_returns_raw_when_disabled(self) -> None:
+        mock_vs = MagicMock(spec=VectorStore)
+        mem0_store = SkillVectorStore(mock_vs, use_retrieval_prompt=False)
+
+        result = mem0_store._build_query("find bugs")
+
+        assert result == "find bugs"
 
 
 class TestSkillMatcherIntelligent:

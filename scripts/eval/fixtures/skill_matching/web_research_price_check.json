@@ -1,0 +1,8 @@
+{
+  "name": "web_research_price_check",
+  "description": "Price checking request - should match web_research",
+  "query": "compare prices for laptops across different stores",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": [],
+  "min_expected_score": 0.4
+}

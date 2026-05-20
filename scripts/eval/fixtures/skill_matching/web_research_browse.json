@@ -1,0 +1,8 @@
+{
+  "name": "web_research_browse",
+  "description": "Browsing request - should match web_research",
+  "query": "browse a website and extract product information",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": [],
+  "min_expected_score": 0.4
+}

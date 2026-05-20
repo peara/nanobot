@@ -1,0 +1,8 @@
+{
+  "name": "web_search_generic",
+  "description": "Generic web search - should match web_research highest. Tests the primary use case.",
+  "query": "search the web for latest news about AI",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": ["hw_constraint_filter", "memory_scoping_workflow", "script_structure_constraint"],
+  "min_expected_score": 0.5
+}

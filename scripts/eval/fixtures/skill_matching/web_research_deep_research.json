@@ -1,0 +1,8 @@
+{
+  "name": "web_research_deep_research",
+  "description": "Explicit research request - should strongly match web_research",
+  "query": "research the history of quantum computing on the web",
+  "expected_skills": ["web_research"],
+  "unexpected_skills": [],
+  "min_expected_score": 0.5
+}
