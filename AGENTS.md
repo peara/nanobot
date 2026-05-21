@@ -176,6 +176,7 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - Specific exceptions (KeyError, ValueError) - broad only when necessary with `# pylint: disable=broad-except`
 - NEVER silently swallow - always log or re-raise
 - `logger.exception()` for full traceback
+- Surface failures to the user: errors in scheduled tasks, subagents, and background processes must result in a user-visible message, not silent drops
 
 ### Logging
 - `logging.getLogger(__name__)` per module
@@ -213,6 +214,9 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - **Speculate about unread code**: Never
 - **Leave code in broken state**: Never
 - **Commit without issue reference**: Ask about GitHub issue linkage first
+- **Silent failures**: Never swallow errors without user visibility. If a scheduled task, subagent, or background process fails, the user must be notified. No error is "too internal" to surface.
+- **Context trimming / data loss on error**: Never silently truncate tool results or conversation context to "fit" — partial information is worse than none. If a tool returns too much data, fail explicitly with an informative error rather than silently cutting content. The user can then act on the real problem (e.g., fix the extraction, adjust the query).
+- **Incremental extensibility**: When adding error handling or new failure modes, build incrementally on existing patterns (e.g., `_should_notify_user`, `_format_failure_summary`) rather than introducing parallel mechanisms. Each new failure type should be a new branch in an existing handler, not a new handler.
 
 ## Notes
 - Uses [just](https://github.com/casey/just) as command runner - `just --list` for all recipes

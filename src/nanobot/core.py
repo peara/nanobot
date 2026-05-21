@@ -226,12 +226,31 @@ class BotCore:
         )
 
         if self._should_notify_user(msg):
-            self.memory.add_message(msg.parent_scope, "assistant", msg.summary)
-            await self._send(msg.parent_scope, msg.summary)
+            text = msg.summary if msg.success else self._format_failure_summary(msg)
+            self.memory.add_message(msg.parent_scope, "assistant", text)
+            await self._send(msg.parent_scope, text)
+
+    @staticmethod
+    def _format_failure_summary(msg: SubagentResultMessage) -> str:
+        error = ""
+        if msg.metadata and isinstance(msg.metadata, dict):
+            error = msg.metadata.get("message") or msg.metadata.get("error", "")
+            # Full tracebacks are not useful in user-facing messages
+            if len(error) > 300:
+                error = error[:300] + "…"
+        if error:
+            if "exceed_context_size" in error or "exceeds the available context" in error:
+                return (
+                    "Scheduled task failed: the response grew too large to fit in the model's context window. "
+                    "This usually happens when a web page returns very large content. "
+                    "The task will retry on its next scheduled run."
+                )
+            return f"Scheduled task failed: {error}"
+        return "Scheduled task failed with an unexpected error. It will retry on its next scheduled run."
 
     def _should_notify_user(self, msg: SubagentResultMessage) -> bool:
         if not msg.success:
-            return False
+            return True
         if not msg.summary.strip():
             return False
         if "NO_ACTION_NEEDED" in msg.summary.upper():

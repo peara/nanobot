@@ -96,7 +96,7 @@ async def test_on_subagent_result_enqueues_message(bot: BotCore) -> None:
     assert msg.run_id == "subagent-test123"
 
 
-def test_should_notify_user_returns_false_for_unsuccessful(bot: BotCore) -> None:
+def test_should_notify_user_returns_true_for_unsuccessful(bot: BotCore) -> None:
     msg = SubagentResultMessage(
         run_id="test",
         parent_scope="telegram:123",
@@ -104,7 +104,7 @@ def test_should_notify_user_returns_false_for_unsuccessful(bot: BotCore) -> None
         summary="Failed",
         tool_trace=[],
     )
-    assert bot._should_notify_user(msg) is False
+    assert bot._should_notify_user(msg) is True
 
 
 def test_should_notify_user_returns_false_for_empty_summary(bot: BotCore) -> None:
@@ -162,6 +162,72 @@ def test_should_notify_user_returns_true_for_tools_used(bot: BotCore) -> None:
     assert bot._should_notify_user(msg) is True
 
 
+def test_format_failure_summary_context_overflow(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error: context overflow",
+        tool_trace=[],
+        metadata={"error": "Error code: 400 - request (43792 tokens) exceeds the available context size (32768 tokens)"},
+    )
+    summary = bot._format_failure_summary(msg)
+    assert "context window" in summary
+    assert "retry" in summary
+
+
+def test_format_failure_summary_exceed_context_size_error(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error",
+        tool_trace=[],
+        metadata={"error": "exceed_context_size_error: token limit reached"},
+    )
+    summary = bot._format_failure_summary(msg)
+    assert "context window" in summary
+
+
+def test_format_failure_summary_generic_error(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error",
+        tool_trace=[],
+        metadata={"error": "Connection timed out"},
+    )
+    summary = bot._format_failure_summary(msg)
+    assert "Connection timed out" in summary
+    assert "Scheduled task failed" in summary
+
+
+def test_format_failure_summary_no_metadata(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error",
+        tool_trace=[],
+    )
+    summary = bot._format_failure_summary(msg)
+    assert "unexpected error" in summary
+
+
+def test_format_failure_summary_truncates_long_error(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error",
+        tool_trace=[],
+        metadata={"error": "x" * 500},
+    )
+    summary = bot._format_failure_summary(msg)
+    assert len(summary) < 400
+
+
 @pytest.mark.asyncio
 async def test_handle_subagent_result_notifies_when_should(bot: BotCore) -> None:
     msg = SubagentResultMessage(
@@ -196,3 +262,24 @@ async def test_handle_subagent_result_does_not_notify_when_should_not(bot: BotCo
 
             mock_add.assert_not_called()
             mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_subagent_result_notifies_on_failure_with_context_overflow(bot: BotCore) -> None:
+    msg = SubagentResultMessage(
+        run_id="subagent-test",
+        parent_scope="telegram:123",
+        success=False,
+        summary="Error: BadRequestError",
+        tool_trace=[],
+        metadata={"error": "request (43792 tokens) exceeds the available context size (32768 tokens)"},
+    )
+
+    with patch.object(bot.memory, "add_message") as mock_add:
+        with patch.object(bot, "_send", new_callable=AsyncMock) as mock_send:
+            await bot._handle_subagent_result(msg)
+
+            assert mock_add.call_count == 1
+            assert mock_send.call_count == 1
+            sent_text = mock_send.call_args[0][1]
+            assert "context window" in sent_text
