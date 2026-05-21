@@ -102,6 +102,9 @@ def heuristic_extract(html: str) -> str:
         return ""
 
     parser = HTMLParser(html or "<html></html>")
+    for tag in ("script", "style", "noscript"):
+        for unwanted in parser.css(tag):
+            unwanted.decompose()
     best_text = ""
     best_score = -1.0
     for node in parser.css("article, main, section, div"):
