@@ -120,7 +120,7 @@ An OpenAI-compatible endpoint serving embedding models (e.g. LM Studio, Ollama) 
 
 ## MCP servers
 
-All MCP servers are configured as `mcp_servers` entries in `config.yaml` (see `config.example.yaml` for full format).
+All MCP servers are configured as `mcp_servers` entries in `config.yaml` (see `config.example.yaml` for full format). Optional servers that need credentials go in `config.override.yaml` (git-ignored). See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for the full configuration reference.
 
 | Server | Command | Tools |
 |--------|---------|-------|
@@ -128,6 +128,7 @@ All MCP servers are configured as `mcp_servers` entries in `config.yaml` (see `c
 | scheduler | `python -m nanobot.mcp_servers.scheduler.server` | `schedule_task`, `list_tasks`, `delete_task`, `pause_task`, `resume_task`, `cron_list`, `cron_add`, `cron_remove` |
 | web | `python -m nanobot.mcp_servers.web.server` | `web__search_web`, `web__read_page` (Tavily/Exa API key required for search) |
 | playwright | `npx -y @playwright/mcp@latest --browser chrome --headless` | Browser navigation, click, type, extract (requires Node.js 18+, Chrome) |
+| reddit | `python -m nanobot.mcp_servers.reddit.server` | `reddit_get_posts`, `reddit_get_post`, `reddit_search`, `reddit_get_subreddit`, `reddit_health` (Reddit OAuth required, see [docs/REDDIT.md](docs/REDDIT.md)) |
 
 ## Web agent
 
