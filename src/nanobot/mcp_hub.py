@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from nanobot.config import McpServerConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,25 +34,34 @@ class McpHub:
         for cfg in self.servers_cfg:
             env = os.environ.copy()
             env.update(cfg.env)
-            params = StdioServerParameters(
-                command=cfg.command,
-                args=cfg.args,
-                env=env,
-            )
-            read_stream, write_stream = await self._stack.enter_async_context(stdio_client(params))
-            session = await self._stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
-            self._sessions[cfg.name] = session
-
-            tools = await session.list_tools()
-            for tool in tools.tools:
-                key = f"{cfg.name}__{tool.name}"
-                self._tools[key] = ToolBinding(
-                    server_name=cfg.name,
-                    tool_name=tool.name,
-                    schema=tool.inputSchema or {"type": "object", "properties": {}},
-                    description=tool.description or "",
+            missing = [v for v in cfg.required_env if not env.get(v)]
+            if missing:
+                logger.warning("Skipping MCP server '%s': missing required env vars: %s", cfg.name, missing)
+                continue
+            try:
+                params = StdioServerParameters(
+                    command=cfg.command,
+                    args=cfg.args,
+                    env=env,
                 )
+                read_stream, write_stream = await self._stack.enter_async_context(stdio_client(params))
+                session = await self._stack.enter_async_context(ClientSession(read_stream, write_stream))
+                await session.initialize()
+                self._sessions[cfg.name] = session
+
+                tools = await session.list_tools()
+                for tool in tools.tools:
+                    key = f"{cfg.name}__{tool.name}"
+                    self._tools[key] = ToolBinding(
+                        server_name=cfg.name,
+                        tool_name=tool.name,
+                        schema=tool.inputSchema or {"type": "object", "properties": {}},
+                        description=tool.description or "",
+                    )
+                logger.info("Started MCP server '%s' (%d tools)", cfg.name, len(tools.tools))
+            except Exception:
+                logger.exception("Failed to start MCP server '%s', skipping", cfg.name)
+        logger.info("MCP servers started: %s", list(self._sessions.keys()))
 
     async def stop(self) -> None:
         await self._stack.aclose()

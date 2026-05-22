@@ -6,5 +6,6 @@ __pycache__/
 .ruff_cache/
 config.yaml
 config.mem0.yaml
+config.override.yaml
 data/
 .sisyphus
