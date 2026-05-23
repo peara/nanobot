@@ -14,4 +14,4 @@ class ScratchpadCommand(BaseCommand):
         return ["/scratchpad"]
 
     async def handle(self, raw_text: str, scope: str) -> None:
-        await scratchpad_command(self.core, scope, raw_text)
+        await scratchpad_command(self.core, scope, raw_text, run_id=None)

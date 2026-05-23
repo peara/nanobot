@@ -5,7 +5,6 @@ import logging
 import uuid
 from typing import Any
 
-from nanobot.core_scratchpad import clear_scratchpad
 from nanobot.core_utils import command_body, extract_json_object, looks_garbled_text
 from nanobot.plans.models import PlanBrief
 
@@ -17,7 +16,6 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
     if not request_text:
         await bot._send(chat_scope, "Usage: /plan <request>")
         return
-    clear_scratchpad(bot, chat_scope)
 
     run_id = f"run-{uuid.uuid4().hex[:10]}"
     logger.info("Starting plan run run_id=%s chat_scope=%s", run_id, chat_scope)
@@ -32,7 +30,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         {"role": "system", "content": bot.prompts.render("plan_brief_extractor")},
         {"role": "user", "content": request_text},
     ]
-    intake_reply, _ = await bot.agent_run.run(scope_for_tools=chat_scope, messages=intake_messages, tools=[])
+    intake_reply, _ = await bot.agent_run.run(scope_for_tools=chat_scope, messages=intake_messages, tools=[], run_id=run_id)
     bot.contexts.put("plan_run", run_id, "intake_raw", {"text": intake_reply})
     plan_brief = extract_json_object(intake_reply) or {
         "goal": request_text,
@@ -76,6 +74,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             scope_for_tools=chat_scope,
             messages=run_messages,
             tools=bot._list_openai_tools(),
+            run_id=run_id,
         )
         bot.contexts.put("plan_run", run_id, "execution_raw", {"text": final_reply})
         if looks_garbled_text(final_reply):
@@ -94,6 +93,7 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
                 scope_for_tools=chat_scope,
                 messages=recovery_messages,
                 tools=[],
+                run_id=run_id,
             )
             bot.contexts.put("plan_run", run_id, "recovery_raw", {"text": recovered_reply})
             if looks_garbled_text(recovered_reply):

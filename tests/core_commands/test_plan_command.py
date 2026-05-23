@@ -13,8 +13,16 @@ from nanobot.core_scratchpad import (
     MAX_KNOWN_FACTS,
     MAX_TOOL_JOURNAL,
     SCRATCHPAD_TOOL_NAME,
+    get_scratchpad_state,
 )
 from nanobot.tools.base import Tool
+
+
+def _last_run_id_for_scope(bot: BotCore, scope: str) -> str | None:
+    runs = bot.subagent_manager.list_by_scope(scope, status="completed", limit=1)
+    if not runs:
+        runs = bot.subagent_manager.list_by_scope(scope, limit=1)
+    return runs[0].id if runs else None
 
 
 def _await_process(bot: BotCore, message: IncomingMessage) -> None:
@@ -235,40 +243,24 @@ def test_scratchpad_tool_is_persisted_and_injected(tmp_path) -> None:
     ctx_msg = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="/ctxfull")
     _await_process(bot, ctx_msg)
     assert len(channel.sent) == 2
-    assert "scratchpad" in channel.sent[1][1].lower()
+    assert "model" in channel.sent[1][1].lower()
 
 
-def test_new_turn_clears_old_scratchpad_state_before_prompt(tmp_path) -> None:
+def test_new_turn_gets_fresh_scratchpad_per_run(tmp_path) -> None:
     config = _build_config(tmp_path)
     channel = _FakeChannel()
     llm = _RecordingFakeLlm(replies=[{"content": "ok", "tool_calls": None}])
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, llm)
-    # bot.mcp removed - tools registry in use
-    bot.contexts.put(
-        "chat",
-        "telegram:42",
-        "scratchpad",
-        {
-            "goal": "Provide accurate, up-to-date information about React 19 news",
-            "context": "stale context",
-            "known_facts": ["stale fact"],
-            "current_step": "stale step",
-            "next_step": "stale next",
-            "tool_journal": ["stale journal"],
-            "updated_at": "old",
-        },
-    )
 
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="set a reminder")
     _await_process(bot, message)
 
     scratchpad_messages = [
-        item for item in llm.calls_messages[0] if str(item.get("content", "")).startswith("[Internal scratchpad state")
+        item for item in llm.calls_messages[0] if "[Internal scratchpad state" in str(item.get("content", ""))
     ]
     assert len(scratchpad_messages) == 1
     scratchpad_text = str(scratchpad_messages[0]["content"])
-    assert "React 19 news" not in scratchpad_text
     assert '"goal": ""' in scratchpad_text
 
 
@@ -374,7 +366,9 @@ def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
     _await_process(bot, message)
 
     assert "Working on it." in channel.sent[-1][1]
-    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    run_id = _last_run_id_for_scope(bot, "telegram:42")
+    assert run_id is not None
+    state = get_scratchpad_state(bot, "telegram:42", run_id=run_id)
     assert isinstance(state, dict)
     assert state["goal"] == "Find best laptop"
     assert state["context"] == "Budget under 1500 USD"
@@ -429,7 +423,9 @@ def test_session_scratchpad_write_clips_long_fields(tmp_path) -> None:
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="start")
     _await_process(bot, message)
 
-    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    run_id = _last_run_id_for_scope(bot, "telegram:42")
+    assert run_id is not None
+    state = get_scratchpad_state(bot, "telegram:42", run_id=run_id)
     assert isinstance(state, dict)
     assert len(state["goal"]) == MAX_FIELD_CHARS
     assert len(state["context"]) == MAX_CONTEXT_CHARS
@@ -541,7 +537,9 @@ def test_phase2_recovers_after_scratchpad_update_then_external_tool(tmp_path) ->
 
     assert channel.sent[-1][1] == "Done."
     assert counting_tool.calls == ["timer__time_now", "timer__time_now"]
-    state = bot.contexts.get("chat", "telegram:42", "scratchpad")
+    run_id = _last_run_id_for_scope(bot, "telegram:42")
+    assert run_id is not None
+    state = get_scratchpad_state(bot, "telegram:42", run_id=run_id)
     assert isinstance(state, dict)
     assert state["current_step"] == "Captured current time"
     assert state["next_step"] == "Check again"

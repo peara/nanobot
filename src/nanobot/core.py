@@ -13,7 +13,7 @@ from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
 from nanobot.core_reports import build_context_report, build_full_context_report
-from nanobot.core_scratchpad import clear_scratchpad, scratchpad_tool_spec
+from nanobot.core_scratchpad import scratchpad_tool_spec
 from nanobot.core_utils import (
     attach_human_timestamps,
     command_name,
@@ -26,7 +26,7 @@ from nanobot.hooks import ToolCallEvent, ToolHook, build_default_tool_hooks
 from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
 from nanobot.memstore.tools import register_memory_tools
-from nanobot.messages import OrchestratorMessage, SubagentResultMessage, UserMessage
+from nanobot.messages import OrchestratorMessage, ScheduledTaskMessage, SubagentResultMessage, UserMessage
 from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
@@ -184,6 +184,8 @@ class BotCore:
                     await self._handle_user_message(msg)
                 elif isinstance(msg, SubagentResultMessage):
                     await self._handle_subagent_result(msg)
+                elif isinstance(msg, ScheduledTaskMessage):
+                    await self._handle_scheduled_task_message(msg)
             except Exception:
                 logger.exception("Error processing message type=%s", type(msg).__name__)
 
@@ -198,6 +200,8 @@ class BotCore:
                 await self._handle_user_message(msg)
             elif isinstance(msg, SubagentResultMessage):
                 await self._handle_subagent_result(msg)
+            elif isinstance(msg, ScheduledTaskMessage):
+                await self._handle_scheduled_task_message(msg)
         except Exception:
             logger.exception("Error processing message type=%s", type(msg).__name__)
         return True
@@ -259,26 +263,41 @@ class BotCore:
             return len(msg.summary) > 50
         return True
 
-    async def _handle_scheduled_task(self, scoped_id: str, prompt: str) -> None:
-        logger.info("Scheduled task triggered scope=%s", scoped_id)
-        system_content = self.prompts.render("subagent_scheduled", user_id=scoped_id)
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": prompt},
-        ]
-        run = self.subagent_manager.spawn(scope=scoped_id, goal=prompt)
-        skill_names = self._get_active_skill_names(run.id)
-        result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
-        msg = SubagentResultMessage(
-            run_id=result.run_id,
-            parent_scope=scoped_id,
-            success=result.success,
-            summary=result.reply,
-            tool_trace=result.tool_trace,
-            metadata={"error": result.error} if result.error else None,
+    async def _handle_scheduled_task(self, scoped_id: str, prompt: str, *, task_id: int = 0, cron_expr: str = "") -> None:
+        await self._message_queue.put(ScheduledTaskMessage(scope=scoped_id, prompt=prompt, task_id=task_id, cron_expr=cron_expr))
+
+    async def _handle_scheduled_task_message(self, msg: ScheduledTaskMessage) -> None:
+        logger.info("Scheduled task triggered scope=%s task_id=%d", msg.scope, msg.task_id)
+        self.active_requests[msg.scope] = ActiveRequest(
+            chat_id=msg.scope,
+            started_at=datetime.now(),
+            current_step="scheduled task",
         )
-        await self.on_subagent_result(msg)
-        await self._evaluate_turn(scoped_id, prompt, result)
+        try:
+            system_content = self.prompts.render("subagent_scheduled", user_id=msg.scope)
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": msg.prompt},
+            ]
+            run = self.subagent_manager.spawn(scope=msg.scope, goal=msg.prompt)
+            skill_names = self._get_active_skill_names(run.id)
+            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
+            result_msg = SubagentResultMessage(
+                run_id=result.run_id,
+                parent_scope=msg.scope,
+                success=result.success,
+                summary=result.reply,
+                tool_trace=result.tool_trace,
+                metadata={"error": result.error} if result.error else None,
+            )
+            await self.on_subagent_result(result_msg)
+            await self._evaluate_turn(msg.scope, msg.prompt, result)
+            if msg.task_id and msg.cron_expr:
+                self.scheduler_store.mark_ran(msg.task_id, msg.cron_expr)
+        except Exception:
+            logger.exception("Scheduled task execution failed task_id=%d scope=%s", msg.task_id, msg.scope)
+        finally:
+            self.active_requests.pop(msg.scope, None)
 
     async def _process(self, scope: str, user_text: str, user_id: str = "") -> None:
         logger.info("Processing message for scope=%s user_id=%s", scope, user_id)
@@ -291,7 +310,6 @@ class BotCore:
         try:
             self.memory.add_message(scope, "user", user_text)
             self.contexts.put("chat", scope, "last_user_message", {"text": user_text})
-            clear_scratchpad(self, scope)
 
             history = self.memory.get_recent_messages(scope, limit=self.config.history_message_limit)
             history = attach_human_timestamps(history, timezone_name=self.config.working_timezone)
@@ -401,7 +419,7 @@ class BotCore:
         """Run evaluator on worker result. Non-blocking: failures are logged, not raised."""
         if self.evaluator is None:
             return
-        scratchpad = self.contexts.get("chat", scope, "scratchpad")
+        scratchpad = self.contexts.get("subagent_run", worker_result.run_id, "scratchpad")
         active_skills = self.skills.list_active()
         try:
             result = await self.evaluator.evaluate(

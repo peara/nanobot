@@ -34,8 +34,8 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
 
-def _tool_call_limit_finalize_message(host: Any, scope: str) -> dict[str, str] | None:
-    scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
+def _tool_call_limit_finalize_message(host: Any, scope: str, *, run_id: str | None = None) -> dict[str, str] | None:
+    scratchpad = host.contexts.get("subagent_run" if run_id else "chat", run_id or scope, "scratchpad") or {}
     goal = str(scratchpad.get("goal", ""))
     context = str(scratchpad.get("context", ""))
     current_step = str(scratchpad.get("current_step", ""))
@@ -57,8 +57,8 @@ def _tool_call_limit_finalize_message(host: Any, scope: str) -> dict[str, str] |
     return {"role": "user", "content": content}
 
 
-def _finalize_response_message(host: Any, scope: str) -> dict[str, str] | None:
-    scratchpad = host.contexts.get("chat", scope, "scratchpad") or {}
+def _finalize_response_message(host: Any, scope: str, *, run_id: str | None = None) -> dict[str, str] | None:
+    scratchpad = host.contexts.get("subagent_run" if run_id else "chat", run_id or scope, "scratchpad") or {}
     goal = str(scratchpad.get("goal", ""))
     context = str(scratchpad.get("context", ""))
     current_step = str(scratchpad.get("current_step", ""))
@@ -216,7 +216,7 @@ class AgentRun:
         run_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         include_scratchpad_prompt = True
-        scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools)
+        scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
         prepared_messages = prepare_messages_for_chat(to_send)
         assistant_message = await self._host.llm.chat(
@@ -269,7 +269,7 @@ class AgentRun:
                     raw_content = assistant_message.get("content") or ""
                     if raw_content.strip():
                         try:
-                            apply_scratchpad_append_from_content(self._host, scope_for_tools, raw_content)
+                            apply_scratchpad_append_from_content(self._host, scope_for_tools, raw_content, run_id=run_id)
                             needs_scratchpad_update = False
                         except Exception:  # pylint: disable=broad-except
                             logger.exception(
@@ -295,7 +295,7 @@ class AgentRun:
                         scope_for_tools,
                         total_tool_calls,
                     )
-                    finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools)
+                    finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools, run_id=run_id)
                     trimmed = trim_to_last_tool_round(messages)
                     to_send = trimmed + ([finalize_msg] if finalize_msg else [])
                     prepared_messages = prepare_messages_for_chat(to_send)
@@ -337,7 +337,7 @@ class AgentRun:
                         if isinstance(active, dict) and scope_for_tools in active:
                             active[scope_for_tools].current_step = f"calling {fn_name}"
                         logger.info("Calling tool=%s args=%s", fn_name, args)
-                        scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args)
+                        scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args, run_id=run_id)
                         scratchpad_mode = str(args.get("mode", "")).strip().lower()
                         result = json.dumps(
                             scratchpad_tool_result(scratchpad_mode, scratchpad),
@@ -411,7 +411,7 @@ class AgentRun:
             if round_used_external_tool:
                 include_scratchpad_prompt = True
             elif round_finalized_scratchpad:
-                finalize_msg = _finalize_response_message(self._host, scope_for_tools)
+                finalize_msg = _finalize_response_message(self._host, scope_for_tools, run_id=run_id)
                 trimmed = trim_to_last_tool_round(messages)
                 to_send = trimmed + ([finalize_msg] if finalize_msg else [])
                 prepared_messages = prepare_messages_for_chat(to_send)
@@ -436,7 +436,7 @@ class AgentRun:
                 )
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
-                scratchpad_assistant_message(self._host, scope_for_tools) if include_scratchpad_prompt else None
+                scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id) if include_scratchpad_prompt else None
             )
             to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
             prepared_messages = prepare_messages_for_chat(to_send)

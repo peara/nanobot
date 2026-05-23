@@ -99,15 +99,23 @@ def _coerce_state(payload: Any, timezone_name: str = "UTC") -> dict[str, Any]:
     return state
 
 
-def get_scratchpad_state(bot: Any, scope: str) -> dict[str, Any]:
-    payload = bot.contexts.get("chat", scope, "scratchpad")
+def _scratchpad_scope_type() -> str:
+    return "subagent_run"
+
+
+def get_scratchpad_state(bot: Any, scope: str, *, run_id: str | None = None) -> dict[str, Any]:
+    scope_type = _scratchpad_scope_type() if run_id else "chat"
+    scope_id = run_id or scope
+    payload = bot.contexts.get(scope_type, scope_id, "scratchpad")
     return _coerce_state(payload, timezone_name=_bot_timezone(bot))
 
 
-def clear_scratchpad(bot: Any, scope: str) -> None:
+def clear_scratchpad(bot: Any, scope: str, *, run_id: str | None = None) -> None:
+    scope_type = _scratchpad_scope_type() if run_id else "chat"
+    scope_id = run_id or scope
     state = empty_scratchpad_state()
     state["updated_at"] = human_now(_bot_timezone(bot))
-    bot.contexts.put("chat", scope, "scratchpad", state)
+    bot.contexts.put(scope_type, scope_id, "scratchpad", state)
 
 
 def scratchpad_tool_spec() -> dict[str, Any]:
@@ -149,12 +157,12 @@ def scratchpad_tool_spec() -> dict[str, Any]:
     }
 
 
-def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> dict[str, Any]:
+def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any], *, run_id: str | None = None) -> dict[str, Any]:
     mode = _clip_text(args.get("mode")).lower()
     if mode not in VALID_MODES:
         raise ValueError(f"Invalid mode '{mode}'. Expected one of: {', '.join(sorted(VALID_MODES))}")
 
-    state = get_scratchpad_state(bot, scope)
+    state = get_scratchpad_state(bot, scope, run_id=run_id)
     if mode == "init":
         state = empty_scratchpad_state()
 
@@ -190,7 +198,9 @@ def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any]) -> di
     timezone_name = _bot_timezone(bot)
     state["updated_at"] = human_now(timezone_name)
     normalized = _coerce_state(state, timezone_name=timezone_name)
-    bot.contexts.put("chat", scope, "scratchpad", normalized)
+    scope_type = _scratchpad_scope_type() if run_id else "chat"
+    scope_id = run_id or scope
+    bot.contexts.put(scope_type, scope_id, "scratchpad", normalized)
     return normalized
 
 
@@ -206,7 +216,7 @@ def scratchpad_tool_result(mode: str, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def apply_scratchpad_append_from_content(bot: Any, scope: str, content: str) -> None:
+def apply_scratchpad_append_from_content(bot: Any, scope: str, content: str, *, run_id: str | None = None) -> None:
     """Append a scratchpad entry from the model's content (e.g. thinking), stripping think tags."""
     stripped = strip_thinking(content)
     if not stripped:
@@ -215,13 +225,14 @@ def apply_scratchpad_append_from_content(bot: Any, scope: str, content: str) -> 
         bot,
         scope,
         {"mode": "append", "tool_journal": [stripped[:MAX_FIELD_CHARS]]},
+        run_id=run_id,
     )
 
 
-async def scratchpad_command(bot: Any, scope: str, raw_text: str) -> None:
+async def scratchpad_command(bot: Any, scope: str, raw_text: str, *, run_id: str | None = None) -> None:
     body = command_body(raw_text)
     if not body:
-        state = get_scratchpad_state(bot, scope)
+        state = get_scratchpad_state(bot, scope, run_id=run_id)
         text = json.dumps(state, ensure_ascii=True, indent=2)
         await bot._send(scope, f"Structured scratchpad:\n{text}")
         return
@@ -229,27 +240,27 @@ async def scratchpad_command(bot: Any, scope: str, raw_text: str) -> None:
     parts = body.split(maxsplit=1)
     action = parts[0].strip().lower()
     if action == "show":
-        state = get_scratchpad_state(bot, scope)
+        state = get_scratchpad_state(bot, scope, run_id=run_id)
         text = json.dumps(state, ensure_ascii=True, indent=2)
         await bot._send(scope, f"Structured scratchpad:\n{text}")
         return
     if action == "clear":
-        clear_scratchpad(bot, scope)
+        clear_scratchpad(bot, scope, run_id=run_id)
         await bot._send(scope, "Scratchpad cleared.")
         return
     await bot._send(scope, "Usage: /scratchpad [show|clear]")
 
 
-def scratchpad_system_message(bot: Any, scope: str) -> dict[str, str] | None:
-    state = get_scratchpad_state(bot, scope)
+def scratchpad_system_message(bot: Any, scope: str, *, run_id: str | None = None) -> dict[str, str] | None:
+    state = get_scratchpad_state(bot, scope, run_id=run_id)
     body = json.dumps(state, ensure_ascii=True, indent=2)
     content = bot.prompts.render("scratchpad_system", state_json=body)
     return {"role": "system", "content": content}
 
 
-def scratchpad_assistant_message(bot: Any, scope: str) -> dict[str, str] | None:
+def scratchpad_assistant_message(bot: Any, scope: str, *, run_id: str | None = None) -> dict[str, str] | None:
     """Scratchpad as last message with role user so the model is clearly prompted to respond."""
-    state = get_scratchpad_state(bot, scope)
+    state = get_scratchpad_state(bot, scope, run_id=run_id)
     body = json.dumps(state, ensure_ascii=True, indent=2)
     content = bot.prompts.render("scratchpad_user", state_json=body)
     return {"role": "user", "content": content}

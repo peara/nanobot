@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from nanobot.core_scratchpad import scratchpad_assistant_message
 from nanobot.core_utils import attach_human_timestamps, clip, clip_long, trim_history_by_chars
 
 
@@ -34,13 +35,13 @@ def build_context_report(bot: Any, scope: str) -> str:
     return "\n".join(lines)
 
 
-def build_full_context_report(bot: Any, scope: str) -> str:
+def build_full_context_report(bot: Any, scope: str, *, run_id: str | None = None) -> str:
     history = bot.memory.get_recent_messages(scope, limit=bot.config.history_message_limit)
     history = attach_human_timestamps(history, timezone_name=bot.config.working_timezone)
     trimmed = trim_history_by_chars(history, bot.config.history_char_limit)
     messages = list(bot._system_messages())
     messages.extend(trimmed)
-    scratchpad_message = bot._scratchpad_assistant_message(scope)
+    scratchpad_message = scratchpad_assistant_message(bot, scope, run_id=run_id)
     if scratchpad_message is not None:
         messages.append(scratchpad_message)
     payload = {

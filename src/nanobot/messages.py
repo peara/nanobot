@@ -38,5 +38,19 @@ class SubagentResultMessage:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class ScheduledTaskMessage:
+    """Message from the scheduler to execute a scheduled task.
+
+    Routed through the message queue so scheduled tasks are serialized
+    per-scope alongside user messages, preventing concurrent runs on the same scope.
+    """
+
+    scope: str
+    prompt: str
+    task_id: int
+    cron_expr: str
+
+
 # Union type for all messages that can go through the orchestrator's message queue
-OrchestratorMessage = Union[UserMessage, SubagentResultMessage]
+OrchestratorMessage = Union[UserMessage, SubagentResultMessage, ScheduledTaskMessage]
