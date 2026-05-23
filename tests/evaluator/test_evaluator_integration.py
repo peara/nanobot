@@ -227,3 +227,128 @@ class TestEvaluatorIntegration:
 
         with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
             await bot._evaluate_turn("telegram:123", "hello", result)
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_deprecates_skill(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        bot.skills.create(
+            name="old_skill",
+            description="An old skill",
+            instructions="Do something obsolete",
+            trigger_mode="pattern",
+            trigger_patterns=["obsolete"],
+            is_active=True,
+        )
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Learned this is obsolete",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="deprecate",
+                name="old_skill",
+                description="No longer needed",
+                instructions="Deprecated",
+                trigger_mode="pattern",
+                source_confidence="high",
+                reason="Skill is obsolete",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            deprecated = bot.skills.get_by_name("old_skill")
+            assert deprecated is not None
+            assert deprecated.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_deprecate_skips_nonexistent(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Should not crash",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="deprecate",
+                name="phantom_skill",
+                description="Does not exist",
+                instructions="Should not crash",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="Test nonexistent deprecate",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+
+    @pytest.mark.asyncio
+    async def test_evaluate_turn_deprecate_skips_already_inactive(self) -> None:
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        bot.skills.create(
+            name="inactive_skill",
+            description="Already inactive",
+            instructions="Do nothing",
+            trigger_mode="pattern",
+            is_active=False,
+        )
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Should be idempotent",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="deprecate",
+                name="inactive_skill",
+                description="Already inactive",
+                instructions="No-op",
+                trigger_mode="pattern",
+                source_confidence="high",
+                reason="Test idempotent deprecate",
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            skill = bot.skills.get_by_name("inactive_skill")
+            assert skill is not None
+            assert skill.is_active is False

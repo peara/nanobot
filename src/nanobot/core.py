@@ -479,6 +479,21 @@ class BotCore:
                         except Exception:  # pylint: disable=broad-except
                             logger.exception("Failed to sync updated skill '%s' to mem0", op.name)
                     logger.info("Evaluator updated skill name=%s", op.name)
+                elif op.action == "deprecate":
+                    existing = self.skills.get_by_name(op.name)
+                    if existing is None:
+                        logger.warning("Evaluator tried to deprecate non-existent skill name=%s", op.name)
+                        continue
+                    if not existing.is_active:
+                        logger.info("Evaluator deprecated already-inactive skill name=%s, skipping", op.name)
+                        continue
+                    self.skills.set_active(existing.id, is_active=False)
+                    if existing.trigger_mode == "intelligent" and self.mem0_skill_store:
+                        try:
+                            self.mem0_skill_store.remove_skill(op.name)
+                        except Exception:  # pylint: disable=broad-except
+                            logger.exception("Failed to remove deprecated skill '%s' from mem0", op.name)
+                    logger.info("Evaluator deprecated skill name=%s", op.name)
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Evaluator skill operation failed action=%s name=%s", op.action, op.name)
 

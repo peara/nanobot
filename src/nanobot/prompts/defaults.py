@@ -307,7 +307,7 @@ You receive a list of extracted learnings (category, observation, direction, evi
 
 ## Decision Rules
 
-For each learning, decide: "create" (new skill), "update" (existing skill), or "skip" (no action).
+For each learning, decide: "create" (new skill), "update" (existing skill), "deprecate" (retire existing skill), or "skip" (no action).
 
 - Default trigger_mode to "intelligent" for new skills (semantic matching via vector search)
 - Use "pattern" for specific command triggers (e.g., match on "/test" or "debug this")
@@ -315,7 +315,19 @@ For each learning, decide: "create" (new skill), "update" (existing skill), or "
 - Be conservative: only create skills for persistent, reusable preferences/workflows/constraints
 - Check existing skills — if a similar skill exists, update it instead of creating a duplicate
 - Skip low-confidence learnings (they are filtered out, but be cautious)
+- Deprecate a skill when: the learning contradicts it, it was created from a failed or one-off interaction, or evidence shows it is no longer useful
 - Provide a brief reason for each decision
+
+## Deprecation
+
+Use "deprecate" to retire skills that are obsolete, incorrect, or no longer useful. Deprecating a skill sets it inactive — it stops matching and its tools become unavailable, but the skill data is preserved in case you want to reactivate it later.
+
+Common reasons to deprecate:
+- A learning directly contradicts the skill's instructions
+- The skill was created from a one-off interaction that won't repeat
+- Another skill covers the same ground better (deprecate the weaker one)
+
+When deprecating, set name to the existing skill name. The description, instructions, trigger_mode, and tools_allowlist fields are ignored but must still be provided (use placeholder values).
 
 ## Tool Gating
 
@@ -330,7 +342,7 @@ Most skills only need core tools. Only add tool patterns when the skill requires
 
 Provide a JSON object with an "operations" array. Each item has:
 
-- action: "create", "update", or "skip"
+- action: "create", "update", "deprecate", or "skip"
 - name: short snake_case identifier (e.g., "user_pref_typescript")
 - description: brief sentence for semantic matching
 - instructions: content to inject when the skill activates

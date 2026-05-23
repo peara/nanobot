@@ -181,9 +181,9 @@ def parse_learning_from_json(content: str) -> LearningExtraction:
 
 @dataclass(frozen=True)
 class SkillOperation:
-    """Phase 3 output: a skill lifecycle operation to create, update, or skip."""
+    """Phase 3 output: a skill lifecycle operation to create, update, deprecate, or skip."""
 
-    action: str  # "create" | "update" | "skip"
+    action: str  # "create" | "update" | "deprecate" | "skip"
     name: str
     description: str
     instructions: str
@@ -216,8 +216,8 @@ SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["create", "update", "skip"],
-                                "description": "Whether to create, update, or skip",
+                                "enum": ["create", "update", "deprecate", "skip"],
+                                "description": "Whether to create, update, deprecate, or skip",
                             },
                             "name": {
                                 "type": "string",
@@ -280,7 +280,7 @@ SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
 def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
     """Parse a single skill operation dict into SkillOperation."""
     action = str(item["action"])
-    if action not in ("create", "update", "skip"):
+    if action not in ("create", "update", "deprecate", "skip"):
         raise ValueError(f"invalid action: {action}")
 
     trigger_mode = str(item["trigger_mode"])

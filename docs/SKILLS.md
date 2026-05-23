@@ -162,7 +162,15 @@ If the Qdrant sync fails, the SQLite operation still succeeds. The skill remains
 
 ## Evaluator-driven lifecycle
 
-The [learning evaluator](EVALUATOR.md) can automatically create, update, or deprecate skills after each subagent turn. When `enable_evaluator: true` in config, the evaluator runs after every completed turn and may produce `SkillOperation` decisions that directly modify the skill store.
+The [learning evaluator](EVALUATOR.md) can automatically create or update skills after each subagent turn. When `enable_evaluator: true` in config, the evaluator runs after every completed turn and may produce `SkillOperation` decisions that directly modify the skill store.
+
+The evaluator's three-phase pipeline produces `SkillOperation` objects with `action: "create" | "update" | "deprecate" | "skip"`. Deprecation sets a skill inactive (it stops matching and its tools become unavailable) but preserves the skill data in case it needs to be reactivated later. Stale or incorrect skills can now be automatically deprecated by the evaluator.
+
+### Seeding skills for new MCP servers
+
+When a new MCP server is connected (e.g., Reddit), its tools are registered in the `ToolRegistry` but are **invisible to the LLM** until a skill with a matching `tools_allowlist` is active. New MCP servers need an associated skill to gate their tools.
+
+The `scripts/seed_skills.py` script bootstraps predefined skills into the database. Currently this is a manual process — add the skill definition to `SEED_SKILLS` and run the script. See #37 for planned auto-seeding when MCP servers connect.
 
 ## Tool filtering
 
@@ -197,11 +205,21 @@ When a skill has `tools_allowlist` set, its patterns are **merged with core** wh
 3. `ToolRegistry.list_openai_specs(patterns)` filters via `fnmatch` union matching
 4. Only matched tool schemas are sent to the LLM
 
+### Design decision: tools are skill-gated for context control
+
+This is an intentional architectural choice, not a limitation. MCP tools are **always gated behind skills** — there is no "discovered but ungated" visibility mode. This serves two purposes:
+
+1. **Context window management**: Only tools relevant to the current task are visible to the LLM, keeping the tool list under the ~20-tool accuracy threshold.
+2. **Instruction grounding**: Tools come with skill instructions that tell the LLM *how* to use them effectively (e.g., "search first, read second" for web tools). Exposing tools without their accompanying instructions leads to poor tool use.
+
+New MCP servers must have an associated skill (manual seeding or auto-seeding) before their tools become visible. This is by design — adding raw tools without skill instructions would produce worse outcomes than hiding them.
+
 ### Current limitations
 
 - Skills are matched **once at spawn time** — if the conversation topic shifts, new skills are not discovered mid-run
 - There is no runtime tool for the LLM to request loading a skill it hasn't been matched with
 - The Tier 1 skill catalog (`build_skill_catalog_message`) exists in code but is not wired into the prompt flow
+- Stale skills from failed evaluator runs can now be automatically deprecated (see [Evaluator-driven lifecycle](#evaluator-driven-lifecycle))
 
 ## Storage
 

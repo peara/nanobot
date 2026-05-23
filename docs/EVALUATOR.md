@@ -81,6 +81,8 @@ The `has_learnings` field is independent of the quality score. A high-quality an
 - `source_confidence`: propagated from the learning
 - `reason`: brief explanation
 
+> **Note**: Phase 2 can suggest `direction: "deprecate_skill"`. Phase 3 now supports `"deprecate"` as an action — the LLM can produce `create`, `update`, `deprecate`, or `skip`. Deprecated skills are set inactive (they stop matching and their tools become unavailable) but are preserved in case they need to be reactivated.
+
 The LLM is prompted to be conservative: skip unless the pattern is clearly reusable, prefer update over create to avoid duplication, and default to `intelligent` trigger mode.
 
 ## Executing decisions
@@ -92,6 +94,7 @@ After the evaluator returns, `BotCore._execute_skill_decisions()` processes each
 | `skip` | Logged, no action taken |
 | `create` | Checks `SkillStore.get_by_name()` — skips if name already exists (no duplicates). Otherwise creates the skill + syncs to Qdrant if `trigger_mode == "intelligent"` |
 | `update` | Checks `SkillStore.get_by_name()` — skips if name doesn't exist. Otherwise updates changed fields + re-syncs to Qdrant (remove old embedding, store new) |
+| `deprecate` | Checks `SkillStore.get_by_name()` — skips if not found or already inactive. Otherwise sets `is_active=False` + removes Qdrant embedding if `trigger_mode == "intelligent"` |
 
 Each operation is processed independently in its own try/except block. A failure in one operation does not block others.
 

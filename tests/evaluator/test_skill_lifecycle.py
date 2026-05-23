@@ -142,6 +142,21 @@ class TestParseSkillOperation:
         op = parse_skill_operation(data)
         assert op.tools_allowlist == []
 
+    def test_parse_deprecate_action(self) -> None:
+        data = {
+            "action": "deprecate",
+            "name": "old_skill",
+            "description": "No longer needed",
+            "instructions": "Deprecated",
+            "trigger_mode": "pattern",
+            "tools_allowlist": None,
+            "source_confidence": "high",
+            "reason": "Skill is obsolete",
+        }
+        op = parse_skill_operation(data)
+        assert op.action == "deprecate"
+        assert op.name == "old_skill"
+
     def test_parse_invalid_action(self) -> None:
         data = {
             "action": "invalid",
@@ -217,6 +232,28 @@ class TestParseLifecycleFromJson:
         assert operations[1].action == "skip"
         assert operations[1].tools_allowlist == []
 
+    def test_parse_lifecycle_with_deprecate(self) -> None:
+        json_str = json.dumps(
+            {
+                "operations": [
+                    {
+                        "action": "deprecate",
+                        "name": "old_skill",
+                        "description": "No longer needed",
+                        "instructions": "Deprecated",
+                        "trigger_mode": "pattern",
+                        "tools_allowlist": None,
+                        "source_confidence": "high",
+                        "reason": "Skill is obsolete",
+                    },
+                ],
+            }
+        )
+        operations = parse_lifecycle_from_json(json_str)
+        assert len(operations) == 1
+        assert operations[0].action == "deprecate"
+        assert operations[0].name == "old_skill"
+
     def test_parse_empty_operations(self) -> None:
         json_str = '{"operations": []}'
         operations = parse_lifecycle_from_json(json_str)
@@ -269,7 +306,7 @@ class TestSkillLifecycleSchema:
         assert "source_confidence" in item_props
         assert "reason" in item_props
 
-        assert item_props["action"]["enum"] == ["create", "update", "skip"]
+        assert item_props["action"]["enum"] == ["create", "update", "deprecate", "skip"]
         assert item_props["trigger_mode"]["enum"] == ["always", "pattern", "intelligent"]
         assert item_props["source_confidence"]["enum"] == ["high", "medium", "low"]
 
