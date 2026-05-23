@@ -264,6 +264,10 @@ class BotCore:
         return True
 
     async def _handle_scheduled_task(self, scoped_id: str, prompt: str, *, task_id: int = 0, cron_expr: str = "") -> None:
+        # Mark task as ran immediately so it won't appear as due on the next poll cycle.
+        # Without this, the 20s poll interval would re-enqueue the same task during execution.
+        if task_id and cron_expr:
+            self.scheduler_store.mark_ran(task_id, cron_expr)
         await self._message_queue.put(ScheduledTaskMessage(scope=scoped_id, prompt=prompt, task_id=task_id, cron_expr=cron_expr))
 
     async def _handle_scheduled_task_message(self, msg: ScheduledTaskMessage) -> None:
@@ -292,8 +296,6 @@ class BotCore:
             )
             await self.on_subagent_result(result_msg)
             await self._evaluate_turn(msg.scope, msg.prompt, result)
-            if msg.task_id and msg.cron_expr:
-                self.scheduler_store.mark_ran(msg.task_id, msg.cron_expr)
         except Exception:
             logger.exception("Scheduled task execution failed task_id=%d scope=%s", msg.task_id, msg.scope)
         finally:

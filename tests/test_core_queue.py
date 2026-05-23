@@ -7,7 +7,7 @@ import pytest
 
 from nanobot.channels.base import IncomingMessage
 from nanobot.core import BotCore
-from nanobot.messages import SubagentResultMessage, UserMessage
+from nanobot.messages import ScheduledTaskMessage, SubagentResultMessage, UserMessage
 
 
 class _FakeChannel:
@@ -283,3 +283,76 @@ async def test_handle_subagent_result_notifies_on_failure_with_context_overflow(
             assert mock_send.call_count == 1
             sent_text = mock_send.call_args[0][1]
             assert "context window" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_handle_scheduled_task_enqueues_message_and_marks_ran(bot: BotCore) -> None:
+    scheduled_msg = ScheduledTaskMessage(
+        scope="telegram:123",
+        prompt="Check listings",
+        task_id=5,
+        cron_expr="0 7 * * *",
+    )
+
+    with patch.object(bot.scheduler_store, "mark_ran") as mock_mark_ran:
+        await bot._handle_scheduled_task(
+            "telegram:123",
+            "Check listings",
+            task_id=5,
+            cron_expr="0 7 * * *",
+        )
+
+    mock_mark_ran.assert_called_once_with(5, "0 7 * * *")
+
+    assert bot._message_queue.qsize() == 1
+    msg = bot._message_queue.get_nowait()
+    assert isinstance(msg, ScheduledTaskMessage)
+    assert msg.scope == "telegram:123"
+    assert msg.prompt == "Check listings"
+    assert msg.task_id == 5
+    assert msg.cron_expr == "0 7 * * *"
+
+
+@pytest.mark.asyncio
+async def test_handle_scheduled_task_no_mark_ran_without_task_id(bot: BotCore) -> None:
+    with patch.object(bot.scheduler_store, "mark_ran") as mock_mark_ran:
+        await bot._handle_scheduled_task("telegram:456", "hello")
+
+    mock_mark_ran.assert_not_called()
+    assert bot._message_queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_scheduled_task_message_does_not_call_mark_ran(bot: BotCore) -> None:
+    msg = ScheduledTaskMessage(
+        scope="telegram:123",
+        prompt="Check listings",
+        task_id=5,
+        cron_expr="0 7 * * *",
+    )
+
+    fake_result = SubagentResultMessage(
+        run_id="run-test123",
+        parent_scope="telegram:123",
+        success=True,
+        summary="Done",
+        tool_trace=[{"name": "timer__time_now", "args": {}, "result_preview": "12:00"}],
+    )
+
+    with (
+        patch.object(bot, "prompts") as mock_prompts,
+        patch.object(bot.subagent_manager, "spawn") as mock_spawn,
+        patch.object(bot.subagent_manager, "execute", new_callable=AsyncMock) as mock_execute,
+        patch.object(bot, "on_subagent_result", new_callable=AsyncMock),
+        patch.object(bot, "_evaluate_turn", new_callable=AsyncMock),
+        patch.object(bot, "_get_active_skill_names", return_value=[]),
+        patch.object(bot, "_list_openai_tools", return_value=[]),
+        patch.object(bot.scheduler_store, "mark_ran") as mock_mark_ran,
+    ):
+        mock_prompts.render.return_value = "scheduled system prompt"
+        mock_spawn.return_value.id = "run-test123"
+        mock_execute.return_value = type("R", (), {"run_id": "run-test123", "success": True, "reply": "Done", "tool_trace": fake_result.tool_trace, "error": None})()
+
+        await bot._handle_scheduled_task_message(msg)
+
+    mock_mark_ran.assert_not_called()

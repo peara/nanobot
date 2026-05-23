@@ -145,9 +145,9 @@ flowchart TD
 
 **Step by step:**
 
-1. **Incoming** — A channel calls `self.emit(IncomingMessage)` → `BotCore.on_incoming` wraps it as `UserMessage` and enqueues to `asyncio.Queue`. The scheduler also enqueues due tasks. The queue serializes everything.
+1. **Incoming** — A channel calls `self.emit(IncomingMessage)` → `BotCore.on_incoming` wraps it as `UserMessage` and enqueues to `asyncio.Queue`. The scheduler also enqueues due tasks as `ScheduledTaskMessage`. Subagent results arrive as `SubagentResultMessage`. The queue serializes all three message types, preventing concurrent runs on the same scope.
 2. **Dispatch** — `_process_queue_loop` dequeues one message at a time. Slash commands go to `CommandManager` (no subagent run created). Everything else goes to `_process`.
-3. **SubagentManager** — `_process` persists the user message, clears the scratchpad, then `spawn()` creates a `SubagentRun` record for observability. `execute()` hands off to `AgentRun`.
+3. **SubagentManager** — `_process` persists the user message, then `spawn()` creates a `SubagentRun` record for observability. `execute()` hands off to `AgentRun`. Each run gets its own scratchpad keyed by `run_id` (under `subagent_run` scope type), so concurrent runs on the same scope don't clobber each other's working state.
 4. **AgentRun** — The LLM chat loop. Each turn: send messages to LLM, if it returns `tool_calls` execute them through `ToolRegistry` and loop, if it returns text exit with the reply. The scratchpad is updated via `session__scratchpad_write` throughout (init → append → finalize). See [SCRATCHPAD.md](docs/SCRATCHPAD.md) for the full lifecycle.
 5. **Reply** — Persist the assistant message, update context store, send reply via `channel.send()`.
 6. **Evaluate** — After the reply is sent, `_evaluate_turn` runs the `LearningEvaluator` (if enabled). This may auto-create or update skills. See [EVALUATOR.md](docs/EVALUATOR.md) for the three-phase pipeline.
@@ -160,7 +160,7 @@ flowchart TD
 | **AgentRun** | `agent_run.py` | LLM chat loop with tool calling, scratchpad protocol, finalize exit path |
 | **SubagentManager** | `subagents/` | Spawn/execute subagent runs with observability tracking |
 | **CommandManager** | `core_commands/` | Slash commands: help, ctx, reset, plan, scratchpad, reload, status, session |
-| **Scratchpad** | `core_scratchpad.py` | Per-turn structured working state (goal, steps, facts, tool journal) |
+| **Scratchpad** | `core_scratchpad.py` | Per-run structured working state (goal, steps, facts, tool journal) |
 | **SkillMatcher** | `skills/matcher.py` | Resolves which skills to inject (always/pattern/intelligent) |
 | **LearningEvaluator** | `evaluator/runner.py` | Turns good conversations into skills (quality → learning → lifecycle) |
 | **McpHub** | `mcp_hub.py` | Connects to configured MCP servers, routes tool calls |
@@ -175,7 +175,7 @@ Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/
 | Store | File | Table | Purpose |
 | ----- | ---- | ----- | ------- |
 | **ConversationStore** | `memory.py` | `messages` | Full chat transcript |
-| **ContextStore** | `context_store.py` | `contexts` | Scoped JSON (scratchpad, pointers, traces) |
+| **ContextStore** | `context_store.py` | `contexts` | Scoped JSON — scratchpad (under `subagent_run:{run_id}` scope per-run, or `chat:{scope}` fallback), pointers, traces |
 | **SchedulerStore** | `scheduler_store.py` | `scheduled_tasks` | Time-based task queue |
 | **SubagentRunStore** | `subagents/store.py` | `subagent_runs` | Run metadata (scope, status, timing) |
 | **ToolStatsStore** | `tools/stats.py` | `tool_calls` | Tool invocations with `run_id` link |
@@ -187,14 +187,15 @@ Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/
 **Key relationships:**
 - `subagent_runs.id` ← `tool_calls.run_id` — Links tool calls to specific runs
 - `subagent_runs.scope` — Chat scope (e.g. `telegram:500506690`)
-- `contexts` — Stores run goal/status/result under `subagent_run:{id}` scope
+- `contexts` — Stores run goal/status/result/skill-injection under `subagent_run:{id}` scope
+- `contexts` — Stores per-run scratchpad under `subagent_run:{run_id}` scope; `_process` no longer clears scratchpad since each run is isolated
 
 ### Hooks
 
 Three integration points connect components to the core:
 
-- **Channel → core**: `Channel.set_handler` → `BotCore.on_incoming`.
-- **Scheduler → core**: `SchedulerRunner(on_due_task=...)` → message queue.
+- **Channel → core**: `Channel.set_handler` → `BotCore.on_incoming` → `UserMessage` enqueued.
+- **Scheduler → core**: `SchedulerRunner(on_due_task=...)` → `ScheduledTaskMessage` enqueued (serialized with user messages via `asyncio.Queue`). `mark_ran(task_id, cron_expr)` is called at enqueue time to prevent re-enqueue on the next poll cycle.
 - **After each tool call**: `ToolHook.after_tool_call(event, bot)` dispatched by `BotCore._dispatch_after_tool_call`. Built-in hooks: `ToolResultRecorderHook` (all tool calls), `BrowseEventRecorderHook` (`playwright__*` only), `FileTraceHook` (conditional, when FileChannel has `capture_tool_calls=true`).
 
 **Event fields**: `scope`, `call_id`, `tool_name`, `args`, `result`, `result_preview`, `ok`, `error`, `at`.

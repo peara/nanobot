@@ -27,7 +27,7 @@ Current steps:
    - `_trim_history_by_chars(history_char_limit)`
 4. Build model message list:
    - base system prompt (`_base_system_message()`)
-   - optional scratchpad system message (`_scratchpad_system_message(scope)`)
+   - scratchpad assistant message (`scratchpad_assistant_message(scope, run_id=run_id)`)
    - trimmed chat history
 5. Call `_run_agent_turn(... persist_assistant=True)`.
 
@@ -102,9 +102,9 @@ Implication:
 Current scratchpad design:
 
 - Tool name: `session__scratchpad_write`
-- Storage key: `contexts(scope_type="chat", key="scratchpad")`
-- Injection: `_scratchpad_system_message(scope)` is added to prompt before history.
-- Reset behavior: `/reset` clears chat history and sets scratchpad empty.
+- Storage key: `contexts(scope_type="subagent_run", scope_id=run_id, key="scratchpad")` when inside a subagent run (per-run isolation); falls back to `contexts(scope_type="chat", scope_id=scope, key="scratchpad")` when no run context is available (e.g., `/scratchpad show` command).
+- Injection: `scratchpad_assistant_message(scope, run_id=run_id)` appended as the last user-role message in the LLM prompt before each round.
+- Reset behavior: Each subagent run starts with a fresh scratchpad (keyed by `run_id`), so no explicit clear is needed at turn start. The `/reset` command clears chat history but no longer clears the scratchpad (old run scratchpads are orphaned harmlessly).
 
 **Modes:**
 
@@ -119,13 +119,19 @@ Current limitation:
 - Scratchpad writes depend on model deciding to call `session__scratchpad_write`.
 - If model does not call it, scratchpad remains stale/empty.
 
-## 6) Scheduled Turn Path (`_process_scheduled`)
+**Why per-run isolation matters:**
 
-Current scheduled flow:
+Without per-run keys, two concurrent subagent runs on the same chat scope (e.g., a user message and a scheduled task) would clobber each other's scratchpad state — one run writes `{goal: "Minolta search"}`, the other overwrites it with `{goal: "Reddit trending"}`, causing both runs to loop indefinitely without reaching `finalize`.
 
-- Builds a separate prompt with:
-  - base system prompt
-  - scheduler marker system message
-  - scheduled prompt as user content
-- Runs `_run_agent_turn(...)`.
-- Persists assistant reply only.
+## 6) Scheduled Turn Path (`_handle_scheduled_task_message`)
+
+Scheduled tasks are serialized through the same `asyncio.Queue` as user messages, preventing concurrent subagent runs on the same scope:
+
+1. `SchedulerRunner._loop()` polls `SchedulerStore.due_tasks()` every N seconds.
+2. For each due task, the callback `_handle_scheduled_task(scoped_id, prompt, task_id=..., cron_expr=...)` wraps it into a `ScheduledTaskMessage(scope, prompt, task_id, cron_expr)` and puts it into `_message_queue`.
+3. `_process_queue_loop` dequeues the `ScheduledTaskMessage` (serialized with user messages and subagent results) and calls `_handle_scheduled_task_message`.
+4. `_handle_scheduled_task_message` builds a system prompt with scheduler context, spawns a subagent run, executes it, sends the result via the channel, and evaluates the turn.
+5. `active_requests[scope]` is set during execution and cleared in the `finally` block, making scheduled tasks visible to `/status`.
+6. `mark_ran(task_id, cron_expr)` is called in `_handle_scheduled_task` at enqueue time — not after execution — so the scheduler won't re-enqueue the same task on the next poll cycle.
+
+This ensures that if a user message and a scheduled task arrive for the same scope at the same time, they are processed one at a time — no concurrent scratchpad clobbering or context collision.
