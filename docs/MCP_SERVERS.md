@@ -60,23 +60,10 @@ A list of environment variable names that must be set before nanobot attempts to
 - name: "reddit"
   command: "python"
   args: ["-m", "nanobot.mcp_servers.reddit.server"]
-  required_env:
-    - PRAW_CLIENT_ID
-    - PRAW_CLIENT_SECRET
-    - PRAW_REFRESH_TOKEN
-  env:
-    PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"
-    PRAW_CLIENT_SECRET: "${PRAW_CLIENT_SECRET}"
-    PRAW_REFRESH_TOKEN: "${PRAW_REFRESH_TOKEN}"
+  env: {}
 ```
 
-If `PRAW_CLIENT_ID` is not in the environment at startup, nanobot prints:
-
-```
-WARNING  Skipping MCP server 'reddit': missing required env vars: ['PRAW_CLIENT_ID']
-```
-
-No crash, no partial start. The remaining servers load normally.
+The Reddit server uses public JSON endpoints — no credentials are required. If `required_env` is empty or absent, the server always starts.
 
 ### env
 
@@ -85,7 +72,7 @@ A dict of environment variables injected into the server subprocess. Values can 
 ```yaml
 env:
   WEB_AGENT_HEADLESS: "true"                  # literal value
-  PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"         # expanded from shell env
+  REDDIT_USER_AGENT: "mybot/2.0 (by /u/user)" # literal value for Reddit
   DB_PATH: "./data/scheduler.db"              # literal path
 ```
 
@@ -115,21 +102,15 @@ Use this file for credentials, machine-specific paths, and optional servers that
 | `list` | Append (override list items are added after base list items) |
 | `scalar` | Override wins (replace base value entirely) |
 
-Example: adding the Reddit server in `config.override.yaml`:
+Example: adding custom configuration in `config.override.yaml`:
 
 ```yaml
 mcp_servers:
   - name: "reddit"
     command: "python"
     args: ["-m", "nanobot.mcp_servers.reddit.server"]
-    required_env:
-      - PRAW_CLIENT_ID
-      - PRAW_CLIENT_SECRET
-      - PRAW_REFRESH_TOKEN
     env:
-      PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"
-      PRAW_CLIENT_SECRET: "${PRAW_CLIENT_SECRET}"
-      PRAW_REFRESH_TOKEN: "${PRAW_REFRESH_TOKEN}"
+      REDDIT_USER_AGENT: "mybot/2.0 (by /u/myusername)"
 ```
 
 Since `mcp_servers` is a list, this entry is appended after the base servers defined in `config.yaml`. The base servers (timer, scheduler, web, playwright) remain unchanged.
@@ -150,10 +131,11 @@ In both cases, the bot continues with whatever servers did start. No single serv
 ```
 INFO     Started MCP server 'timer' (2 tools)
 INFO     Started MCP server 'scheduler' (7 tools)
-WARNING  Skipping MCP server 'reddit': missing required env vars: ['PRAW_CLIENT_ID', 'PRAW_CLIENT_SECRET']
+INFO     Started MCP server 'reddit' (5 tools)
+WARNING  Skipping MCP server 'broken': missing required env vars: ['API_KEY']
 ERROR    Failed to start MCP server 'broken', skipping
          Traceback (most recent call last): ...
-INFO     MCP servers started: ['timer', 'scheduler']
+INFO     MCP servers started: ['timer', 'scheduler', 'reddit']
 ```
 
 Tools from skipped servers simply don't appear in the LLM's tool list. The agent cannot call tools that were never registered.
@@ -217,12 +199,4 @@ No Python registration is needed. McpHub auto-discovers tools from the config en
 
 Services that require credentials (API keys, OAuth tokens) use the `required_env` + `config.override.yaml` pattern together. The server entry goes in `config.override.yaml` with `required_env` listing every credential variable. If any credential is absent, the server is silently skipped at startup without affecting other servers.
 
-For OAuth-based services, the `external_tokens` CLI bootstraps credentials:
-
-```bash
-python -m nanobot.external_tokens reddit --client-id ID --client-secret SECRET
-```
-
-This runs an interactive OAuth flow, stores the resulting refresh token in `.env`, and appends the server entry to `config.override.yaml`.
-
-See the canonical example of this pattern in [REDDIT.md](REDDIT.md).
+The Reddit server is an exception — it uses public JSON endpoints and requires no credentials. It can be added directly to `config.yaml` with no `required_env`.

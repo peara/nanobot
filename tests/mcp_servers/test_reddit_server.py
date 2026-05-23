@@ -1,49 +1,76 @@
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-# asyncpraw/asyncprawcore may not be installed yet; stub them for import
-_asyncpraw_stub = MagicMock()
-_asyncpraw_models = MagicMock()
-_asyncpraw_models.Submission = MagicMock
-_asyncpraw_stub.models = _asyncpraw_models
-_asyncprawcore_exc = MagicMock()
-_asyncprawcore_exc.NotFound = type(
-    "NotFound",
-    (Exception,),
-    {
-        "__module__": "asyncprawcore.exceptions",
-        "__init__": lambda self, *a, **kw: Exception.__init__(self, *a),
-    },
-)
-_asyncprawcore_exc.Forbidden = type(
-    "Forbidden",
-    (Exception,),
-    {
-        "__module__": "asyncprawcore.exceptions",
-        "__init__": lambda self, *a, **kw: Exception.__init__(self, *a),
-    },
-)
+from nanobot.mcp_servers.reddit import server
 
-# asyncprawcore.exceptions must be reachable via asyncprawcore.exceptions
-# so that except clauses in the server module resolve correctly.
-_asyncprawcore_stub = MagicMock()
-_asyncprawcore_stub.exceptions = _asyncprawcore_exc
 
-sys.modules.setdefault("asyncpraw", _asyncpraw_stub)
-sys.modules.setdefault("asyncpraw.models", _asyncpraw_models)
-sys.modules.setdefault("asyncprawcore", _asyncprawcore_stub)
-sys.modules.setdefault("asyncprawcore.exceptions", _asyncprawcore_exc)
+def _make_headers(rate_remaining: str | None = "100", rate_reset: str | None = "600") -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if rate_remaining is not None:
+        headers["x-ratelimit-remaining"] = rate_remaining
+    if rate_reset is not None:
+        headers["x-ratelimit-reset"] = rate_reset
+    return headers
 
-from nanobot.mcp_servers.reddit import server  # noqa: E402
 
-_NotFound = server.asyncprawcore.exceptions.NotFound
-_Forbidden = server.asyncprawcore.exceptions.Forbidden
+def _make_response(
+    status_code: int = 200,
+    json_data: Any = None,
+    headers: dict[str, str] | None = None,
+    text: str = "",
+) -> MagicMock:
+    resp = MagicMock(spec=[])
+    resp.status_code = status_code
+    resp.json = MagicMock(return_value=json_data or {})
+    resp.text = text
+    resp.headers = _make_headers() if headers is None else headers
+    return resp
+
+
+def _make_post_data(**overrides: Any) -> dict[str, Any]:
+    defaults = {
+        "id": "abc123",
+        "title": "Test Post",
+        "selftext": "Post body",
+        "author": "testuser",
+        "score": 42,
+        "num_comments": 10,
+        "created_utc": 1700000000.0,
+        "permalink": "/r/python/comments/abc123/test_post/",
+        "url": "https://example.com",
+        "is_self": True,
+        "link_flair_text": "Discussion",
+        "over_18": False,
+        "stickied": False,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _make_listing(children: list[dict[str, Any]], after: str | None = None) -> dict[str, Any]:
+    return {"kind": "Listing", "data": {"children": children, "after": after}}
+
+
+def _make_subreddit_data(**overrides: Any) -> dict[str, Any]:
+    defaults = {
+        "id": "2qhg4",
+        "display_name": "python",
+        "title": "Python",
+        "public_description": "News about Python",
+        "description": "Detailed description",
+        "subscribers": 2000000,
+        "active_user_count": 5000,
+        "over18": False,
+        "created_utc": 1160693407.0,
+    }
+    defaults.update(overrides)
+    return defaults
 
 
 class TestTruncate:
@@ -58,7 +85,6 @@ class TestTruncate:
         text = "a" * 600
         result = server._truncate(text, 500)
         assert result == "a" * 500 + " [truncated]"
-        assert len(result) == len("a" * 500) + len(" [truncated]")
 
     def test_custom_limit(self) -> None:
         text = "a" * 100
@@ -69,27 +95,10 @@ class TestTruncate:
         assert server._truncate("", 500) == ""
 
 
-class TestSubmissionToDict:
-    def _make_submission(self, **overrides: Any) -> MagicMock:
-        sub = MagicMock()
-        sub.id = overrides.get("id", "abc123")
-        sub.title = overrides.get("title", "Test Post")
-        sub.selftext = overrides.get("selftext", "Post body")
-        sub.author = overrides.get("author", MagicMock(__str__=lambda s: "testuser"))
-        sub.score = overrides.get("score", 42)
-        sub.num_comments = overrides.get("num_comments", 10)
-        sub.created_utc = overrides.get("created_utc", 1700000000.0)
-        sub.permalink = overrides.get("permalink", "/r/python/comments/abc123/test_post/")
-        sub.url = overrides.get("url", "https://example.com")
-        sub.is_self = overrides.get("is_self", True)
-        sub.link_flair_text = overrides.get("link_flair_text", "Discussion")
-        sub.over_18 = overrides.get("over_18", False)
-        sub.stickied = overrides.get("stickied", False)
-        return sub
-
+class TestParsePost:
     def test_basic_fields(self) -> None:
-        sub = self._make_submission()
-        result = server._submission_to_dict(sub)
+        data = _make_post_data()
+        result = server._parse_post(data)
         assert result["id"] == "abc123"
         assert result["title"] == "Test Post"
         assert result["body"] == "Post body"
@@ -102,65 +111,156 @@ class TestSubmissionToDict:
         assert result["over_18"] is False
         assert result["stickied"] is False
 
-    def test_permalink_url(self) -> None:
-        sub = self._make_submission(permalink="/r/python/comments/abc123/test_post/")
-        result = server._submission_to_dict(sub)
+    def test_permalink_prefixed(self) -> None:
+        data = _make_post_data(permalink="/r/python/comments/abc123/test_post/")
+        result = server._parse_post(data)
         assert result["permalink"] == "https://reddit.com/r/python/comments/abc123/test_post/"
 
     def test_deleted_author(self) -> None:
-        sub = self._make_submission(author=None)
-        result = server._submission_to_dict(sub)
+        data = _make_post_data(author=None)
+        result = server._parse_post(data)
         assert result["author"] == "[deleted]"
 
     def test_created_utc_iso_format(self) -> None:
-        sub = self._make_submission(created_utc=1700000000.0)
-        result = server._submission_to_dict(sub)
+        data = _make_post_data(created_utc=1700000000.0)
+        result = server._parse_post(data)
         expected = datetime.fromtimestamp(1700000000.0, tz=timezone.utc).isoformat()
         assert result["created_utc"] == expected
 
     def test_long_selftext_truncated(self) -> None:
-        sub = self._make_submission(selftext="x" * 600)
-        result = server._submission_to_dict(sub)
+        data = _make_post_data(selftext="x" * 600)
+        result = server._parse_post(data)
         assert result["body"].endswith("[truncated]")
         assert len(result["body"]) < 600
 
     def test_empty_selftext(self) -> None:
-        sub = self._make_submission(selftext="")
-        result = server._submission_to_dict(sub)
+        data = _make_post_data(selftext="")
+        result = server._parse_post(data)
         assert result["body"] == ""
 
     def test_none_selftext(self) -> None:
-        sub = self._make_submission(selftext=None)
-        # selftext=None is falsy, so `or ""` converts it
-        result = server._submission_to_dict(sub)
+        data = _make_post_data(selftext=None)
+        result = server._parse_post(data)
         assert result["body"] == ""
+
+    def test_none_flair(self) -> None:
+        data = _make_post_data(link_flair_text=None)
+        result = server._parse_post(data)
+        assert result["flair"] is None
+
+
+class TestParseComment:
+    def test_basic_fields(self) -> None:
+        data = {"id": "c1", "author": "commenter", "body": "Great post!", "score": 15, "created_utc": 1700000100.0}
+        result = server._parse_comment(data)
+        assert result["id"] == "c1"
+        assert result["author"] == "commenter"
+        assert result["body"] == "Great post!"
+        assert result["score"] == 15
+
+    def test_deleted_author(self) -> None:
+        data = {"id": "c1", "author": None, "body": "removed", "score": 0, "created_utc": 1700000100.0}
+        result = server._parse_comment(data)
+        assert result["author"] == "[deleted]"
+
+    def test_long_body_truncated(self) -> None:
+        data = {"id": "c1", "author": "u", "body": "a" * 500, "score": 1, "created_utc": 1700000100.0}
+        result = server._parse_comment(data)
+        assert result["body"].endswith("[truncated]")
+        assert len(result["body"]) < 500
+
+
+class TestParseSubreddit:
+    def test_basic_fields(self) -> None:
+        data = _make_subreddit_data()
+        result = server._parse_subreddit(data)
+        assert result["ok"] is True
+        assert result["name"] == "python"
+        assert result["title"] == "Python"
+        assert result["subscribers"] == 2000000
+        assert result["url"] == "https://reddit.com/r/python"
+
+    def test_truncated_descriptions(self) -> None:
+        data = _make_subreddit_data(public_description="a" * 600, description="b" * 1200)
+        result = server._parse_subreddit(data)
+        assert result["description"].endswith("[truncated]")
+        assert result["description_long"].endswith("[truncated]")
 
 
 class TestRedditHealth:
-    def test_returns_env_status(self) -> None:
-        with patch.dict("os.environ", {"PRAW_CLIENT_ID": "id", "PRAW_CLIENT_SECRET": "secret"}, clear=False):
-            result = server.reddit_health()
-        assert result["ok"] is True
-        assert result["has_client_id"] is True
-        assert result["has_client_secret"] is True
-
-    def test_missing_env_vars(self) -> None:
+    def test_returns_anonymous_mode(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             result = server.reddit_health()
         assert result["ok"] is True
-        assert result["has_client_id"] is False
-        assert result["has_client_secret"] is False
-        assert result["has_refresh_token"] is False
+        assert result["auth_mode"] == "anonymous"
+        assert "user_agent" in result
+        assert "rate_limit_remaining" in result
+        assert "rate_limit_reset" in result
 
     def test_custom_user_agent(self) -> None:
-        with patch.dict("os.environ", {"PRAW_USER_AGENT": "custom/2.0"}, clear=False):
+        with patch.dict("os.environ", {"REDDIT_USER_AGENT": "custom/2.0"}, clear=False):
             result = server.reddit_health()
         assert result["user_agent"] == "custom/2.0"
 
     def test_default_user_agent(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             result = server.reddit_health()
-        assert result["user_agent"] == "nanobot-reddit/1.0"
+        assert result["user_agent"] == "nanobot-reddit/1.0 (by /u/nanobot)"
+
+
+@pytest.mark.asyncio
+class TestRedditGetSubreddit:
+    async def test_successful_fetch(self) -> None:
+        sub_data = _make_subreddit_data()
+        response = _make_response(json_data={"kind": "t5", "data": sub_data})
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_subreddit("python")
+
+        assert result["ok"] is True
+        assert result["name"] == "python"
+        assert result["title"] == "Python"
+        assert result["subscribers"] == 2000000
+        assert result["url"] == "https://reddit.com/r/python"
+
+    async def test_not_found(self) -> None:
+        response = _make_response(status_code=404, text="Not Found")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_subreddit("nonexistent12345")
+
+        assert result["ok"] is False
+        assert result["error"] == "not_found"
+
+    async def test_forbidden(self) -> None:
+        response = _make_response(status_code=403, text="Forbidden")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_subreddit("private_sub")
+
+        assert result["ok"] is False
+        assert result["error"] == "forbidden"
+
+    async def test_network_error(self) -> None:
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_subreddit("python")
+
+        assert result["ok"] is False
+        assert result["error"] == "api_error"
 
 
 @pytest.mark.asyncio
@@ -177,33 +277,118 @@ class TestRedditGetPostsValidation:
         assert result["error"] == "invalid_time_filter"
         assert "decade" in result["message"]
 
-    async def test_limit_capped_at_max(self) -> None:
-        fake_submission = MagicMock()
-        fake_submission.id = "x1"
-        fake_submission.title = "T"
-        fake_submission.selftext = ""
-        fake_submission.author = None
-        fake_submission.score = 0
-        fake_submission.num_comments = 0
-        fake_submission.created_utc = 1700000000.0
-        fake_submission.permalink = "/r/test/x1"
-        fake_submission.url = "https://example.com"
-        fake_submission.is_self = False
-        fake_submission.link_flair_text = None
-        fake_submission.over_18 = False
-        fake_submission.stickied = False
+    async def test_successful_hot_posts(self) -> None:
+        post_data = _make_post_data(id="s1", title="Hot Post")
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(json_data=listing)
 
-        async def _aiter(*_args: Any, **_kwargs: Any) -> Any:
-            yield fake_submission
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
 
-        mock_subreddit = AsyncMock()
-        mock_subreddit.hot = MagicMock(return_value=_aiter())
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(return_value=mock_subreddit)
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_posts("python", sort="hot")
 
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_posts("python", limit=100)
         assert result["ok"] is True
+        assert result["subreddit"] == "python"
+        assert result["sort"] == "hot"
+        assert len(result["posts"]) == 1
+        assert result["posts"][0]["id"] == "s1"
+
+    async def test_not_found(self) -> None:
+        response = _make_response(status_code=404, text="Not Found")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_posts("nonexistent12345")
+
+        assert result["ok"] is False
+        assert result["error"] == "not_found"
+
+    async def test_forbidden(self) -> None:
+        response = _make_response(status_code=403, text="Forbidden")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_posts("private_sub")
+
+        assert result["ok"] is False
+        assert result["error"] == "forbidden"
+
+    async def test_top_sort_includes_time_filter(self) -> None:
+        post_data = _make_post_data()
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(json_data=listing)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            await server.reddit_get_posts("python", sort="top", time_filter="week", limit=5)
+
+        call_args = mock_client.get.call_args
+        url = call_args[0][0]
+        assert "/r/python/top.json" in url
+        assert "t=week" in url
+        assert "limit=5" in url
+
+
+@pytest.mark.asyncio
+class TestRedditGetPost:
+    async def test_successful_fetch_with_comments(self) -> None:
+        post_data = _make_post_data()
+        comment_data = {
+            "id": "c1",
+            "author": "commenter",
+            "body": "Great post!",
+            "score": 15,
+            "created_utc": 1700000100.0,
+        }
+        payload = [
+            _make_listing([{"kind": "t3", "data": post_data}]),
+            _make_listing([{"kind": "t1", "data": comment_data}]),
+        ]
+        response = _make_response(json_data=payload)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_post("abc123")
+
+        assert result["ok"] is True
+        assert result["id"] == "abc123"
+        assert result["title"] == "Test Post"
+        assert len(result["top_comments"]) == 1
+        assert result["top_comments"][0]["id"] == "c1"
+        assert result["top_comments"][0]["author"] == "commenter"
+
+    async def test_not_found(self) -> None:
+        response = _make_response(status_code=404, text="Not Found")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_post("nonexistent")
+
+        assert result["ok"] is False
+        assert result["error"] == "not_found"
+
+    async def test_invalid_response_format(self) -> None:
+        response = _make_response(json_data={"error": "not a listing"})
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            result = await server.reddit_get_post("abc123")
+
+        assert result["ok"] is False
+        assert result["error"] == "api_error"
 
 
 @pytest.mark.asyncio
@@ -218,232 +403,15 @@ class TestRedditSearchValidation:
         assert result["ok"] is False
         assert result["error"] == "invalid_time_filter"
 
+    async def test_successful_search_with_subreddit(self) -> None:
+        post_data = _make_post_data(id="s2", title="Search Result")
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(json_data=listing)
 
-@pytest.mark.asyncio
-class TestRedditGetSubreddit:
-    async def test_successful_fetch(self) -> None:
-        mock_sub = AsyncMock()
-        mock_sub.id = "2qhg4"
-        mock_sub.display_name = "python"
-        mock_sub.title = "Python"
-        mock_sub.public_description = "News about Python"
-        mock_sub.description = "Detailed description"
-        mock_sub.subscribers = 2000000
-        mock_sub.active_user_count = 5000
-        mock_sub.over18 = False
-        mock_sub.created_utc = 1160693407.0
-        mock_sub.load = AsyncMock()
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
 
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(return_value=mock_sub)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_subreddit("python")
-
-        assert result["ok"] is True
-        assert result["name"] == "python"
-        assert result["title"] == "Python"
-        assert result["subscribers"] == 2000000
-        assert result["url"] == "https://reddit.com/r/python"
-
-    async def test_not_found(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(
-            side_effect=_NotFound(response=MagicMock()),
-        )
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_subreddit("nonexistent12345")
-        assert result["ok"] is False
-        assert result["error"] == "not_found"
-
-    async def test_forbidden(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(
-            side_effect=_Forbidden(response=MagicMock()),
-        )
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_subreddit("private_sub")
-        assert result["ok"] is False
-        assert result["error"] == "forbidden"
-
-
-@pytest.mark.asyncio
-class TestRedditGetPost:
-    async def test_successful_fetch_with_comments(self) -> None:
-        mock_comment = MagicMock()
-        mock_comment.id = "c1"
-        mock_comment.author = MagicMock(__str__=lambda s: "commenter")
-        mock_comment.body = "Great post!"
-        mock_comment.score = 15
-        mock_comment.created_utc = 1700000100.0
-
-        mock_comments = MagicMock()
-        mock_comments.replace_more = AsyncMock()
-        mock_comments.__iter__ = MagicMock(return_value=iter([mock_comment]))
-        mock_comments.__getitem__ = MagicMock(return_value=[mock_comment])
-
-        mock_submission = AsyncMock()
-        mock_submission.id = "abc123"
-        mock_submission.title = "Test Post"
-        mock_submission.selftext = "Body text"
-        mock_submission.author = MagicMock(__str__=lambda s: "poster")
-        mock_submission.score = 100
-        mock_submission.num_comments = 5
-        mock_submission.created_utc = 1700000000.0
-        mock_submission.permalink = "/r/python/comments/abc123/test_post/"
-        mock_submission.url = "https://example.com"
-        mock_submission.is_self = True
-        mock_submission.link_flair_text = None
-        mock_submission.over_18 = False
-        mock_submission.stickied = False
-        mock_submission.comments = mock_comments
-        mock_submission.load = AsyncMock()
-
-        mock_reddit = AsyncMock()
-        mock_reddit.submission = AsyncMock(return_value=mock_submission)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_post("abc123")
-
-        assert result["ok"] is True
-        assert result["id"] == "abc123"
-        assert result["title"] == "Test Post"
-        assert len(result["top_comments"]) == 1
-        assert result["top_comments"][0]["id"] == "c1"
-        assert result["top_comments"][0]["author"] == "commenter"
-
-    async def test_not_found(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.submission = AsyncMock(
-            side_effect=_NotFound(response=MagicMock()),
-        )
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_post("nonexistent")
-        assert result["ok"] is False
-        assert result["error"] == "not_found"
-
-    async def test_comment_limit_capped(self) -> None:
-        mock_comments = MagicMock()
-        mock_comments.replace_more = AsyncMock()
-        mock_comments.__iter__ = MagicMock(return_value=iter([]))
-        mock_comments.__getitem__ = MagicMock(return_value=[])
-
-        mock_submission = AsyncMock()
-        mock_submission.id = "p1"
-        mock_submission.title = "T"
-        mock_submission.selftext = ""
-        mock_submission.author = None
-        mock_submission.score = 0
-        mock_submission.num_comments = 0
-        mock_submission.created_utc = 1700000000.0
-        mock_submission.permalink = "/r/test/p1"
-        mock_submission.url = "https://example.com"
-        mock_submission.is_self = False
-        mock_submission.link_flair_text = None
-        mock_submission.over_18 = False
-        mock_submission.stickied = False
-        mock_submission.comments = mock_comments
-        mock_submission.load = AsyncMock()
-
-        mock_reddit = AsyncMock()
-        mock_reddit.submission = AsyncMock(return_value=mock_submission)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_post("p1", comment_limit=50)
-        # comment_limit capped at 25 internally, function still works
-        assert result["ok"] is True
-
-
-@pytest.mark.asyncio
-class TestRedditGetPosts:
-    async def test_successful_hot_posts(self) -> None:
-        fake_submission = MagicMock()
-        fake_submission.id = "s1"
-        fake_submission.title = "Hot Post"
-        fake_submission.selftext = "Content"
-        fake_submission.author = MagicMock(__str__=lambda s: "user1")
-        fake_submission.score = 99
-        fake_submission.num_comments = 20
-        fake_submission.created_utc = 1700000000.0
-        fake_submission.permalink = "/r/python/comments/s1/hot_post/"
-        fake_submission.url = "https://example.com"
-        fake_submission.is_self = True
-        fake_submission.link_flair_text = "News"
-        fake_submission.over_18 = False
-        fake_submission.stickied = False
-
-        async def _aiter(*_args: Any, **_kwargs: Any) -> Any:
-            yield fake_submission
-
-        mock_subreddit = AsyncMock()
-        mock_subreddit.hot = MagicMock(return_value=_aiter())
-
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(return_value=mock_subreddit)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_posts("python", sort="hot")
-
-        assert result["ok"] is True
-        assert result["subreddit"] == "python"
-        assert result["sort"] == "hot"
-        assert len(result["posts"]) == 1
-        assert result["posts"][0]["id"] == "s1"
-
-    async def test_not_found(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(
-            side_effect=_NotFound(response=MagicMock()),
-        )
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_posts("nonexistent12345")
-        assert result["ok"] is False
-        assert result["error"] == "not_found"
-
-    async def test_forbidden(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(
-            side_effect=_Forbidden(response=MagicMock()),
-        )
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
-            result = await server.reddit_get_posts("private_sub")
-        assert result["ok"] is False
-        assert result["error"] == "forbidden"
-
-
-@pytest.mark.asyncio
-class TestRedditSearch:
-    async def test_successful_search(self) -> None:
-        fake_submission = MagicMock()
-        fake_submission.id = "s2"
-        fake_submission.title = "Search Result"
-        fake_submission.selftext = ""
-        fake_submission.author = MagicMock(__str__=lambda s: "search_user")
-        fake_submission.score = 5
-        fake_submission.num_comments = 1
-        fake_submission.created_utc = 1700000000.0
-        fake_submission.permalink = "/r/all/comments/s2/search_result/"
-        fake_submission.url = "https://example.com/2"
-        fake_submission.is_self = False
-        fake_submission.link_flair_text = None
-        fake_submission.over_18 = False
-        fake_submission.stickied = False
-
-        async def _aiter(*_args: Any, **_kwargs: Any) -> Any:
-            yield fake_submission
-
-        mock_subreddit = AsyncMock()
-        mock_subreddit.search = MagicMock(return_value=_aiter())
-
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(return_value=mock_subreddit)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
+        with patch.object(server, "_get_client", return_value=mock_client):
             result = await server.reddit_search("python tutorial", subreddit="learnpython")
 
         assert result["ok"] is True
@@ -451,99 +419,169 @@ class TestRedditSearch:
         assert result["subreddit"] == "learnpython"
         assert len(result["posts"]) == 1
 
+        call_args = mock_client.get.call_args
+        url = call_args[0][0]
+        assert "/r/learnpython/search.json" in url
+        assert "restrict_sr=on" in url
+
     async def test_search_all_reddit(self) -> None:
-        """Subreddit=None searches all of Reddit via r/all."""
-        fake_submission = MagicMock()
-        fake_submission.id = "s3"
-        fake_submission.title = "All Result"
-        fake_submission.selftext = ""
-        fake_submission.author = None
-        fake_submission.score = 1
-        fake_submission.num_comments = 0
-        fake_submission.created_utc = 1700000000.0
-        fake_submission.permalink = "/r/all/comments/s3/all_result/"
-        fake_submission.url = "https://example.com/3"
-        fake_submission.is_self = False
-        fake_submission.link_flair_text = None
-        fake_submission.over_18 = False
-        fake_submission.stickied = False
+        post_data = _make_post_data(id="s3", title="All Result")
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(json_data=listing)
 
-        async def _aiter(*_args: Any, **_kwargs: Any) -> Any:
-            yield fake_submission
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
 
-        mock_all = AsyncMock()
-        mock_all.search = MagicMock(return_value=_aiter())
-
-        mock_reddit = AsyncMock()
-        # subreddit=None path calls await reddit.subreddit("all")
-        mock_reddit.subreddit = AsyncMock(return_value=mock_all)
-
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
+        with patch.object(server, "_get_client", return_value=mock_client):
             result = await server.reddit_search("test query", subreddit=None)
 
         assert result["ok"] is True
         assert result["subreddit"] is None
 
-    async def test_search_not_found_subreddit(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(
-            side_effect=_NotFound(response=MagicMock()),
-        )
+        call_args = mock_client.get.call_args
+        url = call_args[0][0]
+        assert "/search.json" in url
+        assert "/r/" not in url
 
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
+    async def test_search_not_found_subreddit(self) -> None:
+        response = _make_response(status_code=404, text="Not Found")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
             result = await server.reddit_search("test", subreddit="nonexistent12345")
+
         assert result["ok"] is False
         assert result["error"] == "not_found"
 
     async def test_generic_api_error(self) -> None:
-        mock_reddit = AsyncMock()
-        mock_reddit.subreddit = AsyncMock(side_effect=RuntimeError("Network error"))
+        import httpx
 
-        with patch.object(server, "_reddit_client", return_value=mock_reddit):
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Network error"))
+
+        with patch.object(server, "_get_client", return_value=mock_client):
             result = await server.reddit_search("test")
+
         assert result["ok"] is False
         assert result["error"] == "api_error"
 
 
-class TestRedditClient:
-    def test_missing_client_id_raises(self) -> None:
-        server._reddit = None  # Reset global for test isolation
-        with patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(ValueError, match="PRAW_CLIENT_ID"):
-                server._reddit_client()
+class TestUpdateRateLimits:
+    def test_parses_headers(self) -> None:
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
 
-    def test_creates_client_from_env(self) -> None:
-        server._reddit = None  # Reset global for test isolation
-        env = {
-            "PRAW_CLIENT_ID": "test_id",
-            "PRAW_CLIENT_SECRET": "test_secret",
-            "PRAW_REFRESH_TOKEN": "test_token",
-            "PRAW_USER_AGENT": "test_agent/1.0",
-        }
-        with patch.dict("os.environ", env, clear=False):
-            with patch.object(server.asyncpraw, "Reddit") as mock_reddit_cls:
-                mock_reddit_cls.return_value = MagicMock()
-                server._reddit_client()
-                mock_reddit_cls.assert_called_once_with(
-                    client_id="test_id",
-                    client_secret="test_secret",
-                    refresh_token="test_token",
-                    user_agent="test_agent/1.0",
-                )
+        headers = httpx.Headers({"x-ratelimit-remaining": "95", "x-ratelimit-reset": "300"})
+        server._update_rate_limits(headers)
+
+        assert server._rate_limit_remaining == 95
+        assert server._rate_limit_reset == 300
+
+    def test_handles_missing_headers(self) -> None:
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
+
+        server._update_rate_limits(httpx.Headers({}))
+
+        assert server._rate_limit_remaining is None
+        assert server._rate_limit_reset is None
+
+
+class TestGetClient:
+    def test_creates_client_with_user_agent(self) -> None:
+        server._client = None
+        with patch.dict("os.environ", {"REDDIT_USER_AGENT": "test-agent/1.0"}, clear=False):
+            client = server._get_client()
+            assert client is not None
+            assert "test-agent/1.0" in client.headers.get("user-agent", "")
+        server._client = None
 
     def test_caches_client(self) -> None:
-        server._reddit = None  # Reset global for test isolation
-        with patch.dict(
-            "os.environ",
-            {
-                "PRAW_CLIENT_ID": "id",
-                "PRAW_CLIENT_SECRET": "secret",
-            },
-            clear=False,
+        server._client = None
+        client1 = server._get_client()
+        client2 = server._get_client()
+        assert client1 is client2
+        server._client = None
+
+
+@pytest.mark.asyncio
+class TestRetryOn429:
+    async def test_retry_on_429_then_success(self) -> None:
+        """When first request returns 429 and second returns 200, function should succeed."""
+        response_429 = _make_response(status_code=429)
+        sub_data = _make_subreddit_data()
+        response_200 = _make_response(json_data={"kind": "t5", "data": sub_data})
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=[response_429, response_200])
+
+        with (
+            patch.object(server, "_get_client", return_value=mock_client),
+            patch.object(server.asyncio, "sleep", new_callable=AsyncMock),
         ):
-            with patch.object(server.asyncpraw, "Reddit") as mock_reddit_cls:
-                mock_reddit_cls.return_value = MagicMock()
-                client1 = server._reddit_client()
-                client2 = server._reddit_client()
-                assert mock_reddit_cls.call_count == 1
-                assert client1 is client2
+            result = await server.reddit_get_subreddit("python")
+
+        assert result["ok"] is True
+        assert result["name"] == "python"
+        assert mock_client.get.call_count == 2
+
+    async def test_all_retries_exhausted_429(self) -> None:
+        """When all retry attempts return 429, should return an api_error response."""
+        response_429 = _make_response(status_code=429)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response_429)
+
+        with (
+            patch.object(server, "_get_client", return_value=mock_client),
+            patch.object(server.asyncio, "sleep", new_callable=AsyncMock),
+        ):
+            result = await server.reddit_get_subreddit("python")
+
+        assert result["ok"] is False
+        assert result["error"] == "api_error"
+        assert mock_client.get.call_count == server._MAX_RETRIES
+
+
+@pytest.mark.asyncio
+class TestRateLimitTrackingViaRequests:
+    async def test_rate_limit_headers_from_response(self) -> None:
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
+
+        post_data = _make_post_data()
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(
+            json_data=listing,
+            headers={"x-ratelimit-remaining": "90", "x-ratelimit-reset": "300"},
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            await server.reddit_get_posts("python")
+
+        assert server._rate_limit_remaining == 90
+        assert server._rate_limit_reset == 300
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
+
+    async def test_rate_limit_headers_absent(self) -> None:
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
+
+        post_data = _make_post_data()
+        listing = _make_listing([{"kind": "t3", "data": post_data}])
+        response = _make_response(json_data=listing, headers={})
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=response)
+
+        with patch.object(server, "_get_client", return_value=mock_client):
+            await server.reddit_get_posts("python")
+
+        assert server._rate_limit_remaining is None
+        assert server._rate_limit_reset is None

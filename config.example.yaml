@@ -113,17 +113,10 @@ mcp_servers:
       - "--save-session"
     env: {}
 
-  # Optional services — add to config.override.yaml (git-ignored).
-  # Use `python -m nanobot.external_tokens <service>` to bootstrap credentials.
-  #
-  # - name: "reddit"
-  #   command: "python"
-  #   args: ["-m", "nanobot.mcp_servers.reddit.server"]
-  #   required_env:
-  #     - PRAW_CLIENT_ID
-  #     - PRAW_CLIENT_SECRET
-  #     - PRAW_REFRESH_TOKEN
-  #   env:
-  #     PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"
-  #     PRAW_CLIENT_SECRET: "${PRAW_CLIENT_SECRET}"
-  #     PRAW_REFRESH_TOKEN: "${PRAW_REFRESH_TOKEN}"
+  # Reddit — reads public data via JSON endpoints (no authentication needed).
+  # Optionally set REDDIT_USER_AGENT in config.override.yaml for a custom
+  # User-Agent string (default: nanobot-reddit/1.0 (by /u/nanobot)).
+  - name: "reddit"
+    command: "python"
+    args: ["-m", "nanobot.mcp_servers.reddit.server"]
+    env: {}

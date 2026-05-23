@@ -1,150 +1,54 @@
 # Reddit
 
-OAuth-based Reddit integration via asyncpraw.
+Read-only Reddit data access via public JSON endpoints.
 
 ## Overview
 
-The Reddit MCP server provides read-only access to Reddit posts, subreddits, and search via the official Reddit API (asyncpraw). It authenticates using a permanent OAuth refresh token obtained through an interactive bootstrap CLI. The server is optional. It only starts when `PRAW_CLIENT_ID`, `PRAW_CLIENT_SECRET`, and `PRAW_REFRESH_TOKEN` are configured. See [MCP_SERVERS.md](MCP_SERVERS.md) for the general pattern.
+The Reddit MCP server provides read-only access to Reddit posts, subreddits, and search using Reddit's public `.json` endpoints. **No authentication is required** — the server works out of the box with zero configuration.
 
-## Prerequisites
+### Why no OAuth?
 
-### Reddit app registration
+Reddit's **Responsible Builder Policy** (November 2025) ended self-service API key creation. Obtaining OAuth credentials now requires an approval gate that usually declines personal scripts. The nanobot Reddit server avoids this entirely by using Reddit's public JSON endpoints, which return the same data without authentication.
 
-1. Go to https://www.reddit.com/prefs/apps
-2. Click "create another app..."
-3. Choose "script" as the app type
-4. Fill in a name and set the redirect URI to `http://localhost:8080`
-5. Note the `client_id` (under the app name) and `client_secret`
+**Rate limits**: Unauthenticated requests are rate-limited to approximately 10–60 requests per minute (varies by endpoint and User-Agent). This is sufficient for personal bot use.
 
-The "script" app type is designed for single-user personal use. It is not suitable for multi-user deployment.
+## Quick start
 
-### Install asyncpraw
+Add to `config.yaml` (or `config.override.yaml`):
 
-`asyncpraw` is not included in `pyproject.toml` due to an `aiosqlite` dependency conflict with `crawl4ai` on Python 3.14+. Install it separately:
-
-```bash
-uv pip install asyncpraw
-```
-
-**Without asyncpraw installed, both the MCP server and the bootstrap CLI will fail.**
-
-## Setup
-
-### Bootstrapping credentials
-
-The `external_tokens` CLI walks through the OAuth flow and writes the resulting credentials to `.env` and `config.override.yaml`:
-
-```bash
-python -m nanobot.external_tokens.cli reddit \
-  --client-id YOUR_CLIENT_ID \
-  --client-secret YOUR_CLIENT_SECRET
-```
-
-What happens during bootstrap:
-
-1. The CLI generates an OAuth authorization URL
-2. The user opens the URL in a browser and authorizes the app
-3. Reddit redirects to `localhost`, where the CLI captures the authorization code
-4. The CLI exchanges the code for a permanent refresh token
-5. `.env` and `config.override.yaml` are written automatically
-
-### CLI options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--client-id` | (required) | Reddit app client ID |
-| `--client-secret` | (required) | Reddit app client secret |
-| `--redirect-port` | `8080` | Local port for OAuth redirect callback |
-| `--scopes` | `identity,read,submit,edit,privatemessages,history` | OAuth scopes (comma-separated) |
-| `--user-agent` | `nanobot/1.0 by u/YOUR_USERNAME` | Reddit API user agent string |
-| `--config` | `config.yaml` | Path to config YAML (used to locate `.env` and override file) |
-
-### What gets written
-
-The bootstrap writes two files next to the config YAML:
-
-**`.env`** (in the config directory):
-```
-PRAW_CLIENT_ID=your_client_id
-PRAW_CLIENT_SECRET=your_client_secret
-PRAW_REFRESH_TOKEN=your_refresh_token
-```
-
-**`config.override.yaml`**:
 ```yaml
 mcp_servers:
-  - name: reddit
-    command: python
-    args:
-      - -m
-      - nanobot.mcp_servers.reddit.server
-    required_env:
-      - PRAW_CLIENT_ID
-      - PRAW_CLIENT_SECRET
-      - PRAW_REFRESH_TOKEN
-    env:
-      PRAW_CLIENT_ID: ${PRAW_CLIENT_ID}
-      PRAW_CLIENT_SECRET: ${PRAW_CLIENT_SECRET}
-      PRAW_REFRESH_TOKEN: ${PRAW_REFRESH_TOKEN}
-```
-
-The `required_env` field tells nanobot to skip this server if any listed variable is missing, preventing startup errors when Reddit is not configured.
-
-### Manual setup
-
-As an alternative to the bootstrap CLI, add the server entry and environment variables manually.
-
-Add to `config.override.yaml`:
-```yaml
-mcp_servers:
-  - name: reddit
-    command: python
+  - name: "reddit"
+    command: "python"
     args: ["-m", "nanobot.mcp_servers.reddit.server"]
-    required_env:
-      - PRAW_CLIENT_ID
-      - PRAW_CLIENT_SECRET
-      - PRAW_REFRESH_TOKEN
-    env:
-      PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"
-      PRAW_CLIENT_SECRET: "${PRAW_CLIENT_SECRET}"
-      PRAW_REFRESH_TOKEN: "${PRAW_REFRESH_TOKEN}"
+    env: {}
 ```
 
-Set environment variables (e.g. in `.env` or shell):
-```bash
-export PRAW_CLIENT_ID="your_client_id"
-export PRAW_CLIENT_SECRET="your_client_secret"
-export PRAW_REFRESH_TOKEN="your_refresh_token"
-```
+Start the bot. The Reddit server starts with no additional setup.
 
 ## Configuration
 
 ### Environment variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `PRAW_CLIENT_ID` | Yes | Reddit app client ID |
-| `PRAW_CLIENT_SECRET` | Yes | Reddit app client secret |
-| `PRAW_REFRESH_TOKEN` | Yes | OAuth refresh token (obtained via CLI or manual flow) |
-| `PRAW_USER_AGENT` | No | User agent string (default: `nanobot-reddit/1.0`) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REDDIT_USER_AGENT` | No | `nanobot-reddit/1.0 (by /u/nanobot)` | Custom User-Agent string for Reddit API requests |
 
-### Config entry
+Setting a descriptive User-Agent with your Reddit username is recommended by Reddit's API guidelines. Example:
 
-The server is configured as an `mcp_servers` entry. The `required_env` list ensures nanobot skips the server gracefully if credentials are absent:
+```
+REDDIT_USER_AGENT=mybot/2.0 (by /u/myusername)
+```
+
+### Custom User-Agent in config.override.yaml
 
 ```yaml
 mcp_servers:
-  - name: reddit
-    command: python
+  - name: "reddit"
+    command: "python"
     args: ["-m", "nanobot.mcp_servers.reddit.server"]
-    required_env:
-      - PRAW_CLIENT_ID
-      - PRAW_CLIENT_SECRET
-      - PRAW_REFRESH_TOKEN
     env:
-      PRAW_CLIENT_ID: "${PRAW_CLIENT_ID}"
-      PRAW_CLIENT_SECRET: "${PRAW_CLIENT_SECRET}"
-      PRAW_REFRESH_TOKEN: "${PRAW_REFRESH_TOKEN}"
+      REDDIT_USER_AGENT: "mybot/2.0 (by /u/myusername)"
 ```
 
 ## MCP Tools
@@ -153,11 +57,26 @@ mcp_servers:
 
 | Tool | Purpose |
 |------|---------|
-| `reddit_health` | Check env var presence and credential status |
+| `reddit_health` | Check connectivity and rate limit status |
 | `reddit_get_subreddit` | Get subreddit metadata (name, description, subscribers) |
 | `reddit_get_posts` | Get posts from a subreddit (hot/new/top/rising) |
 | `reddit_get_post` | Get a single post with its top comments |
 | `reddit_search` | Search Reddit for posts matching a query |
+
+### reddit_health
+
+Returns `auth_mode`, `user_agent`, and rate limit info from the last request.
+
+Example response:
+```json
+{
+  "ok": true,
+  "auth_mode": "anonymous",
+  "user_agent": "nanobot-reddit/1.0 (by /u/nanobot)",
+  "rate_limit_remaining": 58,
+  "rate_limit_reset": 120
+}
+```
 
 ### reddit_get_posts
 
@@ -170,7 +89,7 @@ mcp_servers:
 
 The `time_filter` parameter only affects results when `sort=top`. Each post in the response contains: `id`, `title`, `body`, `author`, `score`, `num_comments`, `created_utc`, `permalink`, `url`, `is_self`, `flair`, `over_18`, `stickied`.
 
-Example response structure:
+Example response:
 ```json
 {
   "ok": true,
@@ -203,7 +122,7 @@ Example response structure:
 | `post_id` | str | (required) | Reddit post ID (from the permalink, e.g. `abc123`) |
 | `comment_limit` | int | `10` | Number of top-level comments (max 25) |
 
-Comments are truncated to 300 characters. Post body is truncated to 500 characters. The `replace_more` call collapses "load more" placeholders, so only directly available top-level comments are returned.
+Comments are truncated to 300 characters. Post body is truncated to 500 characters.
 
 ### reddit_search
 
@@ -219,10 +138,6 @@ Comments are truncated to 300 characters. Post body is truncated to 500 characte
 
 Returns: `id`, `name`, `title`, `description` (truncated to 500 chars), `description_long` (truncated to 1000 chars), `subscribers`, `active_user_count`, `over18`, `created_utc`, `url`.
 
-### reddit_health
-
-Returns: `has_client_id`, `has_client_secret`, `has_refresh_token`, `user_agent`. Useful for diagnosing missing credentials without making an API call.
-
 ## Error handling
 
 All tools return a dict with `"ok": True` on success or `"ok": False` on failure. Error responses include `"error"` (machine-readable key) and `"message"` (human-readable description).
@@ -233,21 +148,28 @@ All tools return a dict with `"ok": True` on success or `"ok": False` on failure
 | `forbidden` | Subreddit is private or quarantined |
 | `invalid_sort` | Sort parameter not in the allowed set |
 | `invalid_time_filter` | `time_filter` not in the allowed set |
-| `api_error` | Network error, rate limit, or other Reddit API failure |
+| `rate_limited` | Reddit returned 429 after retries (exponential backoff) |
+| `api_error` | Network error or other Reddit API failure |
 
-asyncpraw automatically handles Reddit rate limits for write requests (retries up to `ratelimit_seconds`). Read-only requests operate within the standard 100 requests/minute allowance.
+The server automatically retries on 429 responses with exponential backoff (3 attempts: 1s, 2s, 4s delays).
 
 ## Limitations
 
-- Read-only access. No posting, commenting, or voting is available through the current tools.
-- Post bodies are truncated to 500 characters, comments to 300 characters.
-- Maximum 25 posts per request, 25 comments per post.
-- asyncpraw conflicts with crawl4ai on aiosqlite for Python 3.14+, requiring a separate install.
-- The "script" OAuth app type is designed for single-user/personal use, not multi-user deployment.
-- Reddit blocks requests at the IP level from datacenter IPs, returning 403 on web requests. PRAW authenticates via the API and is not subject to these blocks.
+- **Read-only**: No posting, commenting, or voting.
+- **Rate limits**: Approximately 10–60 requests/minute unauthenticated. The server tracks `x-ratelimit-remaining` and `x-ratelimit-reset` headers.
+- **Data truncation**: Post bodies truncated to 500 characters, comments to 300 characters, descriptions to 500/1000 characters.
+- **Request limits**: Maximum 25 posts per request, 25 comments per post.
+- **Datacenter IPs**: Reddit may block requests from datacenter IP ranges. If you encounter 403 responses from a server environment, set a descriptive User-Agent and consider routing through a residential proxy.
+
+## Deprecated: OAuth bootstrapping
+
+The `external_tokens` package and its `reddit` OAuth command have been **removed**. Reddit's Responsible Builder Policy (November 2025) blocks new script app creation, making the OAuth flow unusable for new users.
+
+The Reddit MCP server now uses public JSON endpoints with no authentication. No bootstrapping is needed — add the server to your config and it works immediately.
+
+**Do not attempt** to create a new Reddit "script" app at https://www.reddit.com/prefs/apps — the approval form requires a Devvit app or research intent that does not accommodate personal bot use cases.
 
 ## See also
 
 - [MCP_SERVERS.md](MCP_SERVERS.md) — general MCP server configuration and the override pattern
-- [asyncpraw docs](https://asyncpraw.readthedocs.io/) — asyncpraw API reference
-- [Reddit app registration](https://www.reddit.com/prefs/apps) — create a Reddit app
+- [Reddit Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564) — official policy documentation
