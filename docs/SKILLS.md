@@ -170,7 +170,13 @@ The evaluator's three-phase pipeline produces `SkillOperation` objects with `act
 
 When a new MCP server is connected (e.g., Reddit), its tools are registered in the `ToolRegistry` but are **invisible to the LLM** until a skill with a matching `tools_allowlist` is active. New MCP servers need an associated skill to gate their tools.
 
-The `scripts/seed_skills.py` script bootstraps predefined skills into the database. Currently this is a manual process — add the skill definition to `SEED_SKILLS` and run the script. See #37 for planned auto-seeding when MCP servers connect.
+The `scripts/seed_skills.py` script bootstraps predefined skills into the database. Currently seeded skills include `web_research` and `reddit_explorer`. Run the script to create any missing skills:
+
+```bash
+uv run python scripts/seed_skills.py
+```
+
+Use `--force` to delete and re-create all seed skills. See #37 for planned auto-seeding when MCP servers connect.
 
 ## Tool filtering
 

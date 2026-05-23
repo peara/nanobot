@@ -78,6 +78,45 @@ Web research workflow — follow these rules when using web tools:
         ],
         "priority": 5,
     },
+    {
+        "name": "reddit_explorer",
+        "description": (
+            "Browse and search Reddit for posts, comments, and subreddit info. "
+            "Activate when the user mentions Reddit, asks about a subreddit, "
+            "wants to find discussions, or wants to explore community opinions on a topic."
+        ),
+        "instructions": """\
+Reddit browsing workflow — follow these rules when using Reddit tools:
+
+1. Check connectivity first. Use reddit__reddit_health to verify the Reddit API is reachable, especially if this is the first Reddit request in the conversation.
+
+2. Get subreddit info before diving in. Use reddit__reddit_get_subreddit to check that a subreddit exists and understand its topic, rules (from description), and size before fetching posts.
+
+3. Browse then read. Use reddit__reddit_get_posts to list posts from a subreddit, then reddit__reddit_get_post to read specific posts with comments.
+   - Sort options: hot (default), new, top, rising.
+   - For top posts, specify time_filter: hour, day, week (default), month, year, all.
+
+4. Search strategically. Use reddit__reddit_search to find posts across Reddit or within a subreddit.
+   - Narrow by subreddit when the user specifies a community.
+   - Sort by relevance (default), hot, top, new, or comments depending on what the user needs.
+
+5. Subreddit names without /r/. Always pass subreddit names without the /r/ prefix (use "python" not "/r/python" or "r/python"). Strip the prefix if the user provides it.
+
+6. Present data as-is. Post bodies and comments are already truncated by the server. Do not re-truncate or summarize unless the user asks. Present titles, scores, and comment counts directly.
+
+7. Handle errors gracefully. Check the "ok" field in every response. If ok is False, report the error to the user (not_found, forbidden, rate_limited) and suggest alternatives.
+
+8. Rate limit awareness. Unauthenticated Reddit access allows ~10-60 requests/minute. If you encounter rate limiting, wait and retry rather than spamming requests.""",
+        "trigger_mode": "intelligent",
+        "trigger_patterns": [
+            "reddit|r/subreddit|/r/|subreddit|sub post|thread on|"
+            "discussion on|community opinion|what does.*think|forum post"
+        ],
+        "tools_allowlist": [
+            "reddit__*",
+        ],
+        "priority": 5,
+    },
 ]
 
 
