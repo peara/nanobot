@@ -242,7 +242,8 @@ SKILL_LIFECYCLE_SCHEMA: dict[str, Any] = {
                                 "description": (
                                     "Tool name patterns this skill should make available "
                                     "(fnmatch wildcards, e.g. ['web__*', 'playwright__*']). "
-                                    "Null or empty means core tools only."
+                                    "On create, null means core tools only. "
+                                    "On update, null or [] preserves the existing allowlist."
                                 ),
                             },
                             "source_confidence": {
@@ -294,6 +295,10 @@ def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
     tools_allowlist = item.get("tools_allowlist")
     if tools_allowlist is not None and not isinstance(tools_allowlist, list):
         tools_allowlist = [str(tools_allowlist)]
+    if isinstance(tools_allowlist, list) and not tools_allowlist:
+        # Empty list from LLM means "no opinion" — normalize to None
+        # so downstream code preserves existing allowlists on update.
+        tools_allowlist = None
 
     return SkillOperation(
         action=action,

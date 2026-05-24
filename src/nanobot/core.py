@@ -469,7 +469,7 @@ class BotCore:
                         update_kwargs["instructions"] = op.instructions
                     if op.trigger_mode:
                         update_kwargs["trigger_mode"] = op.trigger_mode
-                    if op.tools_allowlist is not None:
+                    if op.tools_allowlist:
                         update_kwargs["tools_allowlist"] = op.tools_allowlist
                     updated = self.skills.update(existing.id, **update_kwargs)
                     if updated and updated.trigger_mode == "intelligent" and self.mem0_skill_store:

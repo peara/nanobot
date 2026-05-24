@@ -72,6 +72,10 @@ class SkillStore:
         if trigger_mode not in {"always", "pattern", "intelligent"}:
             raise ValueError(f"Invalid trigger_mode '{trigger_mode}'. Must be: always, pattern, or intelligent")
 
+        # Empty list means "no opinion" — normalize to None for consistent storage.
+        if tools_allowlist is not None and not tools_allowlist:
+            tools_allowlist = None
+
         now = utc_now()
         with self._connect() as conn:
             cur = conn.execute(
@@ -99,19 +103,7 @@ class SkillStore:
             if skill_id is None:
                 raise RuntimeError("Failed to insert skill")
 
-        return Skill(
-            id=skill_id,
-            name=name,
-            description=description,
-            instructions=instructions,
-            trigger_mode=trigger_mode,
-            trigger_patterns=trigger_patterns or [],
-            tools_allowlist=tools_allowlist,
-            priority=priority,
-            is_active=is_active,
-            created_at=now,
-            updated_at=now,
-        )
+        return self.get(skill_id)  # type: ignore[return-value]
 
     def get(self, skill_id: int) -> Skill | None:
         with self._connect() as conn:
@@ -201,9 +193,9 @@ class SkillStore:
         if trigger_patterns is not None:
             updates.append("trigger_patterns_json = ?")
             params.append(json.dumps(trigger_patterns) if trigger_patterns else None)
-        if tools_allowlist is not None:
+        if tools_allowlist is not None and tools_allowlist:
             updates.append("tools_allowlist_json = ?")
-            params.append(json.dumps(tools_allowlist) if tools_allowlist else None)
+            params.append(json.dumps(tools_allowlist))
         if priority is not None:
             updates.append("priority = ?")
             params.append(priority)

@@ -250,3 +250,72 @@ class TestSkillMatcher:
 class TestValidTriggerModes:
     def test_valid_trigger_modes(self) -> None:
         assert VALID_TRIGGER_MODES == {"always", "pattern", "intelligent"}
+
+
+class TestSkillStoreToolsAllowlist:
+    """Tests for tools_allowlist handling in SkillStore.update().
+
+    Key invariant: passing tools_allowlist=[] to update() must NOT wipe
+    an existing allowlist. Empty list means "no opinion" (skip the update),
+    not "restrict to zero tools".
+    """
+
+    def test_update_preserves_tools_allowlist_on_empty_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            skill = store.create(
+                name="web-skill",
+                description="Web skill",
+                instructions="Search the web",
+                trigger_mode="intelligent",
+                tools_allowlist=["web__*"],
+            )
+            assert skill.tools_allowlist == ["web__*"]
+
+            updated = store.update(skill.id, description="Updated description", tools_allowlist=[])
+            assert updated is not None
+            assert updated.tools_allowlist == ["web__*"]
+
+    def test_update_applies_explicit_tools_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            skill = store.create(
+                name="web-skill",
+                description="Web skill",
+                instructions="Search the web",
+                trigger_mode="intelligent",
+                tools_allowlist=["web__*"],
+            )
+            assert skill.tools_allowlist == ["web__*"]
+
+            updated = store.update(skill.id, tools_allowlist=["web__*", "reddit__*"])
+            assert updated is not None
+            assert updated.tools_allowlist == ["web__*", "reddit__*"]
+
+    def test_update_without_tools_allowlist_preserves_existing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            skill = store.create(
+                name="web-skill",
+                description="Web skill",
+                instructions="Search the web",
+                trigger_mode="intelligent",
+                tools_allowlist=["web__*"],
+            )
+
+            updated = store.update(skill.id, description="Changed")
+            assert updated is not None
+            assert updated.tools_allowlist == ["web__*"]
+
+    def test_create_with_empty_tools_allowlist_has_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            # tools_allowlist=[] on create should also mean "no opinion" → stored as None
+            skill = store.create(
+                name="basic-skill",
+                description="Basic",
+                instructions="Do stuff",
+                tools_allowlist=[],
+            )
+            # Empty allowlist on create should store None
+            assert skill.tools_allowlist is None

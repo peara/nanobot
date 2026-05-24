@@ -21,7 +21,7 @@ The skills system has three components:
 | `instructions` | string | required | Full skill content (~1000-5000 tokens) injected into the prompt |
 | `trigger_mode` | string | `"pattern"` | How this skill activates: `always`, `pattern`, or `intelligent` |
 | `trigger_patterns` | string[] | `[]` | Regex patterns for `pattern` mode (case-insensitive) |
-| `tools_allowlist` | string[]? | `null` | Tool name patterns (fnmatch) this skill gates — matched tools are available when this skill is active |
+| `tools_allowlist` | string[]? | `null` | Tool name patterns (fnmatch) this skill gates — matched tools are available when this skill is active. `null` means no gating beyond core tools. On update, `[]` preserves the existing allowlist. |
 | `priority` | int | `0` | Higher priority skills are included first when multiple match |
 | `is_active` | bool | `true` | Whether this skill participates in matching |
 | `created_at` | datetime | auto | Creation timestamp |

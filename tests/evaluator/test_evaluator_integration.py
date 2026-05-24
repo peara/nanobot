@@ -352,3 +352,108 @@ class TestEvaluatorIntegration:
             skill = bot.skills.get_by_name("inactive_skill")
             assert skill is not None
             assert skill.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_evaluate_update_preserves_tools_allowlist_on_empty(self) -> None:
+        """Evaluator update with empty tools_allowlist should NOT wipe existing allowlist.
+
+        The LLM often outputs tools_allowlist=[] meaning "no opinion on tools" rather than
+        "explicitly set to core-only". We preserve existing allowlists on update when the
+        evaluator provides an empty list.
+        """
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        bot.skills.create(
+            name="yahoo_search",
+            description="Search Yahoo Auctions",
+            instructions="Use web tools to search",
+            trigger_mode="intelligent",
+            tools_allowlist=["web__*"],
+        )
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Learned keyword improvement",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="update",
+                name="yahoo_search",
+                description="Updated description",
+                instructions="Use better keywords",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="Keyword improvement",
+                tools_allowlist=[],
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            updated = bot.skills.get_by_name("yahoo_search")
+            assert updated is not None
+            assert updated.description == "Updated description"
+            assert updated.instructions == "Use better keywords"
+            assert updated.tools_allowlist == ["web__*"]
+
+    @pytest.mark.asyncio
+    async def test_evaluate_update_applies_explicit_tools_allowlist(self) -> None:
+        """Evaluator update with explicit tools_allowlist should overwrite the existing one.
+
+        When the evaluator outputs explicit tool patterns (not empty), those should be
+        applied as the new allowlist.
+        """
+        config = _make_config(enable_evaluator=True)
+        bot = BotCore(config, {"telegram": _FakeChannel()})
+
+        bot.skills.create(
+            name="reddit_scan",
+            description="Scan Reddit",
+            instructions="Use Reddit tools",
+            trigger_mode="intelligent",
+            tools_allowlist=["reddit__*"],
+        )
+
+        quality = QualityAssessment(
+            quality_score=4,
+            quality_reason="Switched to broader tools",
+            has_learnings=True,
+            confidence="high",
+        )
+        decisions = [
+            SkillOperation(
+                action="update",
+                name="reddit_scan",
+                description="Updated description",
+                instructions="Use broader tools",
+                trigger_mode="intelligent",
+                source_confidence="high",
+                reason="Needs web access too",
+                tools_allowlist=["web__*", "reddit__*"],
+            ),
+        ]
+        eval_result = EvaluationResult(quality=quality, decisions=decisions)
+
+        result = SubagentRunResult(
+            run_id="test-run",
+            success=True,
+            reply="Done",
+            tool_trace=[],
+        )
+
+        with patch.object(bot.evaluator, "evaluate", new_callable=AsyncMock, return_value=eval_result):
+            await bot._evaluate_turn("telegram:123", "hello", result)
+            updated = bot.skills.get_by_name("reddit_scan")
+            assert updated is not None
+            assert updated.tools_allowlist == ["web__*", "reddit__*"]

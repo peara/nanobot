@@ -334,7 +334,9 @@ When deprecating, set name to the existing skill name. The description, instruct
 Skills can gate which tools are available when the skill is active. Specify `tools_allowlist` with fnmatch patterns:
 - `["web__*"]` — all web tools
 - `["web__search_web"]` — exactly one tool
-- `null` or `[]` — core tools only (memory, skill, plan, timer, scheduler)
+- `null` — no tool gating (skill only needs core tools: memory, skill, plan, timer, scheduler)
+
+IMPORTANT: On update, `tools_allowlist` is only changed if you provide a non-empty list. Setting `[]` or omitting the field preserves the existing allowlist. To explicitly remove tool gating on an existing skill, use `null` — but only do this when you are certain the skill no longer needs those tools.
 
 Most skills only need core tools. Only add tool patterns when the skill requires specific non-core tools. Use the "Available tools" list in the input to find the right category prefixes for tools_allowlist.
 
@@ -347,7 +349,7 @@ Provide a JSON object with an "operations" array. Each item has:
 - description: brief sentence for semantic matching
 - instructions: content to inject when the skill activates
 - trigger_mode: "intelligent" (default), "pattern", or "always"
-- tools_allowlist: list of tool name patterns this skill needs (fnmatch wildcards, e.g. ["web__*", "playwright__*"]). Use null or [] if the skill only needs core tools (memory, skill list/get, plans, timer, scheduler).
+- tools_allowlist: list of tool name patterns this skill needs (fnmatch wildcards, e.g. ["web__*", "playwright__*"]). Use null if the skill only needs core tools (memory, skill list/get, plans, timer, scheduler). On update, [] or omitting this field preserves the existing allowlist.
 - source_confidence: the confidence from the input learning
 - reason: brief explanation of the decision
 """

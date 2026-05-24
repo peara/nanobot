@@ -191,6 +191,9 @@ class SkillCreateTool(Tool):
 
         if tools_allowlist and not isinstance(tools_allowlist, list):
             tools_allowlist = [str(tools_allowlist)]
+        elif isinstance(tools_allowlist, list) and not tools_allowlist:
+            # Empty list means "no opinion" — normalize to None.
+            tools_allowlist = None
 
         try:
             skill = self._store.create(
@@ -295,6 +298,10 @@ class SkillUpdateTool(Tool):
         tools_allowlist = args.get("tools_allowlist")
         if tools_allowlist and not isinstance(tools_allowlist, list):
             tools_allowlist = [str(tools_allowlist)]
+        elif isinstance(tools_allowlist, list) and not tools_allowlist:
+            # Empty list means "no opinion" — don't update the field.
+            # Use None to signal "skip" to SkillStore.update().
+            tools_allowlist = None
 
         new_trigger_mode = args.get("trigger_mode")
 

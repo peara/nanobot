@@ -140,7 +140,9 @@ class TestParseSkillOperation:
             "reason": "Test",
         }
         op = parse_skill_operation(data)
-        assert op.tools_allowlist == []
+        # Empty list is normalized to None ("no opinion") to prevent
+        # wiping existing allowlists on update.
+        assert op.tools_allowlist is None
 
     def test_parse_deprecate_action(self) -> None:
         data = {
@@ -230,7 +232,7 @@ class TestParseLifecycleFromJson:
         assert operations[0].action == "create"
         assert operations[0].tools_allowlist is None
         assert operations[1].action == "skip"
-        assert operations[1].tools_allowlist == []
+        assert operations[1].tools_allowlist is None
 
     def test_parse_lifecycle_with_deprecate(self) -> None:
         json_str = json.dumps(
