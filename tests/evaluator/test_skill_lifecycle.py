@@ -345,6 +345,8 @@ class TestDecideLifecycle:
                 messages: list[dict[str, str]],
                 tools: list[Any],
                 response_format: dict[str, Any],
+                *,
+                scope: str | None = None,
             ) -> dict[str, str]:
                 return {"content": self._response_content}
 
@@ -402,6 +404,8 @@ class TestDecideLifecycle:
                 messages: list[dict[str, str]],
                 tools: list[Any],
                 response_format: dict[str, Any],
+                *,
+                scope: str | None = None,
             ) -> dict[str, str]:
                 return {"content": '{"operations": []}'}
 

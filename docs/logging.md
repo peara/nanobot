@@ -216,6 +216,105 @@ logging:
 
 The evaluator logger (`nanobot.evaluator.io`) uses `propagate=False` by design — its messages go to `data/evaluator.log` only, not to the root handlers. This keeps prompt/response traces separate from general bot logs.
 
+## LLM call logger
+
+Every LLM API call is logged through the `nanobot.llm.io` logger. This captures request parameters, response metadata, and token usage for debugging and bug reproduction.
+
+### What gets logged
+
+**INFO level** (always, if the logger is active):
+
+- **REQUEST**: scope, model, message count, total character count, tool names, temperature, max_tokens, response_format flag
+- **RESPONSE**: scope, finish_reason, content length, tool_calls count, prompt/completion/total tokens, elapsed time in seconds
+
+**DEBUG level** (detailed, for full reproduction):
+
+- **REQUEST_FULL**: the complete messages list sent to the LLM
+- **RESPONSE_FULL**: the complete response message dict (content, tool_calls, finish_reason)
+
+### Configuration
+
+Add a dedicated handler and route the logger to isolate LLM I/O in its own file:
+
+```yaml
+logging:
+  format: "%(asctime)s %(levelname)s %(name)s - %(message)s"
+  handlers:
+    - name: console
+      type: console
+      level: INFO
+    - name: file
+      type: file
+      level: DEBUG
+      options:
+        filepath: "data/nanobot.log"
+        max_bytes: 2000000
+        backup_count: 3
+    - name: llm-file
+      type: file
+      level: DEBUG
+      options:
+        filepath: "data/llm.log"
+        max_bytes: 5000000
+        backup_count: 5
+  loggers:
+    nanobot.llm.io:
+      handlers: [llm-file]
+      level: DEBUG
+```
+
+The `nanobot.llm.io` logger uses `propagate=False` when assigned its own handlers, so LLM call logs go only to `data/llm.log` — not to the root handlers. This keeps request/response traces separate from general bot logs.
+
+### Scope tags in LLM logs
+
+Each LLM call is tagged with a scope identifier showing *where* the call originated:
+
+| Scope tag | Origin |
+|-----------|--------|
+| `telegram:123456` | Main chat loop (chat_id) |
+| `telegram:123456:finalize` | Scratchpad finalize exit path |
+| `telegram:123456:limit_finalize` | Tool-call-limit forced exit |
+| `telegram:123456:continue` | Tool loop continuation |
+| `telegram:123456:eval_quality` | Evaluator quality assessment |
+| `telegram:123456:eval_learning` | Evaluator learning extraction |
+| `telegram:123456:eval_lifecycle` | Evaluator skill lifecycle |
+| `run-abc123` | Subagent run |
+| `run-abc123:finalize` | Subagent finalize path |
+
+### Log output examples
+
+**INFO level** (one line per side of the call):
+
+```
+2026-05-25 10:30:15 INFO nanobot.llm.io - REQUEST scope=telegram:500506690 model=gpt-oss:120b msgs=12 chars=8432 tools=[session__scratchpad_write,memory__search] temp=0.20 max_tokens=800 response_format=no
+2026-05-25 10:30:18 INFO nanobot.llm.io - RESPONSE scope=telegram:500506690 finish_reason=stop content_chars=156 tool_calls=1 prompt_tokens=8200 completion_tokens=200 total_tokens=8400 elapsed=2.85s
+```
+
+**DEBUG level** adds full payloads:
+
+```
+2026-05-25 10:30:15 DEBUG nanobot.llm.io - REQUEST_FULL scope=telegram:500506690 messages=[{"role": "system", "content": "..."}, ...]
+2026-05-25 10:30:18 DEBUG nanobot.llm.io - RESPONSE_FULL scope=telegram:500506690 response={"role": "assistant", "content": null, "tool_calls": [...], "finish_reason": "stop"}
+```
+
+### Minimal setup (LOG to main file only)
+
+If you don't want a separate LLM log file, just ensure DEBUG level reaches a handler — the `nanobot.llm.io` logger will propagate to root by default:
+
+```yaml
+logging:
+  format: "%(asctime)s %(levelname)s %(name)s - %(message)s"
+  handlers:
+    - name: console
+      type: console
+      level: INFO
+    - name: file
+      type: file
+      level: DEBUG
+```
+
+With no `nanobot.llm.io` entry in `loggers`, the logger propagates to root. INFO-level REQUEST/RESPONSE lines will appear in the file handler (DEBUG level catches everything).
+
 ## Migration guide
 
 Before config-driven logging, everything was hardcoded in `main.py`: root always at `INFO`, always console + file, no way to change format or levels. The evaluator logger was set up independently in `evaluator/runner.py`.

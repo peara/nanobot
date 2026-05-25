@@ -132,6 +132,7 @@ class LearningEvaluator:
             ],
             tools=[],
             response_format=QUALITY_ASSESSMENT_SCHEMA,
+            scope=f"{scope}:eval_quality",
         )
 
         content = response.get("content") or "{}"
@@ -162,6 +163,7 @@ class LearningEvaluator:
             ],
             tools=[],
             response_format=LEARNING_EXTRACTION_SCHEMA,
+            scope=f"{scope}:eval_learning",
         )
 
         content = response.get("content") or '{"learnings": []}'
@@ -190,6 +192,7 @@ class LearningEvaluator:
             ],
             tools=[],
             response_format=SKILL_LIFECYCLE_SCHEMA,
+            scope=f"{scope}:eval_lifecycle",
         )
 
         content = response.get("content") or '{"operations": []}'

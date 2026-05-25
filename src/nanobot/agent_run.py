@@ -34,6 +34,7 @@ TOOL_CALL_LIMIT_ABORT_REPLY = (
     "I used too many tool calls in this turn and stopped to avoid looping. Please narrow the request or try again."
 )
 
+
 def _tool_call_limit_finalize_message(host: Any, scope: str, *, run_id: str | None = None) -> dict[str, str] | None:
     scratchpad = host.contexts.get("subagent_run" if run_id else "chat", run_id or scope, "scratchpad") or {}
     goal = str(scratchpad.get("goal", ""))
@@ -223,6 +224,7 @@ class AgentRun:
             messages=prepared_messages,
             tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
             response_format=response_format,
+            scope=scope_for_tools,
         )
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
@@ -269,7 +271,9 @@ class AgentRun:
                     raw_content = assistant_message.get("content") or ""
                     if raw_content.strip():
                         try:
-                            apply_scratchpad_append_from_content(self._host, scope_for_tools, raw_content, run_id=run_id)
+                            apply_scratchpad_append_from_content(
+                                self._host, scope_for_tools, raw_content, run_id=run_id
+                            )
                             needs_scratchpad_update = False
                         except Exception:  # pylint: disable=broad-except
                             logger.exception(
@@ -302,6 +306,7 @@ class AgentRun:
                     final_message = await self._host.llm.chat(
                         messages=prepared_messages,
                         tools=[],
+                        scope=f"{scope_for_tools}:limit_finalize",
                     )
                     reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
                     return reply, tool_trace
@@ -418,6 +423,7 @@ class AgentRun:
                 final_message = await self._host.llm.chat(
                     messages=prepared_messages,
                     tools=[],
+                    scope=f"{scope_for_tools}:finalize",
                 )
                 finish_reason = final_message.get("finish_reason")
                 reply = final_message.get("content") or ""
@@ -431,12 +437,12 @@ class AgentRun:
                 reply = self._rewrite_finalize_reply(reply, guard_ctx)
                 return reply, tool_trace
             if post_finalize_reply is not None:
-                logger.warning(
-                    "Guard force-finalize reached (disabled) scope=%s", scope_for_tools
-                )
+                logger.warning("Guard force-finalize reached (disabled) scope=%s", scope_for_tools)
             trimmed = trim_to_last_tool_round(messages)
             scratchpad_msg = (
-                scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id) if include_scratchpad_prompt else None
+                scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
+                if include_scratchpad_prompt
+                else None
             )
             to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
             prepared_messages = prepare_messages_for_chat(to_send)
@@ -444,6 +450,7 @@ class AgentRun:
                 messages=prepared_messages,
                 tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
                 response_format=response_format,
+                scope=f"{scope_for_tools}:continue",
             )
         finish_reason = assistant_message.get("finish_reason")
         reply = assistant_message.get("content") or ""

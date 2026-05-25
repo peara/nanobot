@@ -79,8 +79,10 @@ class _TemplateCheckingLlm:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        *,
+        scope: str | None = None,
     ) -> dict:
-        del response_format
+        del response_format, scope
         self.last_messages = messages
         self.last_rendered_prompt = _render_template(template_path=self.template_path, messages=messages, tools=tools)
         return {
@@ -89,6 +91,7 @@ class _TemplateCheckingLlm:
         }
 
 
+@pytest.mark.integration
 def test_template_accepts_real_system_prompt_tool_and_user_hello(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     config = load_config(str(repo_root / "config.yaml"))

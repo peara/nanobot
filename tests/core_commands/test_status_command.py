@@ -29,8 +29,10 @@ class _FakeLlm:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        *,
+        scope: str | None = None,
     ) -> dict:
-        del messages, tools, response_format
+        del messages, tools, response_format, scope
         return {"content": "ok", "tool_calls": None}
 
 

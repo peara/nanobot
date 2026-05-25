@@ -38,9 +38,13 @@ logging:
     #     backup_count: 3
     #     encoding: utf-8
   loggers: {}
-    # Uncomment to route evaluator logs to evaluator_file only (propagate=False):
+    # Uncomment to isolate LLM request/response logs to their own file:
+    # nanobot.llm.io:
+    #   handlers: [llm-file]
+    #   level: DEBUG
+    # Uncomment to isolate evaluator LLM I/O to its own log file:
     # nanobot.evaluator.io:
-    #   handlers: [evaluator_file]
+    #   handlers: [evaluator-file]
     #   level: DEBUG
 
 model:
