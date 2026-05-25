@@ -115,6 +115,81 @@ grep "run-abc123" data/nanobot.log
 tail -f data/nanobot.log | grep "telegram:500506690"
 ```
 
+### Inspect LLM call logs
+
+**Important:** LLM IO logs go to a **separate file** (`data/llm.log`), NOT to the main `nanobot.log`. The logger name is `nanobot.llm.io` and is configured in `config.yaml` under `logging.loggers`.
+
+The `llm.log` has two levels:
+- **INFO** (`REQUEST`/`RESPONSE`): Summaries — scope, model, message count, char count, tools, finish_reason, token usage, elapsed time
+- **DEBUG** (`REQUEST_FULL`/`RESPONSE_FULL`): Complete payloads — full messages array, full response including `reasoning_content` (chain-of-thought), `content`, `tool_calls`, `finish_reason`
+
+**Scope suffix convention** identifies the agent loop phase:
+- `telegram:500506690` → Initial LLM call (first turn)
+- `telegram:500506690:continue` → Tool loop continuation calls
+- `telegram:500506690:finalize` → Final response call (after scratchpad finalize)
+- `telegram:500506690:eval_quality` → Quality assessment call
+- `telegram:500506690:eval_learning` → Learning extraction call
+- `telegram:500506690:limit_finalize` → Tool call limit reached, forced finalize
+
+**finish_reason values:**
+- `tool_calls` → Model wants to call tools (loop continues)
+- `stop` → Model finished generating (loop ends)
+
+```bash
+# Tail LLM logs in real time
+tail -f data/llm.log
+
+# Find ALL entries (INFO + DEBUG) for a specific scope
+grep "500506690" data/llm.log
+
+# Find only INFO-level REQUEST/RESPONSE summaries for a scope
+grep -E "REQUEST|RESPONSE" data/llm.log | grep "500506690" | grep -v "FULL"
+
+# Find calls that hit token limit (truncated response)
+grep "finish_reason=length" data/llm.log
+
+# Find slow calls (>5s elapsed)
+grep -E "elapsed=[5-9]\.[0-9]+s|elapsed=[0-9]{2,}\." data/llm.log
+
+# Find the full LLM response for a specific continue call (includes reasoning_content)
+# First identify the line number of the RESPONSE_FULL you want
+grep -n "RESPONSE_FULL.*500506690:continue" data/llm.log
+
+# Find a specific phase of the agent loop
+grep "500506690:finalize" data/llm.log   # Final response after scratchpad finalize
+grep "500506690:continue" data/llm.log  # Tool loop calls
+
+# Get a quick timeline of all LLM calls for a scope (INFO level only)
+grep -E "^(INFO|DEBUG).*nanobot.llm.io.*(REQUEST|RESPONSE)" data/llm.log | grep "500506690" | grep -v "FULL"
+
+# Extract the model's chain-of-thought (reasoning_content) from a specific response
+# Useful for understanding WHY the model made a decision
+grep "reasoning_content" data/llm.log | grep "500506690"
+```
+
+#### Debugging workflow for "LLM made a bad decision"
+
+When the bot skipped a step, gave a wrong answer, or called the wrong tool:
+
+1. **Identify the scope** — `just scopes` or grep `nanobot.log` for the chat_id
+2. **Find the problematic LLM response** — Grep `llm.log` for the scope + `:continue` (most tool decisions happen in continue calls)
+3. **Read the REQUEST_FULL** — See exactly what messages and scratchpad state were sent to the model
+4. **Read the RESPONSE_FULL** — Check `reasoning_content` (the model's chain-of-thought) and `tool_calls` to understand WHY it chose that action
+5. **Check the previous tool results** — The messages array includes tool results; verify the model received the data it claims it didn't have
+6. **Check for stale prompts** — `PromptStore._seed_defaults` only inserts if no active prompt exists. If `defaults.py` was updated but the DB still has the old version, the bot uses stale prompts. Verify with:
+   ```bash
+   # Compare active prompt size with defaults
+   uv run python -c "
+   from nanobot.prompts.defaults import ORCHESTRATOR_MAIN
+   from nanobot.prompts.store import PromptStore
+   store = PromptStore('./data/prompts.db', seed_defaults=False)
+   active = store.get_active('orchestrator_main')
+   print(f'Defaults: {len(ORCHESTRATOR_MAIN)} chars')
+   print(f'Active DB: {len(active.content)} chars')
+   print(f'Match: {active.content == ORCHESTRATOR_MAIN}')
+   "
+   ```
+
 ## Debugging Checklist
 
 When something is wrong:
@@ -125,6 +200,9 @@ When something is wrong:
 - [ ] Check `scheduler list` if tasks are involved
 - [ ] Query contexts table directly for custom scope data
 - [ ] Check if messages were trimmed by char_limit vs message_limit
+- [ ] Check `data/llm.log` for LLM request/response traces (scope, tokens, finish_reason, elapsed time)
+- [ ] If LLM made a bad decision (skipped step, wrong tool, bad answer): read REQUEST_FULL to see what was sent, RESPONSE_FULL to see `reasoning_content` (model's chain-of-thought) and `tool_calls`
+- [ ] If prompt behavior seems wrong: verify DB prompts match `defaults.py` — `_seed_defaults` never updates existing prompts, so stale DB prompts can override code changes
 
 ## Repo-Specific Patterns
 
