@@ -75,6 +75,7 @@ nanobot/
 | Skill matching/injection | `src/nanobot/skills/` | SkillMatcher, skill tools (mem0-backed) |
 | Vector embeddings | `src/nanobot/vector_store/` | Native vector store with multi-collection support |
 | Tool event hooks | `src/nanobot/hooks/` | FileTraceHook, tool event handlers |
+| LLM call logging | `src/nanobot/llm.py` | `LlmClient.chat()` - all LLM I/O logged via `nanobot.llm.io` |
 
 ### Test Location Convention
 Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go in `tests/subagents/test_manager.py`.

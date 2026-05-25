@@ -25,7 +25,7 @@ Living document aligned with [ARCHITECTURE.md](ARCHITECTURE.md). Phases are **pr
 **Hardening that still pays off**
 
 - Context budgeting documented in code (limits, summarization triggers)—tie directly to architecture’s “intelligent context.”
-- Optional: LLM lifecycle hooks (`before_llm_call` / `after_llm_call`) for observability and token accounting.
+- Optional: ~~LLM lifecycle hooks (`before_llm_call` / `after_llm_call`) for observability and token accounting.~~ Done — implemented as `nanobot.llm.io` logger (see docs/logging.md).
 
 ---
 

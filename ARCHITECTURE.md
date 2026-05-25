@@ -157,6 +157,7 @@ flowchart TD
 | Component | Source | Role |
 |-----------|--------|------|
 | **BotCore** | `core.py` | Orchestrator: message queue, command dispatch, evaluator integration |
+| **LlmClient** | `llm.py` | OpenAI-compatible chat completions client, all LLM I/O logged via `nanobot.llm.io` |
 | **AgentRun** | `agent_run.py` | LLM chat loop with tool calling, scratchpad protocol, finalize exit path |
 | **SubagentManager** | `subagents/` | Spawn/execute subagent runs with observability tracking |
 | **CommandManager** | `core_commands/` | Slash commands: help, ctx, reset, plan, scratchpad, reload, status, session |
@@ -224,7 +225,9 @@ After each completed subagent turn, the `LearningEvaluator` runs (if enabled) an
 
 ### Future hooks (suggested, not contracted)
 
-`before_llm_call`, `after_llm_call`, `before_tool_call`, `on_turn_complete`, `on_error`.
+`before_tool_call`, `on_turn_complete`, `on_error`.
+
+LLM call observability is now handled by the `nanobot.llm.io` logger (see [docs/logging.md](docs/logging.md)).
 
 ---
 
@@ -236,3 +239,4 @@ After each completed subagent turn, the `LearningEvaluator` runs (if enabled) an
 - [docs/EVALUATOR.md](docs/EVALUATOR.md) — Three-phase evaluation pipeline and fault tolerance.
 - [docs/CHANNELS.md](docs/CHANNELS.md) — Channel interface and how to add a new one.
 - [docs/WEB_AGENT.md](docs/WEB_AGENT.md) — Dual browser system, actions, and content extraction pipeline.
+- [docs/logging.md](docs/logging.md) — Logging configuration, per-module handlers, and LLM call logging.
