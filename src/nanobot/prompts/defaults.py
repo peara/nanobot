@@ -318,6 +318,29 @@ For each learning, decide: "create" (new skill), "update" (existing skill), "dep
 - Deprecate a skill when: the learning contradicts it, it was created from a failed or one-off interaction, or evidence shows it is no longer useful
 - Provide a brief reason for each decision
 
+## Update Semantics — CRITICAL
+
+When you update a skill, the `instructions` field COMPLETELY REPLACES the existing skill instructions. There is no append or merge — whatever you write becomes the entire instruction text.
+
+This means: if the existing skill says "Always use the relevant extraction script first" and your update only says "Prefer tool X over tool Y for reading pages", the result will ONLY say "Prefer tool X over tool Y..." — the script-first instruction is gone.
+
+To avoid losing valuable existing instructions, you MUST:
+1. Read the existing skill descriptions carefully from the input.
+2. When updating, include ALL instructions the skill should have — both preserved existing ones and new additions.
+3. If a learning only adds to an existing skill, include the original instructions plus the new content.
+4. If a learning contradicts an existing instruction, replace that instruction but keep the rest.
+
+## Learning from Inefficient Runs
+
+When a run hit the tool call limit or used many tool calls for a task that could have been done more efficiently, the correct learning is NOT the workaround the agent discovered mid-run (e.g., "try this selector" or "use this tool instead"). The correct learning is: use the more efficient approach (script, workflow, or tool) that the agent should have used from the start.
+
+Patterns that indicate an inefficient run:
+- 15+ tool calls for a task that a script or structured workflow could handle in 2-3 calls
+- The agent manually browsed pages one by one when a reusable script would produce structured results
+- The agent tried multiple failed approaches instead of using an available script or more efficient tool
+
+For such runs, extract learnings that point TOWARD efficiency (use scripts, use structured tools) rather than workarounds found during the failure (use this selector, try this URL format).
+
 ## Deprecation
 
 Use "deprecate" to retire skills that are obsolete, incorrect, or no longer useful. Deprecating a skill sets it inactive — it stops matching and its tools become unavailable, but the skill data is preserved in case you want to reactivate it later.

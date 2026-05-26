@@ -291,13 +291,22 @@ class LearningEvaluator:
 
     @staticmethod
     def _summarize_active_skills(skills: list[Skill]) -> str:
-        """Build a compact active skills summary."""
+        """Build a compact active skills summary.
+
+        Includes both description and instructions so the lifecycle LLM can
+        preserve existing instructions when updating a skill.
+        """
         if not skills:
             return "  (none)"
         lines: list[str] = []
         for skill in skills:
-            desc = skill.description[:80].replace("\n", " ")
-            lines.append(f"  - {skill.name}: {desc}")
+            desc = skill.description.replace("\n", " ")
+            instructions = skill.instructions.strip()
+            if instructions:
+                lines.append(f"  - {skill.name}: {desc}")
+                lines.append(f"    Instructions: {instructions}")
+            else:
+                lines.append(f"  - {skill.name}: {desc}")
         return "\n".join(lines)
 
     def _build_quality_input(
