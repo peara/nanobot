@@ -58,8 +58,8 @@ def _update_rate_limits(headers: httpx.Headers) -> None:
     global _rate_limit_remaining, _rate_limit_reset  # pylint: disable=global-statement
     remaining = headers.get("x-ratelimit-remaining")
     reset = headers.get("x-ratelimit-reset")
-    _rate_limit_remaining = int(remaining) if remaining is not None else None
-    _rate_limit_reset = int(reset) if reset is not None else None
+    _rate_limit_remaining = int(float(remaining)) if remaining is not None else None
+    _rate_limit_reset = int(float(reset)) if reset is not None else None
 
 
 def _parse_post(data: dict[str, Any]) -> dict[str, Any]:

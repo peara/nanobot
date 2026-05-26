@@ -479,6 +479,17 @@ class TestUpdateRateLimits:
         assert server._rate_limit_remaining == 95
         assert server._rate_limit_reset == 300
 
+    def test_parses_float_string_headers(self) -> None:
+        """Reddit returns rate limit values as float strings like '99.0'."""
+        server._rate_limit_remaining = None
+        server._rate_limit_reset = None
+
+        headers = httpx.Headers({"x-ratelimit-remaining": "99.0", "x-ratelimit-reset": "300.0"})
+        server._update_rate_limits(headers)
+
+        assert server._rate_limit_remaining == 99
+        assert server._rate_limit_reset == 300
+
     def test_handles_missing_headers(self) -> None:
         server._rate_limit_remaining = None
         server._rate_limit_reset = None
