@@ -42,13 +42,17 @@ check: lint format typecheck
 
 # ── Test ───────────────────────────────────────
 
-# Run all tests
+# Run all tests (unit only, excludes integration)
 test:
+    uv run pytest -m "not integration"
+
+# Run all tests including integration (requires live LM Studio/Qdrant)
+test-all:
     uv run pytest
 
 # Run tests for a specific package (e.g. just test-pkg subagents)
 test-pkg pkg:
-    uv run pytest tests/{{ pkg }}/
+    uv run pytest tests/{{ pkg }}/ -m "not integration"
 
 # Run a specific test file (e.g. just test-file plans/test_plan_store.py)
 test-file file:
@@ -56,7 +60,7 @@ test-file file:
 
 # Run tests matching a name filter (e.g. just test-name test_plan_store)
 test-name name:
-    uv run pytest -k {{ name }}
+    uv run pytest -k {{ name }} -m "not integration"
 
 # ── Reset ──────────────────────────────────────
 

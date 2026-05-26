@@ -12,6 +12,7 @@ Skip: uv run pytest tests/memstore/test_integration.py -v -k "not integration"
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -331,3 +332,217 @@ class TestMem0ResponseFormat:
         data = json.loads(result)
         memories = data.get("results", [])
         assert len(memories) > 0
+
+
+# ---------------------------------------------------------------------------
+# Production data: exact Japanese auction listing text from 2026-05-22 logs
+# ---------------------------------------------------------------------------
+_VAGUE_INTEREST = "Interested in high-quality Minolta 85 1.7 listings on Yahoo Auctions"
+
+_DETAILED_LISTINGS = (
+    "High-quality Minolta 85 1.7 listings found on Yahoo Auctions (2026-05-22):\n"
+    "- v1230026332: 【整備＆テスト済】ミノルタ MD ROKKOR 85mm F1.7 833 (21円)\n"
+    "- g1227007834: 【外観特上級】ミノルタ MINOLTA MD ROKKOR 85mm F1.7 #v1735 (44,294円)\n"
+    "- q1230735388: 整備済 MINOLTA MC ROKKOR-PF 85mm f1.7 (52,250円)\n"
+    "- 1230737800: 整備済 MINOLTA 初期型 MC ROKKOR-PF 85mm f1.7 (50,050円)\n"
+    "- 1230019924: 【整備＆テスト済】ミノルタ MC ROKKOR-PF 85mm F1.7 899 (44,700円)"
+)
+
+_SUMMARY_LISTINGS = (
+    "Seen Yahoo Auctions listings for Minolta 85 1.7 as of 2026-05-22: "
+    "v1230026332, g1227007834, q1230735388, 1230737800, 1230019924."
+)
+
+
+@requires_lmstudio
+class TestMem0DedupRegression:
+    """Regression tests for mem0 deduplication failures observed in production.
+
+    These tests replicate exact production failure modes using real auction
+    listing data from 2026-05-22. They verify that:
+    - Specific data saved after a vague preference is not NONE'd as duplicate
+    - Identical saves dedup correctly (NONE is expected)
+    - Long Japanese text with CJK characters survives LLM extraction
+    - SaveTurn extracts facts from realistic conversations
+    - Specific auction IDs are retrievable after save
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_save_detailed_data_after_vague_preference(self, vs: VectorStore) -> None:
+        """Core bug: saving specific listing data after a vague interest must not NONE it.
+
+        In production, mem0's dedup LLM incorrectly classified the detailed
+        listing data as a duplicate of the vague preference, returning empty
+        results. The second save MUST add new facts, not NONE them.
+        """
+        save_tool = MemorySaveTool(vs)
+        search_tool = MemorySearchTool(vs)
+        uid = f"{TEST_USER}_dedup_vague"
+
+        # Step 1: Save the vague interest (what's already stored)
+        await save_tool.call({"text": _VAGUE_INTEREST, "user_id": uid})
+        time.sleep(1.0)
+
+        # Step 2: Save the detailed listing data — MUST return non-empty results
+        result = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
+        data = json.loads(result)
+
+        if isinstance(data, dict) and "results" in data:
+            results = data["results"]
+            assert len(results) > 0, (
+                "Second save returned empty results — mem0 dedup LLM incorrectly "
+                "NONE'd the detailed listing data as a duplicate of the vague preference. "
+                "The detailed data should ADD new facts, not be treated as redundant."
+            )
+
+        # Step 3: Search should find specific details (auction IDs or prices)
+        time.sleep(0.5)
+        search_result = await search_tool.call({"query": "Minolta 85", "user_id": uid})
+        search_data = json.loads(search_result)
+        memories = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        assert len(memories) > 0, f"Search for 'Minolta 85' should find results, got: {memories}"
+
+        # At least one result should contain specific details (not just the vague interest)
+        found_specific = any(
+            any(id_str in str(m.get("memory", m.get("data", ""))) for id_str in ["v1230026332", "52,250", "44,294"])
+            for m in memories
+        )
+        assert found_specific, (
+            f"Expected at least one result with specific auction details (IDs or prices), got: {memories}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_save_identical_twice_should_dedup(self, vs: VectorStore) -> None:
+        """Saving identical detailed data twice should dedup: NONE on 2nd save is correct.
+
+        The first save MUST return non-empty results. The second save should
+        be recognized as a duplicate. Verify via memory__list that no exact
+        duplicate texts exist.
+        """
+        save_tool = MemorySaveTool(vs)
+        list_tool = MemoryListTool(vs)
+        uid = f"{TEST_USER}_dedup_twice"
+
+        # First save — MUST return non-empty results
+        result1 = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
+        data1 = json.loads(result1)
+
+        if isinstance(data1, dict) and "results" in data1:
+            assert len(data1["results"]) > 0, (
+                f"First save must return non-empty results, got: {data1}"
+            )
+
+        time.sleep(1.0)
+
+        # Second save of identical text — dedup should kick in (NONE is correct here)
+        result2 = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
+        data2 = json.loads(result2)
+        # We don't assert data2 is empty — dedup is best-effort; but we verify
+        # via list that no exact duplicate memory texts exist.
+
+        time.sleep(0.5)
+
+        # Verify no exact duplicate memory texts
+        list_result = await list_tool.call({"user_id": uid})
+        list_data = json.loads(list_result)
+        memories = list_data.get("results", [])
+        contents = [str(m.get("memory", m.get("data", ""))) for m in memories]
+        assert len(contents) == len(set(contents)), f"Found duplicate memories: {contents}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_save_long_text_with_special_chars(self, vs: VectorStore) -> None:
+        """Full Japanese listing text must not cause JSON parse failure.
+
+        In production, the LLM sometimes produced "Invalid JSON response:
+        Unterminated string" when processing long text with CJK characters
+        (【】, ＆, etc.). The save must not return empty results due to
+        a JSON parse error.
+        """
+        save_tool = MemorySaveTool(vs)
+        uid = f"{TEST_USER}_dedup_cjk"
+
+        result = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
+        data = json.loads(result)
+
+        if isinstance(data, dict) and "results" in data:
+            results = data["results"]
+            assert len(results) > 0, (
+                "Saving long Japanese text returned empty results — likely an "
+                "'Invalid JSON response: Unterminated string' error from the LLM. "
+                "The LLM must handle CJK characters and long text properly."
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_save_turn_extracts_auction_preferences(self, vs: VectorStore) -> None:
+        """SaveTurnTool should extract facts from a realistic auction conversation.
+
+        The LLM should extract specific preferences (Minolta 85 1.7, price
+        52,250 yen) from a natural conversation about Yahoo Auctions listings.
+        """
+        save_turn_tool = MemorySaveTurnTool(vs)
+        search_tool = MemorySearchTool(vs)
+        uid = f"{TEST_USER}_dedup_turn"
+
+        result = await save_turn_tool.call(
+            {
+                "user_text": (
+                    "I found 5 Minolta 85 1.7 listings on Yahoo Auctions today. "
+                    "The best one is a serviced MC ROKKOR-PF for 52,250 yen."
+                ),
+                "assistant_text": (
+                    "Got it! I've saved those Minolta 85 1.7 listings. "
+                    "I'll track them and notify you of new ones."
+                ),
+                "user_id": uid,
+            }
+        )
+        data = json.loads(result)
+
+        if isinstance(data, dict) and "results" in data:
+            results = data["results"]
+            assert len(results) > 0, (
+                f"SaveTurnTool extracted no facts from auction conversation, got: {data}"
+            )
+
+        time.sleep(0.5)
+
+        # Search should find relevant results
+        search_result = await search_tool.call({"query": "Minolta 85", "user_id": uid})
+        search_data = json.loads(search_result)
+        memories = search_data.get("results", []) if isinstance(search_data, dict) else search_data
+        assert len(memories) > 0, f"Expected search results for 'Minolta 85', got: {memories}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_search_finds_specific_after_save(self, vs: VectorStore) -> None:
+        """Specific auction IDs must be retrievable after saving detailed data.
+
+        Save a vague interest first, then save specific listings. Searching for
+        a specific auction ID (v1230026332) should find results containing the
+        detailed data, not just the vague preference.
+        """
+        save_tool = MemorySaveTool(vs)
+        search_tool = MemorySearchTool(vs)
+        uid = f"{TEST_USER}_dedup_search"
+
+        # Step 1: Save vague preference
+        await save_tool.call({"text": _VAGUE_INTEREST, "user_id": uid})
+        time.sleep(1.0)
+
+        # Step 2: Save detailed listing data
+        await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
+        time.sleep(1.0)
+
+        # Step 3: Search for a specific auction ID
+        result = await search_tool.call({"query": "v1230026332", "user_id": uid})
+        data = json.loads(result)
+        memories = data.get("results", []) if isinstance(data, dict) else data
+
+        assert len(memories) > 0, (
+            "Searching for specific auction ID 'v1230026332' should find results. "
+            "The detailed listing data was not persisted or is not retrievable."
+        )
