@@ -359,42 +359,44 @@ class TestMem0DedupRegression:
     """Regression tests for mem0 deduplication failures observed in production.
 
     These tests replicate exact production failure modes using real auction
-    listing data from 2026-05-22. They verify that:
-    - Specific data saved after a vague preference is not NONE'd as duplicate
-    - Identical saves dedup correctly (NONE is expected)
-    - Long Japanese text with CJK characters survives LLM extraction
-    - SaveTurn extracts facts from realistic conversations
+    listing data from 2026-05-22. With infer=False (the fix), saves store
+    text verbatim — no LLM extraction, no dedup NONE. These tests verify:
+    - Specific data saved after a vague preference is stored verbatim (not dedup'd)
+    - Verbatim saves are idempotent (same text = same result, but creates separate memory)
+    - Long Japanese text with CJK characters is stored verbatim
+    - SaveTurn stores the conversation turn verbatim
     - Specific auction IDs are retrievable after save
     """
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_save_detailed_data_after_vague_preference(self, vs: VectorStore) -> None:
-        """Core bug: saving specific listing data after a vague interest must not NONE it.
+        """Core bug (fixed): saving specific listing data after a vague interest must store it.
 
-        In production, mem0's dedup LLM incorrectly classified the detailed
+        Before infer=False, mem0's dedup LLM incorrectly classified the detailed
         listing data as a duplicate of the vague preference, returning empty
-        results. The second save MUST add new facts, not NONE them.
+        results. With infer=False, both saves succeed — text is stored verbatim.
         """
         save_tool = MemorySaveTool(vs)
         search_tool = MemorySearchTool(vs)
         uid = f"{TEST_USER}_dedup_vague"
 
         # Step 1: Save the vague interest (what's already stored)
-        await save_tool.call({"text": _VAGUE_INTEREST, "user_id": uid})
+        result1 = await save_tool.call({"text": _VAGUE_INTEREST, "user_id": uid})
+        data1 = json.loads(result1)
+        assert isinstance(data1, dict) and "results" in data1, f"First save must return results dict, got: {data1}"
+        assert len(data1["results"]) > 0, "First save (vague interest) must return non-empty results"
         time.sleep(1.0)
 
         # Step 2: Save the detailed listing data — MUST return non-empty results
         result = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
         data = json.loads(result)
 
-        if isinstance(data, dict) and "results" in data:
-            results = data["results"]
-            assert len(results) > 0, (
-                "Second save returned empty results — mem0 dedup LLM incorrectly "
-                "NONE'd the detailed listing data as a duplicate of the vague preference. "
-                "The detailed data should ADD new facts, not be treated as redundant."
-            )
+        assert isinstance(data, dict) and "results" in data, f"Second save must return results dict, got: {data}"
+        assert len(data["results"]) > 0, (
+            "Second save returned empty results — with infer=False this should never happen. "
+            "The detailed data should be stored verbatim, not dedup'd."
+        )
 
         # Step 3: Search should find specific details (auction IDs or prices)
         time.sleep(0.5)
@@ -414,12 +416,12 @@ class TestMem0DedupRegression:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_save_identical_twice_should_dedup(self, vs: VectorStore) -> None:
-        """Saving identical detailed data twice should dedup: NONE on 2nd save is correct.
+    async def test_save_identical_twice_creates_separate_memories(self, vs: VectorStore) -> None:
+        """Saving identical text twice with infer=False creates two separate memories.
 
-        The first save MUST return non-empty results. The second save should
-        be recognized as a duplicate. Verify via memory__list that no exact
-        duplicate texts exist.
+        With infer=False, text is stored verbatim — no dedup extraction. Both saves
+        succeed and both memories exist. The agent is responsible for avoiding
+        duplicates by searching before saving (enforced by the memory_lifecycle skill).
         """
         save_tool = MemorySaveTool(vs)
         list_tool = MemoryListTool(vs)
@@ -429,37 +431,36 @@ class TestMem0DedupRegression:
         result1 = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
         data1 = json.loads(result1)
 
-        if isinstance(data1, dict) and "results" in data1:
-            assert len(data1["results"]) > 0, (
-                f"First save must return non-empty results, got: {data1}"
-            )
+        assert isinstance(data1, dict) and "results" in data1, f"First save must return results dict, got: {data1}"
+        assert len(data1["results"]) > 0, f"First save must return non-empty results, got: {data1}"
 
         time.sleep(1.0)
 
-        # Second save of identical text — dedup should kick in (NONE is correct here)
+        # Second save of identical text — with infer=False, this creates a second memory
         result2 = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
         data2 = json.loads(result2)
-        # We don't assert data2 is empty — dedup is best-effort; but we verify
-        # via list that no exact duplicate memory texts exist.
+        assert isinstance(data2, dict) and "results" in data2, f"Second save must return results dict, got: {data2}"
+        assert len(data2["results"]) > 0, (
+            "With infer=False, second save should also store verbatim — not dedup'd."
+        )
 
         time.sleep(0.5)
 
-        # Verify no exact duplicate memory texts
+        # Verify both memories exist (they are separate verbatim copies)
         list_result = await list_tool.call({"user_id": uid})
         list_data = json.loads(list_result)
         memories = list_data.get("results", [])
-        contents = [str(m.get("memory", m.get("data", ""))) for m in memories]
-        assert len(contents) == len(set(contents)), f"Found duplicate memories: {contents}"
+        assert len(memories) >= 2, (
+            f"Expected at least 2 memories (two saves), got {len(memories)}: {memories}"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_save_long_text_with_special_chars(self, vs: VectorStore) -> None:
-        """Full Japanese listing text must not cause JSON parse failure.
+        """Full Japanese listing text must be stored verbatim with infer=False.
 
-        In production, the LLM sometimes produced "Invalid JSON response:
-        Unterminated string" when processing long text with CJK characters
-        (【】, ＆, etc.). The save must not return empty results due to
-        a JSON parse error.
+        With infer=False, no LLM extraction occurs, so CJK characters and long
+        text are stored exactly as provided — no JSON parse errors from an LLM.
         """
         save_tool = MemorySaveTool(vs)
         uid = f"{TEST_USER}_dedup_cjk"
@@ -467,21 +468,25 @@ class TestMem0DedupRegression:
         result = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
         data = json.loads(result)
 
-        if isinstance(data, dict) and "results" in data:
-            results = data["results"]
-            assert len(results) > 0, (
-                "Saving long Japanese text returned empty results — likely an "
-                "'Invalid JSON response: Unterminated string' error from the LLM. "
-                "The LLM must handle CJK characters and long text properly."
-            )
+        assert isinstance(data, dict) and "results" in data, f"Save must return results dict, got: {data}"
+        assert len(data["results"]) > 0, (
+            "Saving long Japanese text with infer=False must return non-empty results — "
+            "text is stored verbatim, no LLM extraction involved."
+        )
+
+        # Verify the stored text contains the specific data (infer=False stores verbatim)
+        saved_text = data["results"][0].get("memory", "")
+        assert "v1230026332" in saved_text or "52,250" in saved_text, (
+            f"Stored text should contain specific auction details, got: {saved_text[:200]}"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_save_turn_extracts_auction_preferences(self, vs: VectorStore) -> None:
-        """SaveTurnTool should extract facts from a realistic auction conversation.
+    async def test_save_turn_stores_conversation_verbatim(self, vs: VectorStore) -> None:
+        """SaveTurnTool with infer=False stores the conversation turn verbatim.
 
-        The LLM should extract specific preferences (Minolta 85 1.7, price
-        52,250 yen) from a natural conversation about Yahoo Auctions listings.
+        With infer=False, the conversation is stored as-is rather than having
+        facts extracted by an LLM. Search should still find relevant terms.
         """
         save_turn_tool = MemorySaveTurnTool(vs)
         search_tool = MemorySearchTool(vs)
@@ -502,11 +507,10 @@ class TestMem0DedupRegression:
         )
         data = json.loads(result)
 
-        if isinstance(data, dict) and "results" in data:
-            results = data["results"]
-            assert len(results) > 0, (
-                f"SaveTurnTool extracted no facts from auction conversation, got: {data}"
-            )
+        assert isinstance(data, dict) and "results" in data, f"SaveTurn must return results dict, got: {data}"
+        assert len(data["results"]) > 0, (
+            f"SaveTurnTool with infer=False must store conversation verbatim, got: {data}"
+        )
 
         time.sleep(0.5)
 

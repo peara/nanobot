@@ -219,6 +219,48 @@ uv run python -m nanobot.debug_cli --config config.yaml scopes  # Debug CLI
 - **Context trimming / data loss on error**: Never silently truncate tool results or conversation context to "fit" — partial information is worse than none. If a tool returns too much data, fail explicitly with an informative error rather than silently cutting content. The user can then act on the real problem (e.g., fix the extraction, adjust the query).
 - **Incremental extensibility**: When adding error handling or new failure modes, build incrementally on existing patterns (e.g., `_should_notify_user`, `_format_failure_summary`) rather than introducing parallel mechanisms. Each new failure type should be a new branch in an existing handler, not a new handler.
 
+## Documentation Index
+
+Before exploring the codebase, check these docs — they often contain the answer you'd otherwise search for:
+
+### Architecture & Systems
+
+| Topic | Doc | Read when |
+|-------|-----|-----------|
+| Scratchpad (working memory, init/append/finalize lifecycle, prompt templates, limits) | `docs/SCRATCHPAD.md` | Modifying agent loop, scratchpad protocol, finalize path, tool call limits |
+| Skills (trigger modes, matching flow, vector search, score filtering, CRUD, tool gating) | `docs/SKILLS.md` | Adding/modifying skills, skill matching, tool filtering, vector search scoring |
+| Evaluator (3-phase pipeline, quality gate, learning extraction, skill lifecycle) | `docs/EVALUATOR.md` | Modifying evaluator, adding evaluation phases, debugging learning extraction |
+| Scheduler (cron tasks, storage, MCP tools, config) | `docs/SCHEDULER.md` | Adding scheduled features, debugging cron, scheduler CLI commands |
+| Channels (Channel ABC, message flow, adding new channels, startup/shutdown) | `docs/CHANNELS.md` | Adding a new channel, modifying message flow, debugging channel issues |
+| MCP Servers (config, lifecycle, required_env, override pattern, adding new servers) | `docs/MCP_SERVERS.md` | Adding MCP servers, config override, debugging server startup |
+| Web Agent (browser interaction, content extraction, snapshots, multi-tab, hooks) | `docs/WEB_AGENT.md` | Modifying browser interaction, extraction pipeline, adding web tools |
+| Logging (config-driven setup, handler factory, per-module filtering, LLM/evaluator log separation) | `docs/logging.md` | Adding log handlers, debugging logging config, LLM call tracing |
+| Vector Store / Qdrant (lock contention, separate configs, constructor injection) | `docs/mem0-vector-store-patterns.md` | Adding VectorStore consumers, debugging Qdrant lock errors, sharing instances |
+| Reddit MCP (public JSON endpoints, rate limits, tool reference, error handling) | `docs/REDDIT.md` | Modifying Reddit tools, debugging rate limits, adding Reddit features |
+
+### Skills (`.agents/skills/`)
+
+| Skill | When to load |
+|-------|-------------|
+| `add-feature` | Adding any new channel, command, MCP server, tool, or hook |
+| `testing` | Writing or running tests, understanding test conventions |
+| `debug` | Debugging bot behavior via SQLite, session state, LLM logs |
+| `bot-conversation` | Sending messages to the bot via FileChannel for testing/debugging |
+| `git-commit` | Creating commits, especially those that reference GitHub issues |
+| `test-async-applications` | Testing async code with external dependencies, mock timing issues |
+| `debug-production-issues` | Debugging issues where tests pass but production fails, stale locks, library pitfalls |
+
+### Skill-First Exploration Rule
+
+**MANDATORY**: Before firing `explore` agents or doing codebase searches, check if a relevant skill or doc exists. Skills contain project-specific patterns, registration points, and code templates that eliminate the need for broad searches.
+
+**Sequence**:
+1. **Check `Documentation Index` above** — does a doc cover your topic? Read it first.
+2. **Check `Skills` table above** — does a skill match your task? Call `skill(name="<skill>")` to load it before starting work.
+3. **Only then** explore the codebase for details not covered in docs/skills.
+
+This avoids redundant searches for information that's already written down.
+
 ## Notes
 - Uses [just](https://github.com/casey/just) as command runner - `just --list` for all recipes
 - No GitHub Actions CI - all testing/linting is local via `uv run` or `just`

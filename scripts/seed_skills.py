@@ -117,6 +117,33 @@ Reddit browsing workflow — follow these rules when using Reddit tools:
         ],
         "priority": 5,
     },
+    {
+        "name": "memory_lifecycle",
+        "description": (
+            "Memory management workflow — how to save, update, search, and delete memories correctly. "
+            "Always active to prevent data loss from incorrect memory operations."
+        ),
+        "instructions": """\
+Memory lifecycle workflow — follow these rules when using memory tools:
+
+1. Search before saving. Before saving new information, call memory__search to check if related memories already exist. This prevents duplicates and lets you update existing memories instead of creating redundant ones.
+
+2. Save specific data, not summaries. When saving facts, listings, prices, IDs, dates, or any concrete data, include all details in the save text. Vague interests and specific data are different memories and should coexist. Example: "Interested in Minolta lenses" (vague preference) and "Minolta 85mm f/1.7 listing v1230026332, ¥52,250, EX condition" (specific data) are both valid and should be saved as separate memories.
+
+3. Update instead of re-save. When information changes (a listing expired, a price changed, a preference shifted), use memory__update with the memory_id to replace the old content. Search first to find the memory_id, then update it. Do NOT save a duplicate with the new information.
+
+4. Delete outdated memories. When a memory is no longer relevant (task completed, listing sold, event passed), use memory__delete with the memory_id to remove it. Keeping stale information degrades future search results.
+
+5. memory__list for overview. Use memory__list to see all memories for a user when you need a comprehensive view — e.g., checking what preferences exist before making recommendations.
+
+6. Each save is a separate memory. If you have multiple distinct facts to save (e.g., 5 different auction listings), save each one as a separate memory__save call. This makes them individually searchable and updateable. Do NOT bundle unrelated facts into one large memory.
+
+7. Never silently drop information. If memory__save returns empty results or an error, that is a failure — do not proceed as if the save succeeded. Report the issue to the user.""",
+        "trigger_mode": "always",
+        "trigger_patterns": [],
+        "tools_allowlist": None,
+        "priority": 10,
+    },
 ]
 
 

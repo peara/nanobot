@@ -45,10 +45,13 @@ logger = logging.getLogger(__name__)
 # session__scratchpad_write is not listed here because it's not in ToolRegistry;
 # it's always prepended separately by _list_openai_tools().
 CORE_TOOL_PATTERNS: list[str] = [
-    # Memory (essential for context retrieval and persistence)
+    # Memory (essential for context retrieval, persistence, and lifecycle)
     "memory__search",
     "memory__save",
     "memory__save_turn",
+    "memory__update",
+    "memory__delete",
+    "memory__list",
     # Skill management (essential for skill discovery)
     "skill__list",
     "skill__get",

@@ -128,7 +128,12 @@ class MemorySaveTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Save a fact or observation to long-term memory. mem0 deduplicates and extracts key info automatically."
+        return (
+            "Save a fact or observation to long-term memory. Text is stored verbatim — "
+            "you control what and how to save. Before saving, call memory__search to check "
+            "if related memories already exist. To update an existing memory, use "
+            "memory__update. To remove outdated memories, use memory__delete."
+        )
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -191,7 +196,7 @@ class MemorySaveTool(Tool):
             add_kwargs["expiration_date"] = expiration_date
 
         logger.debug("MemorySaveTool add parameters: %s", add_kwargs)
-        result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
+        result = self._memories.add(messages, infer=False, **add_kwargs)  # type: ignore[call-arg]
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=True)
@@ -207,7 +212,12 @@ class MemorySaveTurnTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Save a conversation turn (user + assistant) so mem0 can extract durable facts from it."
+        return (
+            "Save a conversation turn (user + assistant) to long-term memory. "
+            "Text is stored verbatim — you control what and how to save. "
+            "Before saving, call memory__search to check if related memories already exist. "
+            "To update an existing memory, use memory__update."
+        )
 
     @property
     def schema(self) -> dict[str, Any]:
@@ -262,7 +272,7 @@ class MemorySaveTurnTool(Tool):
             add_kwargs["run_id"] = run_id
 
         logger.debug("MemorySaveTurnTool add parameters: %s", add_kwargs)
-        result = self._memories.add(messages, **add_kwargs)  # type: ignore[call-arg]
+        result = self._memories.add(messages, infer=False, **add_kwargs)  # type: ignore[call-arg]
         if isinstance(result, dict):
             return json.dumps(result, ensure_ascii=True)
         return json.dumps({"ok": True, "result": result}, ensure_ascii=True)
