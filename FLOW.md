@@ -130,7 +130,7 @@ Scheduled tasks are serialized through the same `asyncio.Queue` as user messages
 1. `SchedulerRunner._loop()` polls `SchedulerStore.due_tasks()` every N seconds.
 2. For each due task, the callback `_handle_scheduled_task(scoped_id, prompt, task_id=..., cron_expr=...)` wraps it into a `ScheduledTaskMessage(scope, prompt, task_id, cron_expr)` and puts it into `_message_queue`.
 3. `_process_queue_loop` dequeues the `ScheduledTaskMessage` (serialized with user messages and subagent results) and calls `_handle_scheduled_task_message`.
-4. `_handle_scheduled_task_message` builds a system prompt with scheduler context, spawns a subagent run, executes it, sends the result via the channel, and evaluates the turn.
+4. `_handle_scheduled_task_message` builds two system messages — `subagent_scheduled` (static prefix with scheduler context and user_id) and `subagent_time` (dynamic block with working timezone and current time) — then spawns a subagent run, executes it, sends the result via the channel, and evaluates the turn.
 5. `active_requests[scope]` is set during execution and cleared in the `finally` block, making scheduled tasks visible to `/status`.
 6. `mark_ran(task_id, cron_expr)` is called in `_handle_scheduled_task` at enqueue time — not after execution — so the scheduler won't re-enqueue the same task on the next poll cycle.
 
