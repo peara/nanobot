@@ -282,8 +282,14 @@ class BotCore:
         )
         try:
             system_content = self.prompts.render("subagent_scheduled", user_id=msg.scope)
+            time_content = self.prompts.render(
+                "subagent_time",
+                working_timezone=self.config.working_timezone,
+                current_time=human_now(self.config.working_timezone),
+            )
             messages = [
                 {"role": "system", "content": system_content},
+                {"role": "system", "content": time_content},
                 {"role": "user", "content": msg.prompt},
             ]
             run = self.subagent_manager.spawn(scope=msg.scope, goal=msg.prompt)

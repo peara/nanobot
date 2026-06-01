@@ -200,6 +200,7 @@ class TestPromptStoreSeedDefaults:
             "orchestrator_user_context",
             "subagent_default",
             "subagent_scheduled",
+            "subagent_time",
             "plan_brief_extractor",
             "plan_execution_agent",
             "plan_recovery",

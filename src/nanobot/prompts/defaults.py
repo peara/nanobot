@@ -103,6 +103,12 @@ If nothing noteworthy happened or no action was needed, reply with exactly: NO_A
 
 SUBAGENT_SCHEDULED_VARIABLES: list[str] = ["user_id"]
 
+SUBAGENT_TIME = """Working timezone: {working_timezone}.
+Current local time: {current_time}.
+Always interpret and communicate times in this timezone unless the user explicitly requests another timezone."""
+
+SUBAGENT_TIME_VARIABLES: list[str] = ["working_timezone", "current_time"]
+
 PLAN_BRIEF_EXTRACTOR = """You are a planning brief extractor. Output ONLY a JSON object.
 Do not use tools. Do not call functions. Do not use scratchpad.
 Do not explain. Output only the JSON.
@@ -385,6 +391,7 @@ DEFAULT_PROMPTS: dict[str, tuple[str, str, list[str]]] = {
     "orchestrator_user_context": (ORCHESTRATOR_USER_CONTEXT, "orchestrator", ORCHESTRATOR_USER_CONTEXT_VARIABLES),
     "subagent_default": (SUBAGENT_DEFAULT, "subagent", SUBAGENT_DEFAULT_VARIABLES),
     "subagent_scheduled": (SUBAGENT_SCHEDULED, "subagent", SUBAGENT_SCHEDULED_VARIABLES),
+    "subagent_time": (SUBAGENT_TIME, "subagent", SUBAGENT_TIME_VARIABLES),
     "plan_brief_extractor": (PLAN_BRIEF_EXTRACTOR, "planner", PLAN_BRIEF_EXTRACTOR_VARIABLES),
     "plan_execution_agent": (PLAN_EXECUTION_AGENT, "planner", PLAN_EXECUTION_AGENT_VARIABLES),
     "plan_recovery": (PLAN_RECOVERY, "planner", PLAN_RECOVERY_VARIABLES),
