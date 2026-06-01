@@ -32,8 +32,9 @@ class _FakeLlm:
         response_format: dict[str, Any] | None = None,
         *,
         scope: str | None = None,
+        cancel_token: Any | None = None,
     ) -> dict:
-        del messages, tools, response_format, scope
+        del messages, tools, response_format, scope, cancel_token
         if self._idx >= len(self._replies):
             raise RuntimeError("No fake LLM reply left")
         reply = self._replies[self._idx]
@@ -163,7 +164,7 @@ def test_subagent_manager_handles_failure(tmp_path) -> None:
     bot = BotCore(config=config, channels={"telegram": channel})
 
     class _FailingLlm:
-        async def chat(self, messages, tools, response_format=None, *, scope=None):
+        async def chat(self, messages, tools, response_format=None, *, scope=None, cancel_token=None):
             raise RuntimeError("LLM connection failed")
 
     bot.llm = cast(Any, _FailingLlm())
@@ -318,7 +319,7 @@ class TestToolCatalogInjection:
         captured_messages: list[dict] = []
 
         class _CapturingLlm:
-            async def chat(self, messages, tools, response_format=None, *, scope=None):
+            async def chat(self, messages, tools, response_format=None, *, scope=None, cancel_token=None):
                 captured_messages.extend(messages)
                 return {"content": "Done", "tool_calls": None}
 
@@ -346,7 +347,7 @@ class TestToolCatalogInjection:
         captured_messages: list[dict] = []
 
         class _CapturingLlm:
-            async def chat(self, messages, tools, response_format=None, *, scope=None):
+            async def chat(self, messages, tools, response_format=None, *, scope=None, cancel_token=None):
                 captured_messages.extend(messages)
                 return {"content": "Hi", "tool_calls": None}
 
@@ -380,7 +381,7 @@ class TestToolCatalogInjection:
         captured_messages: list[dict] = []
 
         class _CapturingLlm:
-            async def chat(self, messages, tools, response_format=None, *, scope=None):
+            async def chat(self, messages, tools, response_format=None, *, scope=None, cancel_token=None):
                 captured_messages.extend(messages)
                 return {"content": "Done", "tool_calls": None}
 

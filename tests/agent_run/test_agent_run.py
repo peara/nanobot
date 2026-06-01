@@ -41,8 +41,9 @@ class _FakeLlm:
         response_format: dict[str, Any] | None = None,
         *,
         scope: str | None = None,
+        cancel_token: Any | None = None,
     ) -> dict:
-        del messages, tools, response_format, scope
+        del messages, tools, response_format, scope, cancel_token
         if self._idx >= len(self._replies):
             raise RuntimeError("No fake LLM reply left")
         reply = self._replies[self._idx]
@@ -63,10 +64,11 @@ class _RecordingFakeLlm(_FakeLlm):
         response_format: dict[str, Any] | None = None,
         *,
         scope: str | None = None,
+        cancel_token: Any | None = None,
     ) -> dict:
         self.calls_messages.append(messages)
         self.calls_tools.append(tools)
-        return await super().chat(messages, tools, response_format, scope=scope)
+        return await super().chat(messages, tools, response_format, scope=scope, cancel_token=cancel_token)
 
 
 class _FakeTool(Tool):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent_run import AgentRun
+from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.channels.base import IncomingMessage
 from nanobot.config import AppConfig
 from nanobot.context_store import ContextStore
@@ -142,6 +143,7 @@ class BotCore:
         if config.enable_evaluator:
             self.evaluator = LearningEvaluator(llm=self.llm, prompts=self.prompts, tool_registry=self.tools)
             logger.info("LearningEvaluator enabled")
+        self._cancel_tokens: dict[str, CancellationToken] = {}
         self._message_queue: asyncio.Queue[OrchestratorMessage] = asyncio.Queue()
         self._queue_task: asyncio.Task[None] | None = None
 
@@ -158,6 +160,9 @@ class BotCore:
         self._queue_task = asyncio.create_task(self._process_queue_loop())
 
     async def stop(self) -> None:
+        # Signal cancellation to all in-flight requests
+        for token in self._cancel_tokens.values():
+            token.cancel()
         if self._queue_task is not None:
             self._queue_task.cancel()
             try:
@@ -166,6 +171,14 @@ class BotCore:
                 pass
         await self.scheduler.stop()
         await self._mcp_source.stop()
+
+    def cancel_request(self, scope: str) -> bool:
+        """Cancel a specific in-flight request. Returns True if a token was found and cancelled."""
+        token = self._cancel_tokens.get(scope)
+        if token:
+            token.cancel()
+            return True
+        return False
 
     async def on_incoming(self, message: IncomingMessage) -> None:
         user_msg = UserMessage(
@@ -266,15 +279,21 @@ class BotCore:
             return len(msg.summary) > 50
         return True
 
-    async def _handle_scheduled_task(self, scoped_id: str, prompt: str, *, task_id: int = 0, cron_expr: str = "") -> None:
+    async def _handle_scheduled_task(
+        self, scoped_id: str, prompt: str, *, task_id: int = 0, cron_expr: str = ""
+    ) -> None:
         # Mark task as ran immediately so it won't appear as due on the next poll cycle.
         # Without this, the 20s poll interval would re-enqueue the same task during execution.
         if task_id and cron_expr:
             self.scheduler_store.mark_ran(task_id, cron_expr)
-        await self._message_queue.put(ScheduledTaskMessage(scope=scoped_id, prompt=prompt, task_id=task_id, cron_expr=cron_expr))
+        await self._message_queue.put(
+            ScheduledTaskMessage(scope=scoped_id, prompt=prompt, task_id=task_id, cron_expr=cron_expr)
+        )
 
     async def _handle_scheduled_task_message(self, msg: ScheduledTaskMessage) -> None:
         logger.info("Scheduled task triggered scope=%s task_id=%d", msg.scope, msg.task_id)
+        token = CancellationToken()
+        self._cancel_tokens[msg.scope] = token
         self.active_requests[msg.scope] = ActiveRequest(
             chat_id=msg.scope,
             started_at=datetime.now(),
@@ -294,7 +313,9 @@ class BotCore:
             ]
             run = self.subagent_manager.spawn(scope=msg.scope, goal=msg.prompt)
             skill_names = self._get_active_skill_names(run.id)
-            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
+            result = await self.subagent_manager.execute(
+                run, messages, self._list_openai_tools(skill_names), cancel_token=token
+            )
             result_msg = SubagentResultMessage(
                 run_id=result.run_id,
                 parent_scope=msg.scope,
@@ -305,13 +326,18 @@ class BotCore:
             )
             await self.on_subagent_result(result_msg)
             await self._evaluate_turn(msg.scope, msg.prompt, result)
+        except LlmCallCancelledError:
+            logger.info("Scheduled request cancelled scope=%s task_id=%d", msg.scope, msg.task_id)
         except Exception:
             logger.exception("Scheduled task execution failed task_id=%d scope=%s", msg.task_id, msg.scope)
         finally:
             self.active_requests.pop(msg.scope, None)
+            self._cancel_tokens.pop(msg.scope, None)
 
     async def _process(self, scope: str, user_text: str, user_id: str = "") -> None:
         logger.info("Processing message for scope=%s user_id=%s", scope, user_id)
+        token = CancellationToken()
+        self._cancel_tokens[scope] = token
         self.active_requests[scope] = ActiveRequest(
             chat_id=scope,
             started_at=datetime.now(),
@@ -330,7 +356,9 @@ class BotCore:
 
             run = self.subagent_manager.spawn(scope=scope, goal=user_text)
             skill_names = self._get_active_skill_names(run.id)
-            result = await self.subagent_manager.execute(run, messages, self._list_openai_tools(skill_names))
+            result = await self.subagent_manager.execute(
+                run, messages, self._list_openai_tools(skill_names), cancel_token=token
+            )
 
             final_reply = str(result.reply or "")
             if not final_reply.strip():
@@ -346,6 +374,10 @@ class BotCore:
             await self._send(scope, final_reply)
 
             await self._evaluate_turn(scope, user_text, result)
+        except LlmCallCancelledError:
+            logger.info("Request cancelled scope=%s", scope)
+            self.memory.add_message(scope, "assistant", "Request was cancelled.")
+            await self._send(scope, "Request was cancelled.")
         finally:
             typing_task.cancel()
             try:
@@ -353,6 +385,7 @@ class BotCore:
             except asyncio.CancelledError:
                 pass
             self.active_requests.pop(scope, None)
+            self._cancel_tokens.pop(scope, None)
 
     async def _typing_heartbeat(self, scope: str) -> None:
         """Periodically send a typing indicator to the channel while processing.

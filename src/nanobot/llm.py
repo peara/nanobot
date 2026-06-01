@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import httpx
 from openai import AsyncOpenAI
 
+from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.config import ModelConfig
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,11 @@ class LlmClient:
         response_format: dict[str, Any] | None = None,
         *,
         scope: str | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> dict:
+        if cancel_token is not None and cancel_token.is_cancelled:
+            raise LlmCallCancelledError(scope=scope)
+
         kwargs: dict[str, Any] = {}
         if response_format is not None:
             kwargs["response_format"] = response_format
@@ -75,14 +81,43 @@ class LlmClient:
             messages,
         )
         start = time.monotonic()
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,  # type: ignore[arg-type]
-            tools=(tools or None),  # type: ignore[arg-type]
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            **kwargs,
-        )
+
+        if cancel_token is None:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,  # type: ignore[arg-type]
+                tools=(tools or None),  # type: ignore[arg-type]
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                **kwargs,
+            )
+        else:
+            llm_task = asyncio.ensure_future(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,  # type: ignore[arg-type]
+                    tools=(tools or None),  # type: ignore[arg-type]
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    **kwargs,
+                )
+            )
+            cancel_waiter = asyncio.ensure_future(cancel_token.wait())
+            done, pending = await asyncio.wait(
+                [llm_task, cancel_waiter],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in list(pending):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+            if cancel_token.is_cancelled:
+                raise LlmCallCancelledError(scope=scope)
+            response = llm_task.result()
+
         elapsed = time.monotonic() - start
         choice = response.choices[0]
         message = choice.message.model_dump()

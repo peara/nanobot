@@ -347,6 +347,7 @@ class TestDecideLifecycle:
                 response_format: dict[str, Any],
                 *,
                 scope: str | None = None,
+                cancel_token: Any | None = None,
             ) -> dict[str, str]:
                 return {"content": self._response_content}
 
@@ -406,6 +407,7 @@ class TestDecideLifecycle:
                 response_format: dict[str, Any],
                 *,
                 scope: str | None = None,
+                cancel_token: Any | None = None,
             ) -> dict[str, str]:
                 return {"content": '{"operations": []}'}
 

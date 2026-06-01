@@ -12,6 +12,7 @@ from nanobot.agent_tool_guards import (
     WebScriptGuard,
     parse_tool_result_json,
 )
+from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.core_scratchpad import (
     SCRATCHPAD_TOOL_NAME,
     apply_scratchpad_append_from_content,
@@ -215,7 +216,10 @@ class AgentRun:
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
         run_id: str | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
+        if cancel_token and cancel_token.is_cancelled:
+            raise LlmCallCancelledError(scope=scope_for_tools)
         include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
@@ -225,6 +229,7 @@ class AgentRun:
             tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
             response_format=response_format,
             scope=scope_for_tools,
+            cancel_token=cancel_token,
         )
         tool_trace: list[dict[str, Any]] = []
         needs_scratchpad_update = False
@@ -234,6 +239,8 @@ class AgentRun:
         previous_round_signatures: list[tuple[str, str]] | None = None
         identical_round_repeats = 0
         while assistant_message.get("tool_calls"):
+            if cancel_token and cancel_token.is_cancelled:
+                raise LlmCallCancelledError(scope=scope_for_tools)
             requested_calls = assistant_message["tool_calls"]
             requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
             if previous_round_signatures == requested_signatures:
@@ -307,6 +314,7 @@ class AgentRun:
                         messages=prepared_messages,
                         tools=[],
                         scope=f"{scope_for_tools}:limit_finalize",
+                        cancel_token=cancel_token,
                     )
                     reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
                     return reply, tool_trace
@@ -424,6 +432,7 @@ class AgentRun:
                     messages=prepared_messages,
                     tools=[],
                     scope=f"{scope_for_tools}:finalize",
+                    cancel_token=cancel_token,
                 )
                 finish_reason = final_message.get("finish_reason")
                 reply = final_message.get("content") or ""
@@ -451,6 +460,7 @@ class AgentRun:
                 tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
                 response_format=response_format,
                 scope=f"{scope_for_tools}:continue",
+                cancel_token=cancel_token,
             )
         finish_reason = assistant_message.get("finish_reason")
         reply = assistant_message.get("content") or ""

@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
 from nanobot.skills.injection import build_skill_messages, build_tool_catalog_message
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
@@ -89,6 +90,7 @@ class SubagentManager:
         messages: list[dict],
         tools: list[dict],
         response_format: dict[str, Any] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> SubagentRunResult:
         self._store.set_status(run.id, "running")
         self._contexts.put("subagent_run", run.id, "status", {"value": "running"})
@@ -136,7 +138,16 @@ class SubagentManager:
                 tools=tools,
                 response_format=response_format,
                 run_id=run.id,
+                cancel_token=cancel_token,
             )
+        except LlmCallCancelledError:
+            success = False
+            error = "cancelled"
+            self._store.set_status(run.id, "cancelled", error=error)
+            self._contexts.put("subagent_run", run.id, "error", {"message": error})
+            self._contexts.put("subagent_run", run.id, "status", {"value": "cancelled"})
+            logger.info("Subagent run cancelled run_id=%s", run.id)
+            reply = "Request was cancelled."
         except Exception as exc:
             success = False
             error = str(exc)

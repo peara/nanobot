@@ -81,8 +81,9 @@ class _TemplateCheckingLlm:
         response_format: dict[str, Any] | None = None,
         *,
         scope: str | None = None,
+        cancel_token: Any | None = None,
     ) -> dict:
-        del response_format, scope
+        del response_format, scope, cancel_token
         self.last_messages = messages
         self.last_rendered_prompt = _render_template(template_path=self.template_path, messages=messages, tools=tools)
         return {
