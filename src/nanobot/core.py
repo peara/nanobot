@@ -161,6 +161,8 @@ class BotCore:
 
     async def stop(self) -> None:
         # Signal cancellation to all in-flight requests
+        if self._cancel_tokens:
+            logger.info("Cancelling %d in-flight request(s)", len(self._cancel_tokens))
         for token in self._cancel_tokens.values():
             token.cancel()
         if self._queue_task is not None:
@@ -328,6 +330,9 @@ class BotCore:
             await self._evaluate_turn(msg.scope, msg.prompt, result)
         except LlmCallCancelledError:
             logger.info("Scheduled request cancelled scope=%s task_id=%d", msg.scope, msg.task_id)
+        except asyncio.CancelledError:
+            logger.info("Scheduled request interrupted by shutdown scope=%s task_id=%d", msg.scope, msg.task_id)
+            raise
         except Exception:
             logger.exception("Scheduled task execution failed task_id=%d scope=%s", msg.task_id, msg.scope)
         finally:
@@ -377,7 +382,13 @@ class BotCore:
         except LlmCallCancelledError:
             logger.info("Request cancelled scope=%s", scope)
             self.memory.add_message(scope, "assistant", "Request was cancelled.")
-            await self._send(scope, "Request was cancelled.")
+            try:
+                await self._send(scope, "Request was cancelled.")
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("Failed to send cancellation message (channel may be stopped) scope=%s", scope)
+        except asyncio.CancelledError:
+            logger.info("Request interrupted by shutdown scope=%s", scope)
+            raise
         finally:
             typing_task.cancel()
             try:
