@@ -185,7 +185,52 @@ class TestSkillDeleteTool:
             result = await tool.call({"name": "nonexistent"})
             data = json.loads(result)
 
-            assert "error" in data
+            assert data["error"] == "skill_not_found"
+            assert "nonexistent" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_delete_empty_name_returns_schema_mismatch(self) -> None:
+        # Regression: empty 'name' must NOT look like 'skill not found' to the LLM,
+        # otherwise it blames the system instead of its own input shape.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(name="real-skill", description="X", instructions="X")
+            tool = SkillDeleteTool(store)
+
+            result = await tool.call({})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
+            assert "name" in data["message"]
+            assert data["received_keys"] == []
+            assert store.get_by_name("real-skill") is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_with_unknown_field_still_reports_missing_name(self) -> None:
+        # Regression for the 2026-06-02 incident: LLM sent {"skill_id": 8},
+        # schema dropped it, tool received empty name. Error must help the LLM
+        # discover that 'name' (not 'skill_id') is the right field.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillDeleteTool(store)
+
+            result = await tool.call({"skill_id": 8})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
+            assert data["received_keys"] == ["skill_id"]
+            assert "name" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_delete_whitespace_name_treated_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillDeleteTool(store)
+
+            result = await tool.call({"name": "   "})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
 
 
 class TestRegisterSkillTools:

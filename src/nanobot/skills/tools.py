@@ -411,17 +411,47 @@ class SkillDeleteTool(Tool):
         }
 
     async def call(self, args: dict[str, Any]) -> str:
-        name = str(args.get("name", ""))
+        name = str(args.get("name", "")).strip()
+
+        if not name:
+            # Distinguish "missing required arg" from "not found" so the LLM
+            # can recover: empty name usually means the model sent a different
+            # field (e.g. skill_id) that the schema silently dropped.
+            return json.dumps(
+                {
+                    "error": "missing_required_parameter",
+                    "message": (
+                        "skill__delete requires the 'name' parameter (a non-empty string). "
+                        "Received empty or missing 'name'. "
+                        "Use skill__list to see available skill names, "
+                        "then call skill__delete with name='<skill_name>'."
+                    ),
+                    "received_keys": sorted(args.keys()),
+                },
+                ensure_ascii=True,
+            )
 
         existing = self._store.get_by_name(name)
         if existing is None:
-            return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
+            return json.dumps(
+                {
+                    "error": "skill_not_found",
+                    "message": (f"Skill not found: '{name}'. Use skill__list to see available skill names."),
+                },
+                ensure_ascii=True,
+            )
 
         was_intelligent = existing.trigger_mode == "intelligent"
 
         deleted = self._store.delete_by_name(name)
         if not deleted:
-            return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
+            return json.dumps(
+                {
+                    "error": "skill_not_found",
+                    "message": f"Skill not found: '{name}'.",
+                },
+                ensure_ascii=True,
+            )
 
         if was_intelligent and self._mem0:
             try:
