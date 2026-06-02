@@ -442,7 +442,11 @@ class AgentRun:
                         scope_for_tools,
                         finish_reason,
                     )
-                    reply = "I could not generate a response."
+                    # Lazy import: core.py imports AgentRun at module load, so a
+                    # top-level import here would form a circular import.
+                    from nanobot.core import EMPTY_REPLY_FALLBACK
+
+                    reply = EMPTY_REPLY_FALLBACK
                 reply = self._rewrite_finalize_reply(reply, guard_ctx)
                 return reply, tool_trace
             if post_finalize_reply is not None:
@@ -470,5 +474,7 @@ class AgentRun:
                 scope_for_tools,
                 finish_reason,
             )
-            reply = "I could not generate a response."
+            from nanobot.core import EMPTY_REPLY_FALLBACK
+
+            reply = EMPTY_REPLY_FALLBACK
         return self._rewrite_finalize_reply(reply, guard_ctx), tool_trace
