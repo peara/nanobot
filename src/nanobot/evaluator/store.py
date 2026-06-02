@@ -51,6 +51,23 @@ QUALITY_ASSESSMENT_SCHEMA: dict[str, Any] = {
 }
 
 
+def _strip_markdown_fences(content: str) -> str:
+    """Strip ```...``` markdown fences some LLMs add despite response_format enforcement.
+
+    Handles both ```json (preferred) and bare ``` wrappers. Returns the inner content
+    stripped of leading/trailing whitespace, or the original string if no fence is found.
+    """
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def parse_quality_assessment(response: dict[str, Any]) -> QualityAssessment:
     """Parse LLM response dict into QualityAssessment."""
     score = int(response["quality_score"])
@@ -71,7 +88,7 @@ def parse_quality_assessment(response: dict[str, Any]) -> QualityAssessment:
 
 def parse_quality_from_json(content: str) -> QualityAssessment:
     """Parse JSON string from LLM response into QualityAssessment."""
-    data = json.loads(content)
+    data = json.loads(_strip_markdown_fences(content))
     return parse_quality_assessment(data)
 
 
@@ -175,7 +192,7 @@ def parse_learning_extraction(response: dict[str, Any]) -> LearningExtraction:
 
 def parse_learning_from_json(content: str) -> LearningExtraction:
     """Parse JSON string from LLM response into LearningExtraction."""
-    data = json.loads(content)
+    data = json.loads(_strip_markdown_fences(content))
     return parse_learning_extraction(data)
 
 
@@ -314,18 +331,9 @@ def parse_skill_operation(item: dict[str, Any]) -> SkillOperation:
 
 def parse_lifecycle_from_json(content: str) -> list[SkillOperation]:
     """Parse JSON string from LLM response into list of SkillOperation."""
-    stripped = content.strip()
+    stripped = _strip_markdown_fences(content)
     if not stripped:
         return []
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-        if not stripped:
-            return []
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError:

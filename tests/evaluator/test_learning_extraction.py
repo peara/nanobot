@@ -154,6 +154,36 @@ class TestParseLearningFromJson:
         assert len(extraction.learnings) == 1
         assert extraction.learnings[0].observation == "Prefers concise answers"
 
+    def test_parse_markdown_wrapped_json(self) -> None:
+        # Regression: gemma4:31b-cloud (Ollama Cloud) wraps structured output in
+        # ```json fences despite response_format: json_schema strict mode.
+        fenced = (
+            "```json\n"
+            + json.dumps(
+                {
+                    "learnings": [
+                        {
+                            "category": "constraint",
+                            "observation": "Always include traceback in error responses",
+                            "direction": "create_skill",
+                            "evidence": "User got a generic error and asked for more detail",
+                            "confidence": "high",
+                        }
+                    ],
+                }
+            )
+            + "\n```"
+        )
+        extraction = parse_learning_from_json(fenced)
+        assert len(extraction.learnings) == 1
+        assert extraction.learnings[0].observation.startswith("Always include traceback")
+
+    def test_parse_bare_markdown_fence(self) -> None:
+        # Some LLMs use bare ``` without language tag.
+        fenced = "```\n" + json.dumps({"learnings": []}) + "\n```"
+        extraction = parse_learning_from_json(fenced)
+        assert len(extraction.learnings) == 0
+
 
 class TestLearningExtractionSchema:
     def test_schema_structure(self) -> None:

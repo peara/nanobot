@@ -72,6 +72,35 @@ class TestParseQualityAssessment:
         with pytest.raises(ValueError, match="must be high/medium/low"):
             parse_quality_assessment(data)
 
+    def test_parse_markdown_wrapped_json(self) -> None:
+        # Regression: gemma4:31b-cloud (Ollama Cloud) wraps structured output in
+        # ```json fences despite response_format: json_schema strict mode.
+        fenced = (
+            '```json\n{"quality_score": 4, "quality_reason": "Good", "has_learnings": true, "confidence": "high"}\n```'
+        )
+        qa = parse_quality_from_json(fenced)
+        assert qa.quality_score == 4
+        assert qa.has_learnings is True
+        assert qa.confidence == "high"
+
+    def test_parse_bare_markdown_fence(self) -> None:
+        # Some LLMs use bare ``` without language tag.
+        fenced = (
+            '```\n{"quality_score": 3, "quality_reason": "OK", "has_learnings": false, "confidence": "medium"}\n```'
+        )
+        qa = parse_quality_from_json(fenced)
+        assert qa.quality_score == 3
+        assert qa.has_learnings is False
+
+    def test_parse_markdown_fence_with_whitespace(self) -> None:
+        # Leading/trailing whitespace around the fence block should not break parsing.
+        fenced = (
+            '   \n```json\n{"quality_score": 5, "quality_reason": "Excellent",'
+            ' "has_learnings": false, "confidence": "high"}\n```\n  '
+        )
+        qa = parse_quality_from_json(fenced)
+        assert qa.quality_score == 5
+
 
 class TestQualityAssessmentSchema:
     def test_schema_structure(self) -> None:
