@@ -19,6 +19,7 @@ class SkillStore:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._migrate_db()
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
@@ -38,7 +39,9 @@ class SkillStore:
                     priority INTEGER DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    last_hit_at TEXT
                 )
                 """
             )
@@ -55,6 +58,30 @@ class SkillStore:
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_skills_trigger_mode ON skills(trigger_mode)
+                """
+            )
+
+    def _migrate_db(self) -> None:
+        """Add columns that may be missing from older schema versions.
+
+        Uses PRAGMA table_info to check for missing columns and adds them
+        with ALTER TABLE ADD COLUMN. Idempotent — safe to run on every init.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("PRAGMA table_info(skills)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            migrations = [
+                ("hit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_hit_at", "TEXT"),
+            ]
+            for col_name, col_def in migrations:
+                if col_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE skills ADD COLUMN {col_name} {col_def}")
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_skills_last_hit_at ON skills(last_hit_at)
                 """
             )
 
@@ -82,9 +109,10 @@ class SkillStore:
                 """
                 INSERT INTO skills (
                     name, description, instructions, trigger_mode, trigger_patterns_json,
-                    tools_allowlist_json, priority, is_active, created_at, updated_at
+                    tools_allowlist_json, priority, is_active, created_at, updated_at,
+                    hit_count, last_hit_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -97,6 +125,8 @@ class SkillStore:
                     1 if is_active else 0,
                     iso(now),
                     iso(now),
+                    0,
+                    None,
                 ),
             )
             skill_id = cur.lastrowid
@@ -110,7 +140,8 @@ class SkillStore:
             row = conn.execute(
                 """
                 SELECT id, name, description, instructions, trigger_mode, trigger_patterns_json,
-                       tools_allowlist_json, priority, is_active, created_at, updated_at
+                       tools_allowlist_json, priority, is_active, created_at, updated_at,
+                       hit_count, last_hit_at
                 FROM skills
                 WHERE id = ?
                 """,
@@ -125,7 +156,8 @@ class SkillStore:
             row = conn.execute(
                 """
                 SELECT id, name, description, instructions, trigger_mode, trigger_patterns_json,
-                       tools_allowlist_json, priority, is_active, created_at, updated_at
+                       tools_allowlist_json, priority, is_active, created_at, updated_at,
+                       hit_count, last_hit_at
                 FROM skills
                 WHERE name = ?
                 """,
@@ -140,7 +172,8 @@ class SkillStore:
             rows = conn.execute(
                 """
                 SELECT id, name, description, instructions, trigger_mode, trigger_patterns_json,
-                       tools_allowlist_json, priority, is_active, created_at, updated_at
+                       tools_allowlist_json, priority, is_active, created_at, updated_at,
+                       hit_count, last_hit_at
                 FROM skills
                 WHERE is_active = 1
                 ORDER BY priority DESC, name ASC
@@ -153,7 +186,8 @@ class SkillStore:
             rows = conn.execute(
                 """
                 SELECT id, name, description, instructions, trigger_mode, trigger_patterns_json,
-                       tools_allowlist_json, priority, is_active, created_at, updated_at
+                       tools_allowlist_json, priority, is_active, created_at, updated_at,
+                       hit_count, last_hit_at
                 FROM skills
                 ORDER BY priority DESC, name ASC
                 """
@@ -230,3 +264,10 @@ class SkillStore:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM skills WHERE name = ?", (name,))
             return cur.rowcount > 0
+
+    def increment_hit_count(self, name: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE skills SET hit_count = hit_count + 1, last_hit_at = ? WHERE name = ?",
+                (iso(utc_now()), name),
+            )

@@ -46,6 +46,8 @@ class Skill:
         is_active: Whether this skill is currently active
         created_at: Timestamp of skill creation
         updated_at: Timestamp of last update
+        hit_count: Number of times this skill was matched and injected
+        last_hit_at: Timestamp of the last time this skill was matched
     """
 
     id: int
@@ -59,6 +61,8 @@ class Skill:
     is_active: bool = True
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    hit_count: int = 0
+    last_hit_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.trigger_mode not in VALID_TRIGGER_MODES:
@@ -77,6 +81,8 @@ class Skill:
             "is_active": self.is_active,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
+            "hit_count": self.hit_count,
+            "last_hit_at": iso(self.last_hit_at),
         }
         return result
 
@@ -116,6 +122,8 @@ class Skill:
             is_active=bool(row[8]),
             created_at=parse_utc(row[9]) or utc_now(),
             updated_at=parse_utc(row[10]) or utc_now(),
+            hit_count=int(row[11] or 0),
+            last_hit_at=parse_utc(row[12]),
         )
 
     def matches_pattern(self, text: str) -> bool:
