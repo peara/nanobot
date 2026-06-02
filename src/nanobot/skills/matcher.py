@@ -64,16 +64,19 @@ class SkillMatcher:
                 if skill.name not in seen_names:
                     seen_names.add(skill.name)
                     result.append(skill)
+                    self._store.increment_hit_count(skill.name)
 
         for skill in self.find_by_pattern(goal):
             if skill.name not in seen_names:
                 seen_names.add(skill.name)
                 result.append(skill)
+                self._store.increment_hit_count(skill.name)
 
         for skill in self.find_by_intelligent(goal):
             if skill.name not in seen_names:
                 seen_names.add(skill.name)
                 result.append(skill)
+                self._store.increment_hit_count(skill.name)
 
         result.sort(key=lambda s: s.priority, reverse=True)
 

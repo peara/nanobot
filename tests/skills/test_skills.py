@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -75,6 +77,8 @@ class TestSkillModel:
             1,
             "2025-01-01T00:00:00+00:00",
             "2025-01-01T00:00:00+00:00",
+            3,
+            "2025-06-01T12:00:00+00:00",
         )
         skill = Skill.from_row(row)
         assert skill.id == 1
@@ -82,6 +86,9 @@ class TestSkillModel:
         assert skill.trigger_patterns == ["debug|error"]
         assert skill.tools_allowlist == ["tool1", "tool2"]
         assert skill.priority == 5
+        assert skill.hit_count == 3
+        assert skill.last_hit_at is not None
+        assert skill.last_hit_at.year == 2025
 
 
 class TestSkillStore:
@@ -319,3 +326,199 @@ class TestSkillStoreToolsAllowlist:
             )
             # Empty allowlist on create should store None
             assert skill.tools_allowlist is None
+
+
+class TestSkillHitTracking:
+    def test_skill_default_hit_count_is_zero(self) -> None:
+        skill = Skill(
+            id=1,
+            name="test",
+            description="Test",
+            instructions="Test",
+            trigger_mode="pattern",
+        )
+        assert skill.hit_count == 0
+
+    def test_skill_default_last_hit_at_is_none(self) -> None:
+        skill = Skill(
+            id=1,
+            name="test",
+            description="Test",
+            instructions="Test",
+            trigger_mode="pattern",
+        )
+        assert skill.last_hit_at is None
+
+    def test_create_skill_has_default_hit_count_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(name="test", description="Test", instructions="Test")
+            skill = store.get_by_name("test")
+            assert skill is not None
+            assert skill.hit_count == 0
+            assert skill.last_hit_at is None
+
+    def test_increment_hit_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(name="test", description="Test", instructions="Test")
+            store.increment_hit_count("test")
+            store.increment_hit_count("test")
+            skill = store.get_by_name("test")
+            assert skill is not None
+            assert skill.hit_count == 2
+
+    def test_increment_hit_count_updates_last_hit_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(name="test", description="Test", instructions="Test")
+            skill_before = store.get_by_name("test")
+            assert skill_before is not None
+            assert skill_before.last_hit_at is None
+
+            store.increment_hit_count("test")
+            skill_after = store.get_by_name("test")
+            assert skill_after is not None
+            assert skill_after.last_hit_at is not None
+            assert isinstance(skill_after.last_hit_at, datetime)
+
+    def test_increment_hit_count_nonexistent_is_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.increment_hit_count("nonexistent")
+
+    def test_migration_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "skills.db")
+            SkillStore(db_path)
+            SkillStore(db_path)
+
+    def test_migration_adds_columns_to_existing_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "skills.db")
+            # Create a DB with the OLD schema (no hit_count, no last_hit_at)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE skills (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL,
+                    instructions TEXT NOT NULL,
+                    trigger_mode TEXT NOT NULL DEFAULT 'pattern',
+                    trigger_patterns_json TEXT,
+                    tools_allowlist_json TEXT,
+                    priority INTEGER DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO skills (name, description, instructions, trigger_mode, created_at, updated_at) "
+                + "VALUES ('old-skill', 'Old', 'Old instructions', 'pattern', "
+                + "'2025-01-01T00:00:00+00:00', '2025-01-01T00:00:00+00:00')"
+            )
+            conn.commit()
+            conn.close()
+
+            # Now open with SkillStore — migration should add columns
+            store = SkillStore(db_path)
+            skill = store.get_by_name("old-skill")
+            assert skill is not None
+            assert skill.hit_count == 0
+            assert skill.last_hit_at is None
+
+            conn2 = sqlite3.connect(db_path)
+            columns = {row[1] for row in conn2.execute("PRAGMA table_info(skills)").fetchall()}
+            conn2.close()
+            assert "hit_count" in columns
+            assert "last_hit_at" in columns
+
+
+class TestSkillMatcherHitTracking:
+    """Tests that find_relevant_skills increments hit_count and updates last_hit_at."""
+
+    def test_find_relevant_skills_records_hit_for_always_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(
+                name="always-skill",
+                description="Always active",
+                instructions="Always",
+                trigger_mode="always",
+            )
+            matcher = SkillMatcher(store)
+
+            matcher.find_relevant_skills("any text")
+
+            skill = store.get_by_name("always-skill")
+            assert skill is not None
+            assert skill.hit_count == 1
+            assert skill.last_hit_at is not None
+
+    def test_find_relevant_skills_records_hit_for_pattern_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(
+                name="debug-skill",
+                description="Debug",
+                instructions="Debug",
+                trigger_mode="pattern",
+                trigger_patterns=["debug|error"],
+            )
+            matcher = SkillMatcher(store)
+
+            matcher.find_relevant_skills("I have a debug issue")
+
+            skill = store.get_by_name("debug-skill")
+            assert skill is not None
+            assert skill.hit_count == 1
+            assert skill.last_hit_at is not None
+
+    def test_find_relevant_skills_no_match_no_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(
+                name="unrelated-skill",
+                description="Unrelated",
+                instructions="Unrelated",
+                trigger_mode="pattern",
+                trigger_patterns=["python|code"],
+            )
+            matcher = SkillMatcher(store)
+
+            matcher.find_relevant_skills("cooking recipe", include_always=False)
+
+            skill = store.get_by_name("unrelated-skill")
+            assert skill is not None
+            assert skill.hit_count == 0
+            assert skill.last_hit_at is None
+
+    def test_find_relevant_skills_multiple_calls_accumulate_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(
+                name="always-a",
+                description="A",
+                instructions="A",
+                trigger_mode="always",
+            )
+            store.create(
+                name="always-b",
+                description="B",
+                instructions="B",
+                trigger_mode="always",
+            )
+            matcher = SkillMatcher(store)
+
+            for _ in range(3):
+                matcher.find_relevant_skills("any text")
+
+            skill_a = store.get_by_name("always-a")
+            skill_b = store.get_by_name("always-b")
+            assert skill_a is not None
+            assert skill_b is not None
+            assert skill_a.hit_count == 3
+            assert skill_b.hit_count == 3
