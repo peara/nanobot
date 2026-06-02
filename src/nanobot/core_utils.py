@@ -119,6 +119,7 @@ def help_text() -> str:
             "/ctxfull - full pre-LLM payload JSON (truncated)",
             "/reset - clear local conversation history for this chat scope",
             "/scratchpad [show|clear] - inspect or clear structured scratchpad",
+            "/stop - cancel all in-flight requests",
         ]
     )
 

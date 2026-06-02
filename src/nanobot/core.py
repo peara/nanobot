@@ -189,7 +189,15 @@ class BotCore:
             text=message.text,
             user_id=message.user_id,
         )
-        await self._message_queue.put(user_msg)
+        cmd = command_name(message.text)
+        if cmd is not None:
+            # Commands dispatch immediately — concurrent with any in-flight _process().
+            # This allows /stop to cancel a running request in the same scope.
+            asyncio.create_task(
+                self.command_manager.handle(cmd, message, user_msg.scope),
+            )
+        else:
+            await self._message_queue.put(user_msg)
 
     async def on_subagent_result(self, result: SubagentResultMessage) -> None:
         await self._message_queue.put(result)
@@ -225,18 +233,7 @@ class BotCore:
         return True
 
     async def _handle_user_message(self, msg: UserMessage) -> None:
-        scope = msg.scope
-        cmd = command_name(msg.text)
-        if cmd is not None:
-            incoming = IncomingMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_id=msg.user_id,
-                text=msg.text,
-            )
-            await self.command_manager.handle(cmd, incoming, scope)
-        else:
-            await self._process(scope, msg.text, user_id=msg.user_id)
+        await self._process(msg.scope, msg.text, user_id=msg.user_id)
 
     async def _handle_subagent_result(self, msg: SubagentResultMessage) -> None:
         logger.info(
