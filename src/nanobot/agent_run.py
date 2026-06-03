@@ -7,6 +7,7 @@ from typing import Any
 from nanobot.agent_tool_guards import (
     PostResultAction,
     PreCallResult,
+    SchemaValidationGuard,
     ToolCallContext,
     ToolGuard,
     WebScriptGuard,
@@ -149,9 +150,19 @@ class AgentRun:
     def __init__(self, host: Any) -> None:
         self._host = host
         host_guards = list(getattr(host, "tool_guards", None) or [])
-        has_web_script_guard = any(isinstance(guard, WebScriptGuard) for guard in host_guards)
-        default_guards: list[ToolGuard] = [] if has_web_script_guard else [WebScriptGuard()]
-        self._tool_guards = [*default_guards, *host_guards]
+        guard_classes: set[type] = set()
+        guards: list[ToolGuard] = []
+        for guard in [*host_guards, WebScriptGuard(), SchemaValidationGuard()]:
+            if type(guard) not in guard_classes:
+                guard_classes.add(type(guard))
+                guards.append(guard)
+        self._tool_guards = guards
+
+    def _resolve_tool_schema(self, fn_name: str) -> dict[str, Any] | None:
+        tool = self._host.tools.get(fn_name)
+        if tool is None:
+            return None
+        return tool.schema
 
     def _pre_call_guard(
         self,
@@ -332,6 +343,7 @@ class AgentRun:
                 ok = True
                 error: str | None = None
                 try:
+                    guard_ctx.tool_schema = self._resolve_tool_schema(fn_name)
                     pre_action = self._pre_call_guard(fn_name, args, guard_ctx)
                     if pre_action.normalized_args is not None:
                         args = pre_action.normalized_args
@@ -376,6 +388,8 @@ class AgentRun:
                     result = f"Tool call failed: {exc}"
                     if fn_name != SCRATCHPAD_TOOL_NAME:
                         needs_scratchpad_update = True
+                finally:
+                    guard_ctx.tool_schema = None
                 result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
                 payload = parse_tool_result_json(result_text)
                 post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)

@@ -11,7 +11,13 @@ from nanobot.agent_run import (
     _normalize_roles,
     prepare_messages_for_chat,
 )
-from nanobot.agent_tool_guards import ToolCallContext, ToolGuard, WebScriptGuard, reply_claims_data_lost
+from nanobot.agent_tool_guards import (
+    SchemaValidationGuard,
+    ToolCallContext,
+    ToolGuard,
+    WebScriptGuard,
+    reply_claims_data_lost,
+)
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.hooks import ToolCallEvent
 from nanobot.tools.base import Tool
@@ -716,8 +722,7 @@ def test_create_script_failure_can_still_end_with_honest_user_response() -> None
             },
             {
                 "content": (
-                    "Here are the top stories. I could fetch and parse the page, "
-                    "but saving the reusable script failed."
+                    "Here are the top stories. I could fetch and parse the page, but saving the reusable script failed."
                 ),
                 "tool_calls": None,
             },
@@ -763,8 +768,7 @@ def test_web_create_script_blocks_javascript_before_tool_call() -> None:
                                     "name": "hn_frontpage",
                                     "description": "Extract HN",
                                     "code": (
-                                        "const rows = Array.from(document.querySelectorAll('tr.athing')); "
-                                        "return rows;"
+                                        "const rows = Array.from(document.querySelectorAll('tr.athing')); return rows;"
                                     ),
                                 }
                             ),
@@ -881,7 +885,9 @@ def test_agent_run_rewrites_data_loss_reply_when_web_data_already_available() ->
     host.tools.register(
         _FakeTool(
             "web__invoke_script",
-            result=json.dumps({"ok": True, "data": {"items": [{"title": "Example Story", "url": "https://example.com"}]}}),
+            result=json.dumps(
+                {"ok": True, "data": {"items": [{"title": "Example Story", "url": "https://example.com"}]}}
+            ),
         )
     )
     run = AgentRun(host)
@@ -969,7 +975,10 @@ def test_read_then_create_success_does_not_force_finalize_from_read_items_only()
                     {
                         "id": "call_read",
                         "type": "function",
-                        "function": {"name": "web__read_page", "arguments": json.dumps({"url": "https://news.ycombinator.com"})},
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://news.ycombinator.com"}),
+                        },
                     }
                 ],
             },
@@ -1020,7 +1029,10 @@ def test_agent_run_does_not_synthesize_navigation_items_after_read_page_and_scra
                     {
                         "id": "call_read",
                         "type": "function",
-                        "function": {"name": "web__read_page", "arguments": json.dumps({"url": "https://auctions.yahoo.co.jp"})},
+                        "function": {
+                            "name": "web__read_page",
+                            "arguments": json.dumps({"url": "https://auctions.yahoo.co.jp"}),
+                        },
                     }
                 ],
             },
@@ -1203,7 +1215,9 @@ def test_search_hit_with_empty_params_schema_allows_invoke_with_url_param() -> N
     host.tools.register(
         _FakeTool(
             "web__invoke_script",
-            result=json.dumps({"ok": True, "data": {"items": [{"title": "P2 Story", "url": "https://example.com/p2"}]}}),
+            result=json.dumps(
+                {"ok": True, "data": {"items": [{"title": "P2 Story", "url": "https://example.com/p2"}]}}
+            ),
         )
     )
     read_called = {"value": False}
@@ -1355,8 +1369,7 @@ def test_script_items_can_be_formatted_as_vietnamese_only_five_bullets() -> None
                     "ok": True,
                     "data": {
                         "items": [
-                            {"title": f"Tin {index}", "url": f"https://example.com/{index}"}
-                            for index in range(1, 6)
+                            {"title": f"Tin {index}", "url": f"https://example.com/{index}"} for index in range(1, 6)
                         ]
                     },
                 }
@@ -1442,7 +1455,7 @@ def test_invoke_script_params_json_string_is_normalized_to_dict() -> None:
                             "arguments": json.dumps(
                                 {
                                     "name": "hn_top_stories",
-                                    "params": "{\"limit\": 5}",
+                                    "params": '{"limit": 5}',
                                 }
                             ),
                         },
@@ -1627,3 +1640,13 @@ def test_web_script_guard_does_not_force_finalize_when_scratchpad_threshold_hit_
     )
 
     assert action is None or action.force_finalize is False
+
+
+def test_default_guards_include_schema_validation() -> None:
+    llm = _FakeLlm([{"content": "ok", "tool_calls": None}])
+    host = _FakeHost(llm)
+
+    run = AgentRun(host)
+
+    schema_guard_count = sum(1 for guard in run._tool_guards if isinstance(guard, SchemaValidationGuard))
+    assert schema_guard_count == 1

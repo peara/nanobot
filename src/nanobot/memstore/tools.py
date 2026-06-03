@@ -89,6 +89,7 @@ class MemorySearchTool(Tool):
                 },
             },
             "required": ["query", "user_id"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -171,6 +172,7 @@ class MemorySaveTool(Tool):
                 },
             },
             "required": ["text", "user_id"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -250,6 +252,7 @@ class MemorySaveTurnTool(Tool):
                 },
             },
             "required": ["user_id", "user_text", "assistant_text"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -324,6 +327,7 @@ class MemoryListTool(Tool):
                 },
             },
             "required": ["user_id"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -405,6 +409,7 @@ class MemoryDeleteTool(Tool):
                     "description": "Delete all memories for this run (optional)",
                 },
             },
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -419,9 +424,7 @@ class MemoryDeleteTool(Tool):
                 result = self._memories.delete(str(memory_id))  # type: ignore[call-arg]
             except AttributeError as exc:
                 logger.debug("MemoryDeleteTool: delete failed for memory_id=%s: %s", memory_id, exc)
-                return json.dumps(
-                    {"error": f"Memory not found: {memory_id}", "ok": False}, ensure_ascii=True
-                )
+                return json.dumps({"error": f"Memory not found: {memory_id}", "ok": False}, ensure_ascii=True)
             payload = result if isinstance(result, dict) else {"ok": True, "deleted": str(memory_id)}
             return json.dumps(payload, ensure_ascii=True)
 
@@ -471,6 +474,7 @@ class MemoryUpdateTool(Tool):
                 },
             },
             "required": ["memory_id", "text"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:

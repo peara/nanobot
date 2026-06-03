@@ -7,6 +7,25 @@ from typing import Any
 
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (0 if c1 == c2 else 1)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
+
+
 WEB_CREATE_SCRIPT_TOOL = "web__create_script"
 WEB_INVOKE_SCRIPT_TOOL = "web__invoke_script"
 WEB_READ_PAGE_TOOL = "web__read_page"
@@ -41,6 +60,7 @@ class ToolCallContext:
     scratchpad_calls: int = 0
     total_calls: int = 0
     current_tool_name: str = ""
+    tool_schema: dict[str, Any] | None = None
     _guard_state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def guard_state(self, name: str) -> dict[str, Any]:
@@ -319,3 +339,98 @@ class WebScriptGuard(ToolGuard):
         if reply_claims_data_lost(reply):
             return synthesize_web_data_reply(state.get("latest_web_items", []), reply)
         return rewrite_data_loss_reply(reply)
+
+
+def _suggest_field_name(typo: str, valid_names: list[str]) -> str | None:
+    if not typo or not valid_names:
+        return None
+    best_name: str | None = None
+    best_dist: int | None = None
+    for candidate in valid_names:
+        dist = _levenshtein_distance(typo, candidate)
+        if dist == 0:
+            return candidate
+        max_allowed = max(2, len(candidate) // 2)
+        if dist > max_allowed:
+            continue
+        if dist > len(typo) // 2 + 1:
+            continue
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_name = candidate
+    return best_name
+
+
+def _validate_tool_schema(
+    fn_name: str,
+    args: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> PreCallResult | None:
+    if schema is None or schema == {} or "properties" not in schema:
+        return None
+    properties = schema.get("properties", {})
+    if not properties:
+        return None
+
+    required: list[str] = schema.get("required", [])
+    missing_required: list[str] = []
+    for key in required:
+        val = args.get(key)
+        if val is None or (isinstance(val, str) and val == ""):
+            missing_required.append(key)
+
+    unknown_keys: list[str] = []
+    if schema.get("additionalProperties") is False:
+        for key in args:
+            if key not in properties:
+                unknown_keys.append(key)
+
+    if not missing_required and not unknown_keys:
+        return None
+
+    missing = sorted(missing_required)
+    received = sorted(args.keys())
+    allowed = sorted(properties.keys())
+
+    suggestion: str | None = None
+    if unknown_keys:
+        suggestion = _suggest_field_name(unknown_keys[0], list(properties.keys()))
+
+    if missing_required and unknown_keys:
+        suggestion_suffix = f" Did you mean '{suggestion}'?" if suggestion else ""
+        msg = (
+            f"tool '{fn_name}' has missing required fields: {missing} "
+            f"and received unknown fields: {sorted(unknown_keys)}. "
+            f"Allowed: {allowed}.{suggestion_suffix}"
+        )
+    elif missing_required:
+        msg = (
+            f"tool '{fn_name}' is missing required fields: {missing}. "
+            f"Received keys: {received}. Expected keys: {sorted(required)}."
+        )
+    elif unknown_keys:
+        suggestion_suffix = f" Did you mean '{suggestion}'?" if suggestion else ""
+        msg = (
+            f"tool '{fn_name}' received unknown fields: {sorted(unknown_keys)}. Allowed: {allowed}.{suggestion_suffix}"
+        )
+    else:
+        return None
+
+    return PreCallResult(
+        block=True,
+        block_error=msg,
+        block_payload={
+            "error": "schema_mismatch",
+            "message": msg,
+            "received_keys": received,
+            "allowed_keys": allowed,
+            "missing_required": missing,
+        },
+    )
+
+
+class SchemaValidationGuard(ToolGuard):
+    """Validate tool call arguments against their declared JSON schema before dispatch."""
+
+    def pre_call(self, fn_name: str, args: dict[str, Any], ctx: ToolCallContext) -> PreCallResult | None:
+        return _validate_tool_schema(fn_name, args, ctx.tool_schema)

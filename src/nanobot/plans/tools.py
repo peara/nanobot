@@ -33,6 +33,7 @@ class PlanGetTool(Tool):
                 }
             },
             "required": ["plan_id"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -83,6 +84,7 @@ class PlanUpdateTool(Tool):
                 },
             },
             "required": ["plan_id"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -134,6 +136,7 @@ class PlanAddStepTool(Tool):
                 },
             },
             "required": ["plan_id", "description"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
@@ -193,6 +196,7 @@ class PlanEditStepTool(Tool):
                 },
             },
             "required": ["plan_id", "step_index", "description"],
+            "additionalProperties": False,
         }
 
     async def call(self, args: dict[str, Any]) -> str:
