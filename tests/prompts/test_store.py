@@ -215,3 +215,192 @@ class TestPromptStoreSeedDefaults:
             "skill_lifecycle",
         }
         assert names == expected
+
+
+class TestPromptStoreHistory:
+    """Design B behavior: save() preserves prior versions, rollback is real."""
+
+    def test_save_preserves_history(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1 content", "orchestrator")
+        prompt_store.save("test", "v2 content", "orchestrator")
+        prompt_store.save("test", "v3 content", "orchestrator")
+
+        versions = prompt_store.list_versions("test")
+        assert [v.version for v in versions] == [3, 2, 1]
+        assert [v.content for v in versions] == ["v3 content", "v2 content", "v1 content"]
+
+    def test_only_one_active_at_a_time(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1", "orchestrator")
+        prompt_store.save("test", "v2", "orchestrator")
+        prompt_store.save("test", "v3", "orchestrator")
+
+        active = prompt_store.get_active("test")
+        assert active is not None
+        assert active.version == 3
+        assert active.is_active is True
+
+        # Prior versions exist but are inactive.
+        for v in prompt_store.list_versions("test"):
+            if v.version == 3:
+                assert v.is_active is True
+            else:
+                assert v.is_active is False
+
+    def test_set_active_rolls_back(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1 content", "orchestrator")
+        prompt_store.save("test", "v2 content", "orchestrator")
+        prompt_store.save("test", "v3 content", "orchestrator")
+
+        result = prompt_store.set_active("test", 1)
+        assert result is not None
+        assert result.content == "v1 content"
+
+        active = prompt_store.get_active("test")
+        assert active is not None
+        assert active.version == 1
+        assert active.content == "v1 content"
+
+    def test_list_versions_newest_first(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1", "orchestrator")
+        prompt_store.save("test", "v2", "orchestrator")
+        prompt_store.save("test", "v3", "orchestrator")
+
+        versions = prompt_store.list_versions("test")
+        # Newest first by design — used for displaying history lists.
+        assert [v.version for v in versions] == [3, 2, 1]
+
+    def test_list_versions_empty(self, prompt_store: PromptStore) -> None:
+        assert prompt_store.list_versions("nonexistent") == []
+
+    def test_get_version_returns_specific(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1 content", "orchestrator")
+        prompt_store.save("test", "v2 content", "orchestrator")
+        prompt_store.save("test", "v3 content", "orchestrator")
+
+        v1 = prompt_store.get_version("test", 1)
+        assert v1 is not None
+        assert v1.content == "v1 content"
+        assert v1.is_active is False  # prior version, not the active one
+
+        v3 = prompt_store.get_version("test", 3)
+        assert v3 is not None
+        assert v3.content == "v3 content"
+        assert v3.is_active is True
+
+    def test_get_version_not_found(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("test", "v1", "orchestrator")
+        assert prompt_store.get_version("test", 99) is None
+        assert prompt_store.get_version("nonexistent", 1) is None
+
+    def test_save_after_rollback_continues_history(self, prompt_store: PromptStore) -> None:
+        # Roll back to v1, then save new content — should land at v3 (not v2)
+        # because version counter is monotonic across the full history.
+        prompt_store.save("test", "v1 content", "orchestrator")
+        prompt_store.save("test", "v2 content", "orchestrator")
+        prompt_store.set_active("test", 1)
+        prompt_store.save("test", "v3 content (after rollback)", "orchestrator")
+
+        versions = prompt_store.list_versions("test")
+        assert [v.version for v in versions] == [3, 2, 1]
+        assert versions[0].content == "v3 content (after rollback)"
+        assert versions[0].is_active is True
+
+    def test_list_all_returns_only_active(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("a", "v1", "orchestrator")
+        prompt_store.save("a", "v2", "orchestrator")
+        prompt_store.save("b", "v1", "planner")
+        prompt_store.set_active("a", 1)  # rollback a to v1
+
+        active = prompt_store.list_all()
+        # One entry per name, with the active row's content.
+        assert len(active) == 2
+        by_name = {p.name: p for p in active}
+        assert by_name["a"].content == "v1"
+        assert by_name["a"].is_active is True
+        assert by_name["b"].content == "v1"
+
+    def test_list_all_filtered_by_role_only_active(self, prompt_store: PromptStore) -> None:
+        prompt_store.save("a", "v1", "orchestrator")
+        prompt_store.save("a", "v2", "orchestrator")
+        prompt_store.set_active("a", 1)
+        prompt_store.save("b", "v1", "planner")
+        prompt_store.save("b", "v2", "planner")
+
+        orch = prompt_store.list_all(role="orchestrator")
+        assert len(orch) == 1
+        assert orch[0].name == "a"
+        assert orch[0].content == "v1"
+
+        plan = prompt_store.list_all(role="planner")
+        assert len(plan) == 1
+        assert plan[0].name == "b"
+        assert plan[0].content == "v2"  # latest, active
+
+
+class TestPromptStoreMigration:
+    """Schema migration from old UNIQUE(name) to new UNIQUE(name, version)."""
+
+    def test_migrates_legacy_unique_on_name(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        db_path = str(tmp_path / "legacy.db")
+
+        # Build a pre-migration DB by hand: old schema with UNIQUE on name.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE prompts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'orchestrator',
+                variables_json TEXT DEFAULT '[]',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO prompts (name, content, version, created_at, updated_at) "
+            "VALUES (?, ?, 1, '2026-01-01', '2026-01-01')",
+            ("x", "old content"),
+        )
+        conn.execute(
+            "INSERT INTO prompts (name, content, version, created_at, updated_at) "
+            "VALUES (?, ?, 1, '2026-01-01', '2026-01-01')",
+            ("y", "another old content"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening the store should migrate transparently.
+        store = PromptStore(db_path, seed_defaults=False)
+
+        # All rows preserved.
+        assert len(store.list_all()) == 2
+        assert store.get_active("x") is not None
+        assert store.get_active("x").content == "old content"
+        assert store.get_active("y") is not None
+        assert store.get_active("y").content == "another old content"
+
+        # Now multi-row works.
+        store.save("x", "new content", "orchestrator")
+        versions = store.list_versions("x")
+        assert [v.version for v in versions] == [2, 1]
+        assert versions[0].content == "new content"
+        assert versions[1].content == "old content"
+
+    def test_migration_idempotent(self, tmp_path: Path) -> None:
+        # Opening an already-migrated store twice should not duplicate rows
+        # or otherwise corrupt state.
+        db_path = str(tmp_path / "m.db")
+        store1 = PromptStore(db_path, seed_defaults=False)
+        store1.save("a", "v1", "orchestrator")
+        store1.save("a", "v2", "orchestrator")
+
+        store2 = PromptStore(db_path, seed_defaults=False)
+        versions = store2.list_versions("a")
+        assert [v.version for v in versions] == [2, 1]
+        assert store2.get_active("a").content == "v2"
