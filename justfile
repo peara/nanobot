@@ -94,6 +94,24 @@ reset-scope scope config=config:
 resync-skills config=config:
     uv run python -m nanobot.debug_cli --config {{ config }} skills-resync
 
+# ── Prompts ────────────────────────────────────
+# The DB is the runtime source of truth for what the bot actually uses.
+# defaults.py is the upstream template. Editing defaults.py alone has no
+# effect at runtime — you also need to sync it into the DB.
+
+# Sync prompts.db with DEFAULT_PROMPTS from defaults.py
+# Bot picks up changes on next render — no restart needed.
+prompts-sync config=config:
+    uv run python scripts/prompt_sync.py --config {{ config }}
+
+# Preview what prompts-sync would change without writing
+prompts-sync-dry config=config:
+    uv run python scripts/prompt_sync.py --config {{ config }} --dry-run --verbose
+
+# Sync a single prompt by name
+prompts-sync-one name config=config:
+    uv run python scripts/prompt_sync.py --config {{ config }} --prompt {{ name }} --force
+
 # Seed predefined skills into the database (idempotent)
 seed-skills config=config:
     uv run python scripts/seed_skills.py --config {{ config }}
