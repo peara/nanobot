@@ -37,8 +37,7 @@ HN_PARAMS_SCHEMA = {
         "url": {
             "type": "string",
             "description": (
-                "Page URL to extract. Examples: https://news.ycombinator.com, "
-                "https://news.ycombinator.com/?p=2"
+                "Page URL to extract. Examples: https://news.ycombinator.com, https://news.ycombinator.com/?p=2"
             ),
         },
         "limit": {
@@ -371,9 +370,7 @@ def test_hn_top_stories_invoke_uses_url_param(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(runner_mod, "BrowserInteractor", _FakeBrowser)
 
-    payload = asyncio.run(
-        server.invoke_script("hn_top_stories", params={"url": "https://news.ycombinator.com/?p=2"})
-    )
+    payload = asyncio.run(server.invoke_script("hn_top_stories", params={"url": "https://news.ycombinator.com/?p=2"}))
 
     assert payload["ok"] is True
     assert payload["data"]["metadata"]["source"] == "https://news.ycombinator.com/?p=2"

@@ -440,9 +440,7 @@ class TestMem0DedupRegression:
         result2 = await save_tool.call({"text": _DETAILED_LISTINGS, "user_id": uid})
         data2 = json.loads(result2)
         assert isinstance(data2, dict) and "results" in data2, f"Second save must return results dict, got: {data2}"
-        assert len(data2["results"]) > 0, (
-            "With infer=False, second save should also store verbatim — not dedup'd."
-        )
+        assert len(data2["results"]) > 0, "With infer=False, second save should also store verbatim — not dedup'd."
 
         time.sleep(0.5)
 
@@ -450,9 +448,7 @@ class TestMem0DedupRegression:
         list_result = await list_tool.call({"user_id": uid})
         list_data = json.loads(list_result)
         memories = list_data.get("results", [])
-        assert len(memories) >= 2, (
-            f"Expected at least 2 memories (two saves), got {len(memories)}: {memories}"
-        )
+        assert len(memories) >= 2, f"Expected at least 2 memories (two saves), got {len(memories)}: {memories}"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -499,8 +495,7 @@ class TestMem0DedupRegression:
                     "The best one is a serviced MC ROKKOR-PF for 52,250 yen."
                 ),
                 "assistant_text": (
-                    "Got it! I've saved those Minolta 85 1.7 listings. "
-                    "I'll track them and notify you of new ones."
+                    "Got it! I've saved those Minolta 85 1.7 listings. I'll track them and notify you of new ones."
                 ),
                 "user_id": uid,
             }
@@ -508,9 +503,7 @@ class TestMem0DedupRegression:
         data = json.loads(result)
 
         assert isinstance(data, dict) and "results" in data, f"SaveTurn must return results dict, got: {data}"
-        assert len(data["results"]) > 0, (
-            f"SaveTurnTool with infer=False must store conversation verbatim, got: {data}"
-        )
+        assert len(data["results"]) > 0, f"SaveTurnTool with infer=False must store conversation verbatim, got: {data}"
 
         time.sleep(0.5)
 

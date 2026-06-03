@@ -45,7 +45,9 @@ class SchedulerRunner:
             for task in due:
                 try:
                     logger.info("Executing scheduled task id=%s chat_id=%s", task["id"], task["chat_id"])
-                    await self.on_due_task(task["chat_id"], task["prompt"], task_id=task["id"], cron_expr=task["cron_expr"])
+                    await self.on_due_task(
+                        task["chat_id"], task["prompt"], task_id=task["id"], cron_expr=task["cron_expr"]
+                    )
                 except Exception:  # pylint: disable=broad-except
                     logger.exception("Scheduled task failed id=%s", task.get("id"))
             await asyncio.sleep(self.poll_interval_seconds)

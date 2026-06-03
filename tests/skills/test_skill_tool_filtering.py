@@ -238,8 +238,7 @@ class TestAllowlistMergeAdditive:
         )
 
         tool_names = [
-            t["function"]["name"]
-            for t in bot._list_openai_tools(["yahoo_auctions_search_workflow", "web_research"])
+            t["function"]["name"] for t in bot._list_openai_tools(["yahoo_auctions_search_workflow", "web_research"])
         ]
 
         assert "web__search_scripts" in tool_names

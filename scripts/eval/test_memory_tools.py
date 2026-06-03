@@ -34,6 +34,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 def inject_memories_via_bot(
     sessions_dir: Path,
     session_id: str,

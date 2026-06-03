@@ -30,7 +30,9 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         {"role": "system", "content": bot.prompts.render("plan_brief_extractor")},
         {"role": "user", "content": request_text},
     ]
-    intake_reply, _ = await bot.agent_run.run(scope_for_tools=chat_scope, messages=intake_messages, tools=[], run_id=run_id)
+    intake_reply, _ = await bot.agent_run.run(
+        scope_for_tools=chat_scope, messages=intake_messages, tools=[], run_id=run_id
+    )
     bot.contexts.put("plan_run", run_id, "intake_raw", {"text": intake_reply})
     plan_brief = extract_json_object(intake_reply) or {
         "goal": request_text,

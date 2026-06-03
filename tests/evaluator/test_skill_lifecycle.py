@@ -434,7 +434,6 @@ class TestDecideLifecycle:
         assert len(operations) == 0
 
 
-
 class _FakeToolForCatalog(Tool):
     def __init__(self, name: str) -> None:
         self._name = name
@@ -510,4 +509,3 @@ class TestBuildLifecycleInputWithToolCatalog:
         result = LearningEvaluator._build_lifecycle_input(learnings, active_skills=[], tool_registry=registry)
 
         assert "Available tools:" not in result
-

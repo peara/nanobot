@@ -169,7 +169,9 @@ def test_format_failure_summary_context_overflow(bot: BotCore) -> None:
         success=False,
         summary="Error: context overflow",
         tool_trace=[],
-        metadata={"error": "Error code: 400 - request (43792 tokens) exceeds the available context size (32768 tokens)"},
+        metadata={
+            "error": "Error code: 400 - request (43792 tokens) exceeds the available context size (32768 tokens)"
+        },
     )
     summary = bot._format_failure_summary(msg)
     assert "context window" in summary
@@ -351,7 +353,17 @@ async def test_handle_scheduled_task_message_does_not_call_mark_ran(bot: BotCore
     ):
         mock_prompts.render.return_value = "scheduled system prompt"
         mock_spawn.return_value.id = "run-test123"
-        mock_execute.return_value = type("R", (), {"run_id": "run-test123", "success": True, "reply": "Done", "tool_trace": fake_result.tool_trace, "error": None})()
+        mock_execute.return_value = type(
+            "R",
+            (),
+            {
+                "run_id": "run-test123",
+                "success": True,
+                "reply": "Done",
+                "tool_trace": fake_result.tool_trace,
+                "error": None,
+            },
+        )()
 
         await bot._handle_scheduled_task_message(msg)
 

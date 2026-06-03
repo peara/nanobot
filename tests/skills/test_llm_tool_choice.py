@@ -160,7 +160,10 @@ class _FakeTool(Tool):
                 "properties": {
                     "name": {"type": "string", "description": "Script name"},
                     "description": {"type": "string", "description": "What the script does"},
-                    "code": {"type": "string", "description": "Python NanoScript code: async def script(page, params): ..."},
+                    "code": {
+                        "type": "string",
+                        "description": "Python NanoScript code: async def script(page, params): ...",
+                    },
                     "params_schema": {"type": "object", "description": "JSON Schema for parameters"},
                     "result_schema": {"type": "object", "description": "JSON Schema for result"},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for categorization"},
@@ -368,6 +371,7 @@ class TestLLMRespectsSkillInstructions:
         assert "web__create_script" not in available_tool_names, (
             "No skills active — web__create_script should not be in core tools"
         )
+
 
 YAHOO_SKILL_INSTRUCTIONS = (
     "When searching Yahoo Auctions, ALWAYS use web__search_scripts first "

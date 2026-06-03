@@ -62,8 +62,10 @@ class TestRequiredEnvCheck:
             env={"PRAW_CLIENT_ID": "value_from_config"},
         )
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client") as mock_stdio, \
-             patch("nanobot.mcp_hub.ClientSession") as mock_session_cls:
+        with (
+            patch("nanobot.mcp_hub.stdio_client") as mock_stdio,
+            patch("nanobot.mcp_hub.ClientSession") as mock_session_cls,
+        ):
             mock_read, mock_write = _mock_stdio_and_session()
             mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -82,8 +84,10 @@ class TestRequiredEnvCheck:
             required_env=["PRAW_CLIENT_ID", "PRAW_CLIENT_SECRET"],
         )
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client") as mock_stdio, \
-             patch("nanobot.mcp_hub.ClientSession") as mock_session_cls:
+        with (
+            patch("nanobot.mcp_hub.stdio_client") as mock_stdio,
+            patch("nanobot.mcp_hub.ClientSession") as mock_session_cls,
+        ):
             mock_read, mock_write = _mock_stdio_and_session()
             mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -96,8 +100,10 @@ class TestRequiredEnvCheck:
         server = McpServerConfig(name="basic", command="echo")
         assert server.required_env == []
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client") as mock_stdio, \
-             patch("nanobot.mcp_hub.ClientSession") as mock_session_cls:
+        with (
+            patch("nanobot.mcp_hub.stdio_client") as mock_stdio,
+            patch("nanobot.mcp_hub.ClientSession") as mock_session_cls,
+        ):
             mock_read, mock_write = _mock_stdio_and_session()
             mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -111,8 +117,7 @@ class TestGracefulDegradation:
     async def test_failed_server_does_not_crash_bot(self, caplog: pytest.LogCaptureFixture) -> None:
         server = McpServerConfig(name="broken", command="echo")
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client", side_effect=RuntimeError("boom")), \
-             caplog.at_level(logging.ERROR):
+        with patch("nanobot.mcp_hub.stdio_client", side_effect=RuntimeError("boom")), caplog.at_level(logging.ERROR):
             await hub.start()
         assert "broken" not in hub._sessions
         assert any("Failed to start MCP server 'broken'" in r.message for r in caplog.records)
@@ -132,17 +137,18 @@ class TestGracefulDegradation:
     async def test_failure_logs_exception(self, caplog: pytest.LogCaptureFixture) -> None:
         server = McpServerConfig(name="broken", command="echo")
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client", side_effect=RuntimeError("boom")), \
-             caplog.at_level(logging.ERROR):
+        with patch("nanobot.mcp_hub.stdio_client", side_effect=RuntimeError("boom")), caplog.at_level(logging.ERROR):
             await hub.start()
         assert any("Failed to start MCP server 'broken'" in r.message for r in caplog.records)
 
     async def test_summary_log_on_start(self, caplog: pytest.LogCaptureFixture) -> None:
         server = McpServerConfig(name="test", command="echo")
         hub = McpHub([server])
-        with patch("nanobot.mcp_hub.stdio_client") as mock_stdio, \
-             patch("nanobot.mcp_hub.ClientSession") as mock_session_cls, \
-             caplog.at_level(logging.INFO):
+        with (
+            patch("nanobot.mcp_hub.stdio_client") as mock_stdio,
+            patch("nanobot.mcp_hub.ClientSession") as mock_session_cls,
+            caplog.at_level(logging.INFO),
+        ):
             mock_read, mock_write = _mock_stdio_and_session()
             mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -158,9 +164,11 @@ class TestGracefulDegradation:
         good = McpServerConfig(name="good", command="echo")
 
         hub = McpHub([skipped, good])
-        with patch("nanobot.mcp_hub.stdio_client") as mock_stdio, \
-             patch("nanobot.mcp_hub.ClientSession") as mock_session_cls, \
-             caplog.at_level(logging.INFO):
+        with (
+            patch("nanobot.mcp_hub.stdio_client") as mock_stdio,
+            patch("nanobot.mcp_hub.ClientSession") as mock_session_cls,
+            caplog.at_level(logging.INFO),
+        ):
             mock_read, mock_write = _mock_stdio_and_session()
             mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)

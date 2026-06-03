@@ -514,7 +514,7 @@ class WebAgentTool:
             "410 gone",
             "500 internal server error",
             "requested url was not found",
-            "page not found"
+            "page not found",
         )
         if "/404" in lowered_url or lowered_url.endswith("404.html"):
             return True

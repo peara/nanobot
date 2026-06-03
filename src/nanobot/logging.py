@@ -158,8 +158,7 @@ def setup_logging(config: Any) -> None:
     """
     if config.logging is None:
         raise ValueError(
-            "config.logging is None — add a 'logging' section to config.yaml. "
-            "See config.example.yaml for the schema."
+            "config.logging is None — add a 'logging' section to config.yaml. See config.example.yaml for the schema."
         )
     dict_cfg = _build_dict_config(config.logging)
     logging.config.dictConfig(dict_cfg)

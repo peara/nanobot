@@ -157,7 +157,9 @@ def scratchpad_tool_spec() -> dict[str, Any]:
     }
 
 
-def apply_scratchpad_tool_call(bot: Any, scope: str, args: dict[str, Any], *, run_id: str | None = None) -> dict[str, Any]:
+def apply_scratchpad_tool_call(
+    bot: Any, scope: str, args: dict[str, Any], *, run_id: str | None = None
+) -> dict[str, Any]:
     mode = _clip_text(args.get("mode")).lower()
     if mode not in VALID_MODES:
         raise ValueError(f"Invalid mode '{mode}'. Expected one of: {', '.join(sorted(VALID_MODES))}")

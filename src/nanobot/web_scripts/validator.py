@@ -32,9 +32,26 @@ BLOCKED_CALL_NAMES = {
 # checks against it.  Keep in sync: add here first, then update runner.py.
 SAFE_BUILTIN_NAMES = frozenset(
     {
-        "all", "any", "bool", "dict", "enumerate", "Exception", "float", "int",
-        "isinstance", "len", "list", "max", "min", "next", "range", "set",
-        "sorted", "str", "sum", "tuple",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "enumerate",
+        "Exception",
+        "float",
+        "int",
+        "isinstance",
+        "len",
+        "list",
+        "max",
+        "min",
+        "next",
+        "range",
+        "set",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
     }
 )
 
@@ -115,8 +132,7 @@ class NanoScriptValidator(ast.NodeVisitor):
             if not self._is_name_allowed(node.id):
                 allowed = sorted(self._safe_builtins | RUNTIME_NAMES)
                 raise NanoScriptValidationError(
-                    f"Name '{node.id}' is not available. "
-                    f"Allowed builtins and runtime names: {', '.join(allowed)}"
+                    f"Name '{node.id}' is not available. Allowed builtins and runtime names: {', '.join(allowed)}"
                 )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
