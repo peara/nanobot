@@ -13,6 +13,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _skill_error(error: str, message: str, **extra: Any) -> str:
+    """Build the standardized skill-tool error envelope.
+
+    All skill tools return ``{"error": "<code>", "message": "<hint>"}`` on failure
+    (with optional extra fields). The LLM uses ``error`` to disambiguate failure
+    modes (missing arg vs not-found vs internal error) and ``message`` to recover
+    (the hint tells it what to try next).
+    """
+    payload: dict[str, Any] = {"error": error, "message": message}
+    payload.update(extra)
+    return json.dumps(payload, ensure_ascii=True)
+
+
 class SkillListTool(Tool):
     def __init__(self, skill_store: SkillStore, mem0_store: SkillVectorStore | None = None) -> None:
         self._store = skill_store
@@ -101,10 +114,21 @@ class SkillGetTool(Tool):
         elif skill_id:
             skill = self._store.get(int(skill_id))
         else:
-            return json.dumps({"error": "Provide either name or skill_id"}, ensure_ascii=True)
+            return _skill_error(
+                "invalid_argument",
+                (
+                    "skill__get requires either 'name' (string) or 'skill_id' (integer). "
+                    "Received neither. Use skill__list to see available skills, "
+                    "then call skill__get with one of these fields."
+                ),
+                received_keys=sorted(args.keys()),
+            )
 
         if skill is None:
-            return json.dumps({"error": f"Skill not found: {name or skill_id}"}, ensure_ascii=True)
+            return _skill_error(
+                "skill_not_found",
+                f"Skill not found: '{name or skill_id}'. Use skill__list to see available skills.",
+            )
 
         return json.dumps({"ok": True, "skill": skill.as_dict()}, ensure_ascii=True)
 
@@ -184,7 +208,17 @@ class SkillCreateTool(Tool):
         priority = int(args.get("priority", 0))
 
         if not name or not description or not instructions:
-            return json.dumps({"error": "name, description, and instructions are required"}, ensure_ascii=True)
+            fields = (("name", name), ("description", description), ("instructions", instructions))
+            missing = [field for field, value in fields if not value]
+            return _skill_error(
+                "missing_required_parameter",
+                (
+                    f"skill__create requires non-empty values for: {', '.join(missing)}. "
+                    "These fields are required to define a usable skill."
+                ),
+                missing_fields=missing,
+                received_keys=sorted(args.keys()),
+            )
 
         if trigger_patterns and not isinstance(trigger_patterns, list):
             trigger_patterns = [str(trigger_patterns)]
@@ -215,9 +249,15 @@ class SkillCreateTool(Tool):
                     logger.exception("Failed to sync skill '%s' to mem0", name)
             return json.dumps({"ok": True, "skill": skill.as_dict()}, ensure_ascii=True)
         except ValueError as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=True)
+            return _skill_error(
+                "invalid_argument",
+                f"skill__create rejected the arguments: {e}. Check the field values and try again.",
+            )
         except Exception as e:
-            return json.dumps({"error": f"Failed to create skill: {e}"}, ensure_ascii=True)
+            return _skill_error(
+                "create_failed",
+                f"Failed to create skill '{name}': {e}. The store reported an error.",
+            )
 
 
 class SkillUpdateTool(Tool):
@@ -285,11 +325,25 @@ class SkillUpdateTool(Tool):
         }
 
     async def call(self, args: dict[str, Any]) -> str:
-        name = str(args.get("name", ""))
+        name = str(args.get("name", "")).strip()
+
+        if not name:
+            return _skill_error(
+                "missing_required_parameter",
+                (
+                    "skill__update requires the 'name' parameter (a non-empty string). "
+                    "Received empty or missing 'name'. Use skill__list to see available "
+                    "skill names, then call skill__update with name='<skill_name>'."
+                ),
+                received_keys=sorted(args.keys()),
+            )
 
         existing = self._store.get_by_name(name)
         if existing is None:
-            return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
+            return _skill_error(
+                "skill_not_found",
+                f"Skill not found: '{name}'. Use skill__list to see available skill names.",
+            )
 
         trigger_patterns = args.get("trigger_patterns")
         if trigger_patterns and not isinstance(trigger_patterns, list):
@@ -317,7 +371,14 @@ class SkillUpdateTool(Tool):
         )
 
         if updated is None:
-            return json.dumps({"error": f"Failed to update skill: {name}"}, ensure_ascii=True)
+            return _skill_error(
+                "update_failed",
+                (
+                    f"Failed to update skill '{name}'. The store rejected the update "
+                    "(no rows changed). Verify the skill still exists and the new "
+                    "values are valid."
+                ),
+            )
 
         # Sync to mem0 for intelligent trigger mode
         effective_mode = new_trigger_mode or existing.trigger_mode
@@ -363,16 +424,37 @@ class SkillActivateTool(Tool):
         }
 
     async def call(self, args: dict[str, Any]) -> str:
-        name = str(args.get("name", ""))
+        name = str(args.get("name", "")).strip()
         is_active = args.get("is_active", True)
+
+        if not name:
+            return _skill_error(
+                "missing_required_parameter",
+                (
+                    "skill__activate requires the 'name' parameter (a non-empty string). "
+                    "Received empty or missing 'name'. Use skill__list to see available "
+                    "skill names, then call skill__activate with name='<skill_name>'."
+                ),
+                received_keys=sorted(args.keys()),
+            )
 
         existing = self._store.get_by_name(name)
         if existing is None:
-            return json.dumps({"error": f"Skill not found: {name}"}, ensure_ascii=True)
+            return _skill_error(
+                "skill_not_found",
+                f"Skill not found: '{name}'. Use skill__list to see available skill names.",
+            )
 
         updated = self._store.set_active(existing.id, bool(is_active))
         if updated is None:
-            return json.dumps({"error": f"Failed to update skill: {name}"}, ensure_ascii=True)
+            return _skill_error(
+                "update_failed",
+                (
+                    f"Failed to update activation state for skill '{name}'. "
+                    "The store rejected the update (no rows changed). "
+                    "Verify the skill still exists."
+                ),
+            )
 
         return json.dumps(
             {
@@ -417,40 +499,31 @@ class SkillDeleteTool(Tool):
             # Distinguish "missing required arg" from "not found" so the LLM
             # can recover: empty name usually means the model sent a different
             # field (e.g. skill_id) that the schema silently dropped.
-            return json.dumps(
-                {
-                    "error": "missing_required_parameter",
-                    "message": (
-                        "skill__delete requires the 'name' parameter (a non-empty string). "
-                        "Received empty or missing 'name'. "
-                        "Use skill__list to see available skill names, "
-                        "then call skill__delete with name='<skill_name>'."
-                    ),
-                    "received_keys": sorted(args.keys()),
-                },
-                ensure_ascii=True,
+            return _skill_error(
+                "missing_required_parameter",
+                (
+                    "skill__delete requires the 'name' parameter (a non-empty string). "
+                    "Received empty or missing 'name'. "
+                    "Use skill__list to see available skill names, "
+                    "then call skill__delete with name='<skill_name>'."
+                ),
+                received_keys=sorted(args.keys()),
             )
 
         existing = self._store.get_by_name(name)
         if existing is None:
-            return json.dumps(
-                {
-                    "error": "skill_not_found",
-                    "message": (f"Skill not found: '{name}'. Use skill__list to see available skill names."),
-                },
-                ensure_ascii=True,
+            return _skill_error(
+                "skill_not_found",
+                f"Skill not found: '{name}'. Use skill__list to see available skill names.",
             )
 
         was_intelligent = existing.trigger_mode == "intelligent"
 
         deleted = self._store.delete_by_name(name)
         if not deleted:
-            return json.dumps(
-                {
-                    "error": "skill_not_found",
-                    "message": f"Skill not found: '{name}'.",
-                },
-                ensure_ascii=True,
+            return _skill_error(
+                "skill_not_found",
+                f"Skill not found: '{name}'.",
             )
 
         if was_intelligent and self._mem0:

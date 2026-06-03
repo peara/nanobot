@@ -73,7 +73,23 @@ class TestSkillGetTool:
             result = await tool.call({"name": "nonexistent"})
             data = json.loads(result)
 
-            assert "error" in data
+            assert data["error"] == "skill_not_found"
+            assert "nonexistent" in data["message"]
+            assert "skill__list" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_get_missing_both_name_and_skill_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillGetTool(store)
+
+            result = await tool.call({})
+            data = json.loads(result)
+
+            assert data["error"] == "invalid_argument"
+            assert "name" in data["message"]
+            assert "skill_id" in data["message"]
+            assert data["received_keys"] == []
 
 
 class TestSkillCreateTool:
@@ -108,7 +124,27 @@ class TestSkillCreateTool:
             result = await tool.call({"name": "incomplete"})
             data = json.loads(result)
 
-            assert "error" in data
+            assert data["error"] == "missing_required_parameter"
+            assert "description" in data["message"]
+            assert "instructions" in data["message"]
+            assert sorted(data["missing_fields"]) == ["description", "instructions"]
+            assert data["received_keys"] == ["name"]
+
+    @pytest.mark.asyncio
+    async def test_create_duplicate_name_returns_create_failed(self) -> None:
+        # UNIQUE constraint on name triggers sqlite3.IntegrityError, which is
+        # caught by the generic Exception branch -> create_failed envelope.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            store.create(name="dup", description="X", instructions="X")
+            tool = SkillCreateTool(store)
+
+            result = await tool.call({"name": "dup", "description": "Y", "instructions": "Y"})
+            data = json.loads(result)
+
+            assert data["error"] == "create_failed"
+            assert "dup" in data["message"]
+            assert "store reported an error" in data["message"]
 
 
 class TestSkillUpdateTool:
@@ -131,6 +167,47 @@ class TestSkillUpdateTool:
             assert data["ok"] is True
             assert data["skill"]["description"] == "New description"
             assert data["skill"]["priority"] == 10
+
+    @pytest.mark.asyncio
+    async def test_update_not_found_uses_standardized_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillUpdateTool(store)
+
+            result = await tool.call({"name": "ghost", "description": "X"})
+            data = json.loads(result)
+
+            assert data["error"] == "skill_not_found"
+            assert "ghost" in data["message"]
+            assert "skill__list" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_update_missing_name_returns_schema_mismatch(self) -> None:
+        # Regression: empty 'name' must NOT look like 'skill not found' to the LLM.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillUpdateTool(store)
+
+            result = await tool.call({})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
+            assert "name" in data["message"]
+            assert data["received_keys"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_with_skill_id_field_still_reports_missing_name(self) -> None:
+        # Mirrors the 2026-06-02 incident pattern: LLM sends the wrong field
+        # name, schema drops it, tool must say 'missing name' not 'not found'.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillUpdateTool(store)
+
+            result = await tool.call({"skill_id": 8, "description": "X"})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
+            assert sorted(data["received_keys"]) == ["description", "skill_id"]
 
 
 class TestSkillActivateTool:
@@ -158,6 +235,32 @@ class TestSkillActivateTool:
             data = json.loads(result)
 
             assert data["is_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_activate_not_found_uses_standardized_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillActivateTool(store)
+
+            result = await tool.call({"name": "ghost"})
+            data = json.loads(result)
+
+            assert data["error"] == "skill_not_found"
+            assert "ghost" in data["message"]
+            assert "skill__list" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_activate_missing_name_returns_schema_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SkillStore(str(Path(tmpdir) / "skills.db"))
+            tool = SkillActivateTool(store)
+
+            result = await tool.call({})
+            data = json.loads(result)
+
+            assert data["error"] == "missing_required_parameter"
+            assert "name" in data["message"]
+            assert data["received_keys"] == []
 
 
 class TestSkillDeleteTool:
