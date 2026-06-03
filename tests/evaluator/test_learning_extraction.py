@@ -184,6 +184,51 @@ class TestParseLearningFromJson:
         extraction = parse_learning_from_json(fenced)
         assert len(extraction.learnings) == 0
 
+    def test_parse_bare_list_root(self) -> None:
+        # Regression: gemma4:31b-cloud (Ollama Cloud) returns a bare JSON array
+        # at the root despite response_format: json_schema strict. Parser must
+        # return empty extraction instead of crashing with AttributeError.
+        content = json.dumps(
+            [
+                {
+                    "category": "workflow_pattern",
+                    "observation": "X",
+                    "direction": "create_skill",
+                    "evidence": "Y",
+                    "confidence": "high",
+                },
+            ]
+        )
+        extraction = parse_learning_from_json(content)
+        assert len(extraction.learnings) == 0
+
+    def test_parse_markdown_fenced_bare_list(self) -> None:
+        # Regression: bare list wrapped in ```json fences — the actual shape
+        # seen in production log data/nanobot.log on 2026-06-03.
+        content = (
+            "```json\n"
+            + json.dumps(
+                [
+                    {
+                        "category": "user_preference",
+                        "observation": "X",
+                        "direction": "create_skill",
+                        "evidence": "Y",
+                        "confidence": "high",
+                    },
+                ]
+            )
+            + "\n```"
+        )
+        extraction = parse_learning_from_json(content)
+        assert len(extraction.learnings) == 0
+
+    def test_parse_object_wrapped_empty_learnings(self) -> None:
+        # The schema-correct empty form: {"learnings": []}.
+        content = json.dumps({"learnings": []})
+        extraction = parse_learning_from_json(content)
+        assert len(extraction.learnings) == 0
+
 
 class TestLearningExtractionSchema:
     def test_schema_structure(self) -> None:

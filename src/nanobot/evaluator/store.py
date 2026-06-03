@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -87,8 +90,21 @@ def parse_quality_assessment(response: dict[str, Any]) -> QualityAssessment:
 
 
 def parse_quality_from_json(content: str) -> QualityAssessment:
-    """Parse JSON string from LLM response into QualityAssessment."""
+    """Parse JSON string from LLM response into QualityAssessment.
+
+    Returns a default QualityAssessment (score=3, no learnings) if the response
+    is not a JSON object — e.g., when the LLM returns a bare array despite
+    response_format: json_schema strict mode.
+    """
     data = json.loads(_strip_markdown_fences(content))
+    if not isinstance(data, dict):
+        logger.warning("Quality assessment returned non-object root: %s", type(data).__name__)
+        return QualityAssessment(
+            quality_score=3,
+            quality_reason="parser_default: non-object response",
+            has_learnings=False,
+            confidence="low",
+        )
     return parse_quality_assessment(data)
 
 
@@ -191,8 +207,16 @@ def parse_learning_extraction(response: dict[str, Any]) -> LearningExtraction:
 
 
 def parse_learning_from_json(content: str) -> LearningExtraction:
-    """Parse JSON string from LLM response into LearningExtraction."""
+    """Parse JSON string from LLM response into LearningExtraction.
+
+    Returns empty LearningExtraction if the response is not a JSON object — e.g.,
+    when the LLM returns a bare array despite response_format: json_schema strict
+    mode. This drops the turn's learnings but keeps the rest of the pipeline alive.
+    """
     data = json.loads(_strip_markdown_fences(content))
+    if not isinstance(data, dict):
+        logger.warning("Learning extraction returned non-object root: %s", type(data).__name__)
+        return LearningExtraction(learnings=[])
     return parse_learning_extraction(data)
 
 

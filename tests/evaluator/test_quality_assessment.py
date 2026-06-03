@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from nanobot.evaluator.store import (
@@ -100,6 +102,27 @@ class TestParseQualityAssessment:
         )
         qa = parse_quality_from_json(fenced)
         assert qa.quality_score == 5
+
+    def test_parse_bare_list_root(self) -> None:
+        # Regression: gemma4:31b-cloud may return a bare JSON array at the root
+        # despite response_format: json_schema strict. Parser must return default
+        # QualityAssessment instead of crashing with AttributeError.
+        content = json.dumps([{"quality_score": 4, "quality_reason": "X", "has_learnings": True, "confidence": "high"}])
+        qa = parse_quality_from_json(content)
+        assert qa.quality_score == 3
+        assert qa.has_learnings is False
+        assert qa.confidence == "low"
+
+    def test_parse_markdown_fenced_bare_list(self) -> None:
+        # Regression: bare list wrapped in ```json fences — symmetric with the
+        # learning extraction regression test.
+        content = (
+            '```json\n[{"quality_score": 4, "quality_reason": "X", "has_learnings": true, "confidence": "high"}]\n```'
+        )
+        qa = parse_quality_from_json(content)
+        assert qa.quality_score == 3
+        assert qa.has_learnings is False
+        assert qa.confidence == "low"
 
 
 class TestQualityAssessmentSchema:

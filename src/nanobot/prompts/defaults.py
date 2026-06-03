@@ -295,14 +295,21 @@ Do NOT extract when:
 
 ## Output
 
-Provide a JSON object with an array of learnings. Each learning has:
-- category: "user_preference", "workflow_pattern", or "constraint"
-- observation: What was learned (concise, factual)
-- direction: "create_skill", "update_skill", or "deprecate_skill"
-- evidence: Quote or paraphrase from the conversation supporting this
-- confidence: "high", "medium", or "low"
+Always return a JSON object with this exact shape — never a bare array, even when there are no learnings:
 
-If no meaningful learnings exist, return an empty array. Do not force extractions from unremarkable exchanges.
+{
+  "learnings": [
+    {
+      "category": "user_preference" | "workflow_pattern" | "constraint",
+      "observation": "concise factual statement of what was learned",
+      "direction": "create_skill" | "update_skill" | "deprecate_skill",
+      "evidence": "quote or paraphrase from the conversation supporting this",
+      "confidence": "high" | "medium" | "low"
+    }
+  ]
+}
+
+If no meaningful learnings exist, return `{"learnings": []}`. Do not force extractions from unremarkable exchanges.
 """
 
 LEARNING_EXTRACTION_PROMPT_VARIABLES: list[str] = []
