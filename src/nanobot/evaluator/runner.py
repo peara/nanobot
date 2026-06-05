@@ -27,6 +27,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Categories the runner is willing to forward to Phase 3. Source of truth is
+# the JSON schema in store.py; this set exists for the runner's defensive
+# filter. Any item with a category outside this set is dropped with a log
+# line so prompt drift is visible in production.
+ALLOWED_CATEGORIES: frozenset[str] = frozenset({"workflow_pattern", "constraint"})
+
 
 def _build_tool_catalog_text(registry: ToolRegistry) -> str:
     """Build a compact tool catalog text grouped by namespace prefix.
@@ -104,8 +110,24 @@ class LearningEvaluator:
         if not extraction.learnings:
             return EvaluationResult(quality=quality)
 
+        # Whitelist filter: only forward categories Phase 3 knows how to handle.
+        # The JSON schema in store.py is the source of truth; this filter is a
+        # defensive backstop that drops anything else with a log line so prompt
+        # drift is visible in production.
+        actionable: list[LearningItem] = []
+        for item in extraction.learnings:
+            if item.category not in ALLOWED_CATEGORIES:
+                logger.warning(
+                    "Dropping learning with unknown category: scope=%s category=%s observation=%s",
+                    scope,
+                    item.category,
+                    item.observation,
+                )
+                continue
+            actionable.append(item)
+
         # Filter low-confidence learnings — only high/medium warrant skill operations
-        actionable = [item for item in extraction.learnings if item.confidence != "low"]
+        actionable = [item for item in actionable if item.confidence != "low"]
         if not actionable:
             return EvaluationResult(quality=quality)
 
@@ -410,7 +432,7 @@ patterns, and constraints that would help future interactions."
                 item.category,
                 item.direction,
                 item.confidence,
-                item.observation[:80],
+                item.observation,
             )
 
     def _log_decisions(self, scope: str, decisions: list[SkillOperation]) -> None:
@@ -423,5 +445,5 @@ patterns, and constraints that would help future interactions."
                 op.action,
                 op.name,
                 op.trigger_mode,
-                op.reason[:80],
+                op.reason,
             )

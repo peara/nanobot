@@ -224,14 +224,13 @@ STEP 2 — If you found ANY failure→success sequence, ask: "Could knowing the 
 - If NO (failures were unavoidable, no pattern to extract) → has_learnings can be false.
 
 STEP 3 — Also set has_learnings=true if:
-- User corrected or clarified the agent's approach
-- User stated a preference explicitly or implicitly
+- User corrected or clarified the agent's approach with generalizable guidance
 - Tool usage reveals site-specific interaction patterns (selectors, element names, URL formats, workflows)
 
 Do NOT set has_learnings for:
 - Routine task execution with no new insights
 - User explicitly requested to save/remember something (worker already handled via memory tools)
-- Pure information retrieval with no preference/behavior insight
+- Pure information retrieval with no behavioral insight
 - Simple acknowledge/confirm responses
 
 CRITICAL: A "good final answer" does NOT mean has_learnings=false. The quality of the outcome is irrelevant to has_learnings. What matters is whether the agent's TRAJECTORY contained discoveries that a skill could preserve.
@@ -263,8 +262,7 @@ If existing active skills are listed:
 ## What to Extract
 
 Extract learnings when:
-- User corrected or clarified the agent's approach
-- User stated a preference explicitly or implicitly (language, style, format, tool)
+- User corrected or clarified the agent's approach with generalizable guidance
 - Agent discovered a successful pattern worth repeating (even in a failed overall task)
 - Agent found site-specific interaction patterns from tool usage (which selectors worked, which didn't, element names, workflows)
 - User described a constraint or requirement
@@ -283,7 +281,6 @@ Do NOT extract when:
 
 ## Categories
 
-- user_preference: A preference the user stated or implied (language choice, output format, workflow style)
 - workflow_pattern: A repeatable process or approach that worked — including site-specific interaction patterns discovered through tool usage
 - constraint: A hard rule or limitation the user identified
 
@@ -300,7 +297,7 @@ Always return a JSON object with this exact shape — never a bare array, even w
 {
   "learnings": [
     {
-      "category": "user_preference" | "workflow_pattern" | "constraint",
+      "category": "workflow_pattern" | "constraint",
       "observation": "concise factual statement of what was learned",
       "direction": "create_skill" | "update_skill" | "deprecate_skill",
       "evidence": "quote or paraphrase from the conversation supporting this",
@@ -325,7 +322,7 @@ For each learning, decide: "create" (new skill), "update" (existing skill), "dep
 - Default trigger_mode to "intelligent" for new skills (semantic matching via vector search)
 - Use "pattern" for specific command triggers (e.g., match on "/test" or "debug this")
 - Use "always" only for critical context that should apply to every turn
-- Be conservative: only create skills for persistent, reusable preferences/workflows/constraints
+- Be conservative: only create skills for persistent, reusable workflows/constraints
 - Check existing skills — if a similar skill exists, update it instead of creating a duplicate
 - Skip low-confidence learnings (they are filtered out, but be cautious)
 - Deprecate a skill when: the learning contradicts it, it was created from a failed or one-off interaction, or evidence shows it is no longer useful
@@ -381,7 +378,7 @@ Most skills only need core tools. Only add tool patterns when the skill requires
 Provide a JSON object with an "operations" array. Each item has:
 
 - action: "create", "update", "deprecate", or "skip"
-- name: short snake_case identifier (e.g., "user_pref_typescript")
+- name: short snake_case identifier (e.g., "yahoo_auctions_workflow")
 - description: brief sentence for semantic matching
 - instructions: content to inject when the skill activates
 - trigger_mode: "intelligent" (default), "pattern", or "always"

@@ -86,7 +86,7 @@ class TestParseLearningItem:
 
     def test_parse_invalid_direction(self) -> None:
         data = {
-            "category": "user_preference",
+            "category": "workflow_pattern",
             "observation": "test",
             "direction": "invalid",
             "evidence": "test",
@@ -97,7 +97,7 @@ class TestParseLearningItem:
 
     def test_parse_invalid_confidence(self) -> None:
         data = {
-            "category": "user_preference",
+            "category": "workflow_pattern",
             "observation": "test",
             "direction": "create_skill",
             "evidence": "test",
@@ -141,7 +141,7 @@ class TestParseLearningFromJson:
             {
                 "learnings": [
                     {
-                        "category": "user_preference",
+                        "category": "workflow_pattern",
                         "observation": "Prefers concise answers",
                         "direction": "create_skill",
                         "evidence": "Said 'keep it brief'",
@@ -252,7 +252,7 @@ class TestLearningExtractionSchema:
         assert "evidence" in item_props
         assert "confidence" in item_props
 
-        assert item_props["category"]["enum"] == ["user_preference", "workflow_pattern", "constraint"]
+        assert item_props["category"]["enum"] == ["workflow_pattern", "constraint"]
         assert item_props["direction"]["enum"] == ["create_skill", "update_skill", "deprecate_skill"]
         assert item_props["confidence"]["enum"] == ["high", "medium", "low"]
 
@@ -262,3 +262,80 @@ class TestLearningExtractionSchema:
 
         item_schema = LEARNING_EXTRACTION_SCHEMA["json_schema"]["schema"]["properties"]["learnings"]["items"]
         assert item_schema["additionalProperties"] is False
+
+
+class TestInvalidCategoryRejected:
+    """The schema, parser, and extraction all reject categories outside the enum.
+
+    Tests use a concrete non-enum string as the invalid input so the
+    assertions are reproducible. The behavior under test is generic — any
+    category not in the schema enum is rejected.
+    """
+
+    INVALID_CATEGORY = "user_preference"
+
+    def test_schema_enum_excludes_invalid_category(self) -> None:
+        schema = LEARNING_EXTRACTION_SCHEMA["json_schema"]["schema"]
+        item_props = schema["properties"]["learnings"]["items"]["properties"]
+        assert self.INVALID_CATEGORY not in item_props["category"]["enum"]
+
+    def test_parser_rejects_invalid_category(self) -> None:
+        data = {
+            "category": self.INVALID_CATEGORY,
+            "observation": "User likes TypeScript",
+            "direction": "create_skill",
+            "evidence": "User said so",
+            "confidence": "high",
+        }
+        with pytest.raises(ValueError, match="invalid category"):
+            parse_learning_item(data)
+
+    def test_extraction_drops_invalid_items_but_keeps_others(self) -> None:
+        # The LLM might emit one bad item alongside good ones (prompt drift).
+        # The extractor should drop the bad one and keep the good ones.
+        data = {
+            "learnings": [
+                {
+                    "category": self.INVALID_CATEGORY,
+                    "observation": "User likes dark mode",
+                    "direction": "create_skill",
+                    "evidence": "User said so",
+                    "confidence": "high",
+                },
+                {
+                    "category": "workflow_pattern",
+                    "observation": "Search selector X then click Y on site Z",
+                    "direction": "create_skill",
+                    "evidence": "Discovered mid-run",
+                    "confidence": "high",
+                },
+            ],
+        }
+        extraction = parse_learning_extraction(data)
+        assert len(extraction.learnings) == 1
+        assert extraction.learnings[0].category == "workflow_pattern"
+
+    def test_from_json_drops_invalid_items_but_keeps_others(self) -> None:
+        json_str = json.dumps(
+            {
+                "learnings": [
+                    {
+                        "category": self.INVALID_CATEGORY,
+                        "observation": "User likes dark mode",
+                        "direction": "create_skill",
+                        "evidence": "User said so",
+                        "confidence": "high",
+                    },
+                    {
+                        "category": "constraint",
+                        "observation": "Must use Python 3.11+",
+                        "direction": "create_skill",
+                        "evidence": "User specified",
+                        "confidence": "high",
+                    },
+                ],
+            }
+        )
+        extraction = parse_learning_from_json(json_str)
+        assert len(extraction.learnings) == 1
+        assert extraction.learnings[0].category == "constraint"

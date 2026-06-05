@@ -141,8 +141,8 @@ LEARNING_EXTRACTION_SCHEMA: dict[str, Any] = {
                         "properties": {
                             "category": {
                                 "type": "string",
-                                "enum": ["user_preference", "workflow_pattern", "constraint"],
-                                "description": "Type of learning",
+                                "enum": ["workflow_pattern", "constraint"],
+                                "description": "Type of learning extracted from the turn",
                             },
                             "observation": {
                                 "type": "string",
@@ -177,9 +177,14 @@ LEARNING_EXTRACTION_SCHEMA: dict[str, Any] = {
 
 
 def parse_learning_item(item: dict[str, Any]) -> LearningItem:
-    """Parse a single learning item dict into LearningItem."""
+    """Parse a single learning item dict into LearningItem.
+
+    Validates that the category is one of the schema-enum values. Any other
+    category raises ValueError; the runner is responsible for surfacing this
+    as a warning in production.
+    """
     category = str(item["category"])
-    if category not in ("user_preference", "workflow_pattern", "constraint"):
+    if category not in ("workflow_pattern", "constraint"):
         raise ValueError(f"invalid category: {category}")
 
     direction = str(item["direction"])
@@ -200,9 +205,19 @@ def parse_learning_item(item: dict[str, Any]) -> LearningItem:
 
 
 def parse_learning_extraction(response: dict[str, Any]) -> LearningExtraction:
-    """Parse LLM response dict into LearningExtraction."""
+    """Parse LLM response dict into LearningExtraction.
+
+    Skips individual items that fail validation, logging a warning. The rest
+    of the batch is preserved. This is more forgiving than raising on the
+    first bad item, which would drop a whole extraction for one stray entry.
+    """
     raw_learnings = response.get("learnings", [])
-    learnings = [parse_learning_item(item) for item in raw_learnings]
+    learnings: list[LearningItem] = []
+    for item in raw_learnings:
+        try:
+            learnings.append(parse_learning_item(item))
+        except ValueError as e:
+            logger.warning("Skipping invalid learning item: %s | item=%s", e, item)
     return LearningExtraction(learnings=learnings)
 
 

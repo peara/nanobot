@@ -509,3 +509,238 @@ class TestBuildLifecycleInputWithToolCatalog:
         result = LearningEvaluator._build_lifecycle_input(learnings, active_skills=[], tool_registry=registry)
 
         assert "Available tools:" not in result
+
+
+class TestCategoryWhitelist:
+    """Issue #41: the runner whitelists categories Phase 3 can handle.
+
+    The JSON schema in store.py is the primary gate. The runner's whitelist
+    is a defensive backstop that drops anything outside the allowed set with
+    a warning log so prompt drift is visible in production.
+    """
+
+    def test_allowed_categories_matches_schema(self) -> None:
+        # The whitelist set and the JSON schema enum must agree. If either
+        # is updated, update the other — this test catches drift.
+        from nanobot.evaluator.runner import ALLOWED_CATEGORIES
+        from nanobot.evaluator.store import LEARNING_EXTRACTION_SCHEMA
+
+        schema_enum = set(
+            LEARNING_EXTRACTION_SCHEMA["json_schema"]["schema"]["properties"]["learnings"]["items"]["properties"][
+                "category"
+            ]["enum"]
+        )
+        assert ALLOWED_CATEGORIES == frozenset(schema_enum)
+
+    @pytest.mark.asyncio
+    async def test_evaluate_drops_unknown_category(self) -> None:
+        # Construct a LearningItem directly with an unknown category. This
+        # bypasses the parser (which would reject the same string) and lets
+        # us test the runner's filter in isolation. In production the parser
+        # is the primary gate; this test confirms the runner is the backstop.
+        quality_response = json.dumps(
+            {
+                "quality_score": 4,
+                "quality_reason": "Good",
+                "has_learnings": True,
+                "confidence": "high",
+            }
+        )
+        # The LLM emits an unknown category. The parser accepts it because
+        # the test patches the validator path; the runner must drop it.
+        extraction_response = json.dumps(
+            {
+                "learnings": [
+                    {
+                        "category": "made_up_category",
+                        "observation": "User likes TypeScript",
+                        "direction": "create_skill",
+                        "evidence": "User said so",
+                        "confidence": "high",
+                    },
+                ],
+            }
+        )
+        lifecycle_called = {"called": False}
+
+        class _ScriptedLlm:
+            async def chat(
+                self,
+                messages: list[dict[str, str]],
+                tools: list[dict[str, Any]],
+                response_format: dict[str, Any],
+                *,
+                scope: str | None = None,
+                cancel_token: Any | None = None,
+            ) -> dict[str, str]:
+                schema_name = response_format.get("json_schema", {}).get("name", "")
+                if schema_name == "quality_assessment":
+                    return {"content": quality_response}
+                if schema_name == "learning_extraction":
+                    return {"content": extraction_response}
+                if schema_name == "skill_lifecycle":
+                    lifecycle_called["called"] = True
+                    return {"content": '{"operations": []}'}
+                return {"content": "{}"}
+
+        class _FakePromptStore:
+            def render(self, key: str) -> str:
+                return f"prompt for {key}"
+
+        evaluator = LearningEvaluator(llm=cast(Any, _ScriptedLlm()), prompts=cast(Any, _FakePromptStore()))
+
+        # Patch parse_learning_item to accept any category so we can test
+        # the runner's whitelist in isolation. In production the parser is
+        # the primary gate and the runner's filter is the backstop.
+        from nanobot.evaluator import runner as runner_mod
+
+        original_parse = runner_mod.parse_learning_from_json
+
+        def _lenient_parse(content: str) -> Any:
+            # Parse the JSON and construct LearningItems without category validation.
+            data = json.loads(content)
+            items = [
+                LearningItem(
+                    category=item["category"],
+                    observation=item["observation"],
+                    direction=item["direction"],
+                    evidence=item["evidence"],
+                    confidence=item["confidence"],
+                )
+                for item in data.get("learnings", [])
+            ]
+            from nanobot.evaluator.store import LearningExtraction
+
+            return LearningExtraction(learnings=items)
+
+        runner_mod.parse_learning_from_json = _lenient_parse  # type: ignore[assignment]
+        try:
+            from nanobot.subagents.manager import SubagentRunResult
+
+            result = SubagentRunResult(run_id="t", success=True, reply="ok", tool_trace=[])
+
+            eval_result = await evaluator.evaluate(
+                scope="telegram:1",
+                user_request="hi",
+                worker_result=result,
+            )
+
+            assert eval_result.quality.has_learnings is True
+            assert eval_result.decisions == []  # unknown category was dropped
+            assert lifecycle_called["called"] is False  # Phase 3 was skipped
+        finally:
+            runner_mod.parse_learning_from_json = original_parse  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_evaluate_keeps_allowed_category_when_unknown_also_present(self) -> None:
+        quality_response = json.dumps(
+            {
+                "quality_score": 4,
+                "quality_reason": "Good",
+                "has_learnings": True,
+                "confidence": "high",
+            }
+        )
+        # Mixed batch: one unknown category (dropped) and one allowed (kept).
+        extraction_response = json.dumps(
+            {
+                "learnings": [
+                    {
+                        "category": "made_up_category",
+                        "observation": "User likes TypeScript",
+                        "direction": "create_skill",
+                        "evidence": "User said so",
+                        "confidence": "high",
+                    },
+                    {
+                        "category": "workflow_pattern",
+                        "observation": "On site X, use selector Y",
+                        "direction": "create_skill",
+                        "evidence": "Discovered",
+                        "confidence": "high",
+                    },
+                ],
+            }
+        )
+        lifecycle_response = json.dumps(
+            {
+                "operations": [
+                    {
+                        "action": "create",
+                        "name": "site_x_workflow",
+                        "description": "Site X workflow",
+                        "instructions": "Use selector Y",
+                        "trigger_mode": "intelligent",
+                        "tools_allowlist": None,
+                        "source_confidence": "high",
+                        "reason": "Discovered",
+                    }
+                ],
+            }
+        )
+
+        class _ScriptedLlm:
+            async def chat(
+                self,
+                messages: list[dict[str, str]],
+                tools: list[dict[str, Any]],
+                response_format: dict[str, Any],
+                *,
+                scope: str | None = None,
+                cancel_token: Any | None = None,
+            ) -> dict[str, str]:
+                schema_name = response_format.get("json_schema", {}).get("name", "")
+                if schema_name == "quality_assessment":
+                    return {"content": quality_response}
+                if schema_name == "learning_extraction":
+                    return {"content": extraction_response}
+                if schema_name == "skill_lifecycle":
+                    return {"content": lifecycle_response}
+                return {"content": "{}"}
+
+        class _FakePromptStore:
+            def render(self, key: str) -> str:
+                return f"prompt for {key}"
+
+        evaluator = LearningEvaluator(llm=cast(Any, _ScriptedLlm()), prompts=cast(Any, _FakePromptStore()))
+
+        from nanobot.evaluator import runner as runner_mod
+
+        def _lenient_parse(content: str) -> Any:
+            data = json.loads(content)
+            items = [
+                LearningItem(
+                    category=item["category"],
+                    observation=item["observation"],
+                    direction=item["direction"],
+                    evidence=item["evidence"],
+                    confidence=item["confidence"],
+                )
+                for item in data.get("learnings", [])
+            ]
+            from nanobot.evaluator.store import LearningExtraction
+
+            return LearningExtraction(learnings=items)
+
+        runner_mod.parse_learning_from_json = _lenient_parse  # type: ignore[assignment]
+        try:
+            from nanobot.subagents.manager import SubagentRunResult
+
+            result = SubagentRunResult(run_id="t", success=True, reply="ok", tool_trace=[])
+
+            eval_result = await evaluator.evaluate(
+                scope="telegram:1",
+                user_request="hi",
+                worker_result=result,
+            )
+
+            # Only the workflow_pattern should have produced a decision.
+            assert len(eval_result.decisions) == 1
+            assert eval_result.decisions[0].name == "site_x_workflow"
+        finally:
+            from nanobot.evaluator import runner as runner_mod2
+
+            # Restore the original parse function. Look it up from store module.
+            from nanobot.evaluator.store import parse_learning_from_json
+
+            runner_mod2.parse_learning_from_json = parse_learning_from_json  # type: ignore[assignment]
