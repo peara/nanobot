@@ -28,6 +28,7 @@ from nanobot.llm import LlmClient
 from nanobot.memory import ConversationStore
 from nanobot.memstore.tools import register_memory_tools
 from nanobot.messages import OrchestratorMessage, ScheduledTaskMessage, SubagentResultMessage, UserMessage
+from nanobot.notebook import NotebookStore, register_notebook_tools
 from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
@@ -59,6 +60,8 @@ CORE_TOOL_PATTERNS: list[str] = [
     # Plan read-only (agent may always need to check plan status)
     "plan__get",
     "plan__list",
+    # Notebook (bot's private structured data store; the bot manages it directly)
+    "notebook__query",
     # Timer (utility needed across conversations)
     "timer__*",
     # Scheduler (utility needed across conversations)
@@ -103,6 +106,7 @@ class BotCore:
         self.plan_store = PlanStore(config.plan_db_path)
         self.skills = SkillStore(config.skill_db_path)
         self.prompts = PromptStore(config.prompt_db_path)
+        self.notebook_store = NotebookStore(config.notebook_db_path)
         register_plan_tools(self.tools, self.plan_store)
         self.vector_store: VectorStore | None = None
         self.mem0_skill_store: SkillVectorStore | None = None
@@ -119,6 +123,7 @@ class BotCore:
             else:
                 logger.warning("mem0_config_path specified but file not found: %s", config.mem0_config_path)
         register_skill_tools(self.tools, self.skills, self.mem0_skill_store)
+        register_notebook_tools(self.tools, self.notebook_store)
         self.tool_hooks: list[ToolHook] = build_default_tool_hooks()
         self.scheduler = SchedulerRunner(
             store=self.scheduler_store,

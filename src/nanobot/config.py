@@ -78,6 +78,7 @@ class AppConfig:
     enable_tool_stats: bool = False
     enable_evaluator: bool = False
     prompt_db_path: str = "./data/prompts.db"
+    notebook_db_path: str = "./data/notebook.db"
     mem0_config_path: str | None = None
     logging: LoggingConfig | None = None
 
@@ -139,6 +140,7 @@ def load_config(config_path: str) -> AppConfig:
         enable_tool_stats=bool(data.get("enable_tool_stats", False)),
         enable_evaluator=bool(data.get("enable_evaluator", False)),
         prompt_db_path=data.get("prompt_db_path", "./data/prompts.db"),
+        notebook_db_path=data.get("notebook_db_path", "./data/notebook.db"),
         mem0_config_path=data.get("mem0_config_path"),
         logging=_parse_logging(data.get("logging")),
     )
