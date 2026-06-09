@@ -362,7 +362,24 @@ def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
                         }
                     ],
                 },
+                # Text-only stop after init triggers the protocol nudge.
                 {"content": "Working on it.", "tool_calls": None},
+                # After nudge the model self-corrects with finalize; the
+                # next call (no tools) returns the user-facing answer.
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_sp_2",
+                            "type": "function",
+                            "function": {
+                                "name": SCRATCHPAD_TOOL_NAME,
+                                "arguments": json.dumps({"mode": "finalize"}),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Initialized: searching for laptops under 1500 USD.", "tool_calls": None},
             ]
         ),
     )
@@ -371,7 +388,7 @@ def test_session_scratchpad_write_tool_persists_state(tmp_path) -> None:
     message = IncomingMessage(channel="telegram", chat_id="42", user_id="u1", text="help me buy laptop")
     _await_process(bot, message)
 
-    assert "Working on it." in channel.sent[-1][1]
+    assert "Initialized: searching for laptops" in channel.sent[-1][1]
     run_id = _last_run_id_for_scope(bot, "telegram:42")
     assert run_id is not None
     state = get_scratchpad_state(bot, "telegram:42", run_id=run_id)

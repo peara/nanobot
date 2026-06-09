@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from nanobot.agent_tool_guards import (
     PostResultAction,
@@ -81,6 +81,57 @@ def _finalize_response_message(host: Any, scope: str, *, run_id: str | None = No
     summary = "\n\n".join(summary_parts) if summary_parts else "No summary available."
     content = host.prompts.render("finalize_response", goal=goal, summary=summary)
     return {"role": "user", "content": content}
+
+
+def _check_scratchpad_violation(
+    assistant_message: dict[str, Any],
+    pending_scratchpad_round: bool,
+    protocol_violation_count: int,
+    messages: list[dict[str, Any]],
+    scope_for_tools: str,
+) -> Literal["no_violation", "nudge", "abort"]:
+    """Decide what the loop should do when the previous reply had no tool calls.
+
+    Returns:
+      - "no_violation": the reply is a clean text-only stop; caller should
+        break to the post-loop return.
+      - "nudge": the previous round called session__scratchpad_write
+        mode="init" but no external tool or finalize, and the model then
+        emitted a text-only stop with non-empty content. A correction
+        system message has been appended to messages; caller should fall
+        through to the continue call at the bottom of the loop.
+      - "abort": the cap (MAX_SCRATCHPAD_PROTOCOL_RETRIES) is exceeded;
+        caller should return the SCRATCHPAD_PROTOCOL_ABORT_REPLY.
+
+    This helper has no LLM, no I/O, and no scope formatting — those live
+    in the caller's continue call. It only mutates `messages` (appends
+    the correction system message) as a side effect when returning
+    "nudge".
+    """
+    if not (pending_scratchpad_round and (assistant_message.get("content") or "").strip()):
+        return "no_violation"
+    # Lazy import: core.py imports AgentRun at module load, so a
+    # top-level import here would form a circular import.
+    from nanobot.core import (
+        MAX_SCRATCHPAD_PROTOCOL_RETRIES,
+        SCRATCHPAD_PROTOCOL_CORRECTION,
+    )
+
+    next_count = protocol_violation_count + 1
+    if next_count > MAX_SCRATCHPAD_PROTOCOL_RETRIES:
+        logger.warning(
+            "Scratchpad protocol violation cap exceeded scope=%s retries=%d",
+            scope_for_tools,
+            next_count,
+        )
+        return "abort"
+    logger.warning(
+        "Scratchpad protocol violation (nudging) scope=%s retry=%d",
+        scope_for_tools,
+        next_count,
+    )
+    messages.append({"role": "system", "content": SCRATCHPAD_PROTOCOL_CORRECTION})
+    return "nudge"
 
 
 def trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
@@ -249,230 +300,273 @@ class AgentRun:
         guard_ctx = ToolCallContext(scope=scope_for_tools)
         previous_round_signatures: list[tuple[str, str]] | None = None
         identical_round_repeats = 0
-        while assistant_message.get("tool_calls"):
+        pending_scratchpad_round = False
+        protocol_violation_count = 0
+
+        # Scratchpad-protocol enforcement: if the model called
+        # session__scratchpad_write mode="init" but did not follow with
+        # an external tool or a finalize, and then emits a text-only
+        # stop, nudge it up to MAX_SCRATCHPAD_PROTOCOL_RETRIES times
+        # before aborting. We only catch init (not append) because a long
+        # append-only sequence followed by a final answer is a legitimate
+        # pattern (see test_agent_run_does_not_abort_on_many_scratchpad_tool_calls).
+        # See tests/agent_run/test_scratchpad_protocol_regression.py
+        # and the helper _check_scratchpad_violation.
+        while True:
             if cancel_token and cancel_token.is_cancelled:
                 raise LlmCallCancelledError(scope=scope_for_tools)
-            requested_calls = assistant_message["tool_calls"]
-            requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
-            if previous_round_signatures == requested_signatures:
-                identical_round_repeats += 1
-            else:
-                identical_round_repeats = 1
-            previous_round_signatures = requested_signatures
-            if identical_round_repeats >= MAX_IDENTICAL_TOOL_CALL_REPEATS:
-                logger.warning(
-                    "Aborting repeated identical tool calls scope=%s repeats=%d calls=%s",
+            if not assistant_message.get("tool_calls"):
+                action = _check_scratchpad_violation(
+                    assistant_message,
+                    pending_scratchpad_round,
+                    protocol_violation_count,
+                    messages,
                     scope_for_tools,
-                    identical_round_repeats,
-                    requested_signatures,
                 )
-                return REPEATED_TOOL_CALL_ABORT_REPLY, tool_trace
-            include_scratchpad_prompt = needs_scratchpad_update
-            if needs_scratchpad_update:
-                scratchpad_seen = False
-                protocol_violation = False
-                for tool_call in requested_calls:
-                    name = str(tool_call.get("function", {}).get("name", ""))
-                    if name == SCRATCHPAD_TOOL_NAME:
-                        scratchpad_seen = True
-                        continue
-                    if not scratchpad_seen:
-                        protocol_violation = True
-                        break
-                if protocol_violation:
-                    proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
+                if action == "abort":
+                    # Lazy import: core.py imports AgentRun at module load.
+                    from nanobot.core import SCRATCHPAD_PROTOCOL_ABORT_REPLY
+
+                    return SCRATCHPAD_PROTOCOL_ABORT_REPLY, tool_trace
+                if action == "no_violation":
+                    break
+                # action == "nudge": the helper appended a correction
+                # system message; fall through to the continue call at
+                # the bottom of the loop.
+                protocol_violation_count += 1
+                include_scratchpad_prompt = True
+            else:
+                requested_calls = assistant_message["tool_calls"]
+                requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
+                if previous_round_signatures == requested_signatures:
+                    identical_round_repeats += 1
+                else:
+                    identical_round_repeats = 1
+                previous_round_signatures = requested_signatures
+                if identical_round_repeats >= MAX_IDENTICAL_TOOL_CALL_REPEATS:
                     logger.warning(
-                        "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
+                        "Aborting repeated identical tool calls scope=%s repeats=%d calls=%s",
                         scope_for_tools,
-                        proposed_tools,
+                        identical_round_repeats,
+                        requested_signatures,
                     )
-                    raw_content = assistant_message.get("content") or ""
-                    if raw_content.strip():
-                        try:
-                            apply_scratchpad_append_from_content(
-                                self._host, scope_for_tools, raw_content, run_id=run_id
+                    return REPEATED_TOOL_CALL_ABORT_REPLY, tool_trace
+                include_scratchpad_prompt = needs_scratchpad_update
+                if needs_scratchpad_update:
+                    scratchpad_seen = False
+                    protocol_violation = False
+                    for tool_call in requested_calls:
+                        name = str(tool_call.get("function", {}).get("name", ""))
+                        if name == SCRATCHPAD_TOOL_NAME:
+                            scratchpad_seen = True
+                            continue
+                        if not scratchpad_seen:
+                            protocol_violation = True
+                            break
+                    if protocol_violation:
+                        proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
+                        logger.warning(
+                            "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
+                            scope_for_tools,
+                            proposed_tools,
+                        )
+                        raw_content = assistant_message.get("content") or ""
+                        if raw_content.strip():
+                            try:
+                                apply_scratchpad_append_from_content(
+                                    self._host, scope_for_tools, raw_content, run_id=run_id
+                                )
+                                needs_scratchpad_update = False
+                            except Exception:  # pylint: disable=broad-except
+                                logger.exception(
+                                    "Failed to apply synthetic scratchpad from content scope=%s",
+                                    scope_for_tools,
+                                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_message.get("content") or "",
+                        "tool_calls": requested_calls,
+                    }
+                )
+                round_used_external_tool = False
+                round_finalized_scratchpad = False
+                round_saw_scratchpad_init = False
+                post_finalize_reply: str | None = None
+                for tool_call in requested_calls:
+                    total_tool_calls += 1
+                    guard_ctx.total_calls = total_tool_calls
+                    if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
+                        logger.warning(
+                            "Aborting tool loop after limit scope=%s total_tool_calls=%d",
+                            scope_for_tools,
+                            total_tool_calls,
+                        )
+                        finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools, run_id=run_id)
+                        trimmed = trim_to_last_tool_round(messages)
+                        to_send = trimmed + ([finalize_msg] if finalize_msg else [])
+                        prepared_messages = prepare_messages_for_chat(to_send)
+                        final_message = await self._host.llm.chat(
+                            messages=prepared_messages,
+                            tools=[],
+                            scope=f"{scope_for_tools}:limit_finalize",
+                            cancel_token=cancel_token,
+                        )
+                        reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
+                        return reply, tool_trace
+                    fn_name = tool_call["function"]["name"]
+                    guard_ctx.current_tool_name = fn_name
+                    raw_args = tool_call["function"].get("arguments") or "{}"
+                    args = json.loads(raw_args)
+                    if fn_name == SCRATCHPAD_TOOL_NAME:
+                        scratchpad_tool_calls += 1
+                        guard_ctx.scratchpad_calls = scratchpad_tool_calls
+                    if fn_name.endswith("__schedule_task"):
+                        chat_id = str(args.get("chat_id", "")).strip()
+                        if (
+                            not chat_id
+                            or ":" not in chat_id
+                            or chat_id in {"current_chat", "this_chat", "current", "here"}
+                        ):
+                            args["chat_id"] = scope_for_tools
+                    ok = True
+                    error: str | None = None
+                    try:
+                        guard_ctx.tool_schema = self._resolve_tool_schema(fn_name)
+                        pre_action = self._pre_call_guard(fn_name, args, guard_ctx)
+                        if pre_action.normalized_args is not None:
+                            args = pre_action.normalized_args
+                        if pre_action.block:
+                            ok = False
+                            error = pre_action.block_error
+                            result = json.dumps(pre_action.block_payload or {"ok": False}, ensure_ascii=True)
+                            logger.warning(
+                                "Blocked tool call via guard scope=%s tool=%s error=%s",
+                                scope_for_tools,
+                                fn_name,
+                                error,
+                            )
+                        elif fn_name == SCRATCHPAD_TOOL_NAME:
+                            active = getattr(self._host, "active_requests", None)
+                            if isinstance(active, dict) and scope_for_tools in active:
+                                active[scope_for_tools].current_step = f"calling {fn_name}"
+                            logger.info("Calling tool=%s args=%s", fn_name, args)
+                            scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args, run_id=run_id)
+                            scratchpad_mode = str(args.get("mode", "")).strip().lower()
+                            result = json.dumps(
+                                scratchpad_tool_result(scratchpad_mode, scratchpad),
+                                ensure_ascii=True,
                             )
                             needs_scratchpad_update = False
-                        except Exception:  # pylint: disable=broad-except
-                            logger.exception(
-                                "Failed to apply synthetic scratchpad from content scope=%s",
-                                scope_for_tools,
-                            )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": assistant_message.get("content") or "",
-                    "tool_calls": requested_calls,
-                }
-            )
-            round_used_external_tool = False
-            round_finalized_scratchpad = False
-            post_finalize_reply: str | None = None
-            for tool_call in requested_calls:
-                total_tool_calls += 1
-                guard_ctx.total_calls = total_tool_calls
-                if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
-                    logger.warning(
-                        "Aborting tool loop after limit scope=%s total_tool_calls=%d",
-                        scope_for_tools,
-                        total_tool_calls,
+                            if scratchpad_mode == "init":
+                                round_saw_scratchpad_init = True
+                            elif scratchpad_mode == "finalize":
+                                round_finalized_scratchpad = True
+                            logger.info("Tool succeeded tool=%s", fn_name)
+                        else:
+                            active = getattr(self._host, "active_requests", None)
+                            if isinstance(active, dict) and scope_for_tools in active:
+                                active[scope_for_tools].current_step = f"calling {fn_name}"
+                            logger.info("Calling tool=%s args=%s", fn_name, args)
+                            result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
+                            needs_scratchpad_update = True
+                            round_used_external_tool = True
+                            logger.info("Tool succeeded tool=%s", fn_name)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.exception("Tool failed tool=%s", fn_name)
+                        ok = False
+                        error = str(exc)
+                        result = f"Tool call failed: {exc}"
+                        if fn_name != SCRATCHPAD_TOOL_NAME:
+                            needs_scratchpad_update = True
+                    finally:
+                        guard_ctx.tool_schema = None
+                    result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
+                    payload = parse_tool_result_json(result_text)
+                    post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)
+                    if post_action is not None and post_action.force_finalize:
+                        logger.info(
+                            "Guard force-finalize suppressed (letting LLM decide) scope=%s tool=%s",
+                            scope_for_tools,
+                            fn_name,
+                        )
+                    logger.info(
+                        "Tool result tool=%s chars=%d preview=%s",
+                        fn_name,
+                        len(result_text),
+                        tool_result_preview(result_text),
                     )
-                    finalize_msg = _tool_call_limit_finalize_message(self._host, scope_for_tools, run_id=run_id)
+                    if fn_name != SCRATCHPAD_TOOL_NAME:
+                        tz = getattr(getattr(self._host, "config", None), "working_timezone", "UTC")
+                        await self._host._dispatch_after_tool_call(
+                            ToolCallEvent(
+                                scope=scope_for_tools,
+                                call_id=str(tool_call.get("id", "")),
+                                tool_name=fn_name,
+                                args=args,
+                                result=result_text,
+                                result_preview=tool_result_preview(result_text, limit=1200),
+                                ok=ok,
+                                error=error,
+                                at=human_now(str(tz or "UTC")),
+                            )
+                        )
+                    tool_trace.append(
+                        {
+                            "name": fn_name,
+                            "args": args,
+                            "result_preview": tool_result_preview(result_text, limit=300),
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": fn_name,
+                            "content": result_text,
+                        }
+                    )
+                pending_scratchpad_round = (
+                    round_saw_scratchpad_init and not round_used_external_tool and not round_finalized_scratchpad
+                )
+                if round_used_external_tool:
+                    include_scratchpad_prompt = True
+                elif round_finalized_scratchpad:
+                    finalize_msg = _finalize_response_message(self._host, scope_for_tools, run_id=run_id)
                     trimmed = trim_to_last_tool_round(messages)
                     to_send = trimmed + ([finalize_msg] if finalize_msg else [])
                     prepared_messages = prepare_messages_for_chat(to_send)
                     final_message = await self._host.llm.chat(
                         messages=prepared_messages,
                         tools=[],
-                        scope=f"{scope_for_tools}:limit_finalize",
+                        scope=f"{scope_for_tools}:finalize",
                         cancel_token=cancel_token,
                     )
-                    reply = final_message.get("content") or TOOL_CALL_LIMIT_ABORT_REPLY
-                    return reply, tool_trace
-                fn_name = tool_call["function"]["name"]
-                guard_ctx.current_tool_name = fn_name
-                raw_args = tool_call["function"].get("arguments") or "{}"
-                args = json.loads(raw_args)
-                if fn_name == SCRATCHPAD_TOOL_NAME:
-                    scratchpad_tool_calls += 1
-                    guard_ctx.scratchpad_calls = scratchpad_tool_calls
-                if fn_name.endswith("__schedule_task"):
-                    chat_id = str(args.get("chat_id", "")).strip()
-                    if not chat_id or ":" not in chat_id or chat_id in {"current_chat", "this_chat", "current", "here"}:
-                        args["chat_id"] = scope_for_tools
-                ok = True
-                error: str | None = None
-                try:
-                    guard_ctx.tool_schema = self._resolve_tool_schema(fn_name)
-                    pre_action = self._pre_call_guard(fn_name, args, guard_ctx)
-                    if pre_action.normalized_args is not None:
-                        args = pre_action.normalized_args
-                    if pre_action.block:
-                        ok = False
-                        error = pre_action.block_error
-                        result = json.dumps(pre_action.block_payload or {"ok": False}, ensure_ascii=True)
+                    finish_reason = final_message.get("finish_reason")
+                    reply = final_message.get("content") or ""
+                    if not reply.strip():
                         logger.warning(
-                            "Blocked tool call via guard scope=%s tool=%s error=%s",
+                            "LLM returned empty reply in finalize path scope=%s finish_reason=%s",
                             scope_for_tools,
-                            fn_name,
-                            error,
+                            finish_reason,
                         )
-                    elif fn_name == SCRATCHPAD_TOOL_NAME:
-                        active = getattr(self._host, "active_requests", None)
-                        if isinstance(active, dict) and scope_for_tools in active:
-                            active[scope_for_tools].current_step = f"calling {fn_name}"
-                        logger.info("Calling tool=%s args=%s", fn_name, args)
-                        scratchpad = apply_scratchpad_tool_call(self._host, scope_for_tools, args, run_id=run_id)
-                        scratchpad_mode = str(args.get("mode", "")).strip().lower()
-                        result = json.dumps(
-                            scratchpad_tool_result(scratchpad_mode, scratchpad),
-                            ensure_ascii=True,
-                        )
-                        needs_scratchpad_update = False
-                        if scratchpad_mode == "finalize":
-                            round_finalized_scratchpad = True
-                        logger.info("Tool succeeded tool=%s", fn_name)
-                    else:
-                        active = getattr(self._host, "active_requests", None)
-                        if isinstance(active, dict) and scope_for_tools in active:
-                            active[scope_for_tools].current_step = f"calling {fn_name}"
-                        logger.info("Calling tool=%s args=%s", fn_name, args)
-                        result = await self._host.tools.call(fn_name, args, scope=scope_for_tools, run_id=run_id)
-                        needs_scratchpad_update = True
-                        round_used_external_tool = True
-                        logger.info("Tool succeeded tool=%s", fn_name)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.exception("Tool failed tool=%s", fn_name)
-                    ok = False
-                    error = str(exc)
-                    result = f"Tool call failed: {exc}"
-                    if fn_name != SCRATCHPAD_TOOL_NAME:
-                        needs_scratchpad_update = True
-                finally:
-                    guard_ctx.tool_schema = None
-                result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=True)
-                payload = parse_tool_result_json(result_text)
-                post_action = self._post_result_guard(fn_name, args, payload, guard_ctx)
-                if post_action is not None and post_action.force_finalize:
-                    logger.info(
-                        "Guard force-finalize suppressed (letting LLM decide) scope=%s tool=%s",
-                        scope_for_tools,
-                        fn_name,
-                    )
-                logger.info(
-                    "Tool result tool=%s chars=%d preview=%s",
-                    fn_name,
-                    len(result_text),
-                    tool_result_preview(result_text),
-                )
-                if fn_name != SCRATCHPAD_TOOL_NAME:
-                    tz = getattr(getattr(self._host, "config", None), "working_timezone", "UTC")
-                    await self._host._dispatch_after_tool_call(
-                        ToolCallEvent(
-                            scope=scope_for_tools,
-                            call_id=str(tool_call.get("id", "")),
-                            tool_name=fn_name,
-                            args=args,
-                            result=result_text,
-                            result_preview=tool_result_preview(result_text, limit=1200),
-                            ok=ok,
-                            error=error,
-                            at=human_now(str(tz or "UTC")),
-                        )
-                    )
-                tool_trace.append(
-                    {
-                        "name": fn_name,
-                        "args": args,
-                        "result_preview": tool_result_preview(result_text, limit=300),
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": fn_name,
-                        "content": result_text,
-                    }
-                )
-            if round_used_external_tool:
-                include_scratchpad_prompt = True
-            elif round_finalized_scratchpad:
-                finalize_msg = _finalize_response_message(self._host, scope_for_tools, run_id=run_id)
-                trimmed = trim_to_last_tool_round(messages)
-                to_send = trimmed + ([finalize_msg] if finalize_msg else [])
-                prepared_messages = prepare_messages_for_chat(to_send)
-                final_message = await self._host.llm.chat(
-                    messages=prepared_messages,
-                    tools=[],
-                    scope=f"{scope_for_tools}:finalize",
-                    cancel_token=cancel_token,
-                )
-                finish_reason = final_message.get("finish_reason")
-                reply = final_message.get("content") or ""
-                if not reply.strip():
-                    logger.warning(
-                        "LLM returned empty reply in finalize path scope=%s finish_reason=%s",
-                        scope_for_tools,
-                        finish_reason,
-                    )
-                    # Lazy import: core.py imports AgentRun at module load, so a
-                    # top-level import here would form a circular import.
-                    from nanobot.core import EMPTY_REPLY_FALLBACK
+                        # Lazy import: core.py imports AgentRun at module load, so a
+                        # top-level import here would form a circular import.
+                        from nanobot.core import EMPTY_REPLY_FALLBACK
 
-                    reply = EMPTY_REPLY_FALLBACK
-                reply = self._rewrite_finalize_reply(reply, guard_ctx)
-                return reply, tool_trace
-            if post_finalize_reply is not None:
-                logger.warning("Guard force-finalize reached (disabled) scope=%s", scope_for_tools)
-            trimmed = trim_to_last_tool_round(messages)
-            scratchpad_msg = (
-                scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
-                if include_scratchpad_prompt
-                else None
-            )
-            to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
-            prepared_messages = prepare_messages_for_chat(to_send)
+                        reply = EMPTY_REPLY_FALLBACK
+                    reply = self._rewrite_finalize_reply(reply, guard_ctx)
+                    return reply, tool_trace
+                if post_finalize_reply is not None:
+                    logger.warning("Guard force-finalize reached (disabled) scope=%s", scope_for_tools)
+                trimmed = trim_to_last_tool_round(messages)
+                scratchpad_msg = (
+                    scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
+                    if include_scratchpad_prompt
+                    else None
+                )
+                to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
+                prepared_messages = prepare_messages_for_chat(to_send)
             assistant_message = await self._host.llm.chat(
                 messages=prepared_messages,
                 tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
