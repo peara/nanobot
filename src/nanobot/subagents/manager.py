@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # so the LLM can discover tool names for filling tools_allowlist.
 SKILL_CRUD_TOOL_NAMES = {"skill__create", "skill__update"}
 
+# Maximum allowed subagent nesting depth.
+# Depth 0 = orchestrator (parent_run_id is None) or scheduled subagent (parent_run_id is None).
+# Depth 1 = first-level child spawned via delegate_task.
+# Depth 2+ = blocked. The orchestrator can delegate, but sub-subagents are not permitted.
+# See issue #43.
+MAX_SUBAGENT_DEPTH = 1
+
 
 @dataclass
 class SubagentRunResult:
@@ -56,12 +63,33 @@ class SubagentManager:
         self._prompts = prompts
         self._skill_matcher = SkillMatcher(skills, mem0_store=mem0_store)
 
+    def _compute_depth(self, parent_run_id: str | None) -> int:
+        """Return the depth of a new run that would be spawned with the given parent_run_id.
+
+        Depth 0 = new run has no parent (orchestrator or scheduled subagent).
+        Depth 1 = new run's parent has no parent (first-level child of orchestrator).
+        Depth 2+ = new run's parent has a parent (grandchild — blocked by spawn).
+
+        This is the depth of the *new* run, not the depth of the parent. The
+        new run is one level deeper than its parent.
+        """
+        if parent_run_id is None:
+            return 0
+        parent = self._store.get(parent_run_id)
+        if parent is None:
+            # Parent row was deleted; treat as orphan (depth 0).
+            return 0
+        return 1 + self._compute_depth(parent.parent_run_id)
+
     def spawn(
         self,
         scope: str,
         parent_run_id: str | None = None,
         goal: str | None = None,
     ) -> SubagentRun:
+        depth = self._compute_depth(parent_run_id)
+        if depth > MAX_SUBAGENT_DEPTH:
+            raise ValueError(f"spawn refused: depth {depth} > MAX_SUBAGENT_DEPTH ({MAX_SUBAGENT_DEPTH})")
         run_id = f"run-{uuid.uuid4().hex[:10]}"
         run = self._store.create(
             run_id=run_id,

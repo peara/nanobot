@@ -66,6 +66,9 @@ CORE_TOOL_PATTERNS: list[str] = [
     "timer__*",
     # Scheduler (utility needed across conversations)
     "scheduler__*",
+    # Orchestrator-only: spawn a focused subagent with its own goal/skill matching.
+    # Stripped from depth-1+ subagent tool lists in agent_run.py (see issue #43).
+    "delegate_task",
 ]
 
 
@@ -108,6 +111,12 @@ class BotCore:
         self.prompts = PromptStore(config.prompt_db_path)
         self.notebook_store = NotebookStore(config.notebook_db_path)
         register_plan_tools(self.tools, self.plan_store)
+        # Late import: DelegateTaskTool references BotCore for the back-reference
+        # needed to spawn child runs, which would create a circular import at
+        # module load time.
+        from nanobot.subagents.delegate_tool import DelegateTaskTool
+
+        self.tools.register(DelegateTaskTool(self))
         self.vector_store: VectorStore | None = None
         self.mem0_skill_store: SkillVectorStore | None = None
         if config.mem0_config_path:
@@ -451,6 +460,23 @@ class BotCore:
             if isinstance(skill_names, list):
                 return skill_names
         return []
+
+    def _current_run_depth(self) -> int:
+        """Return the depth of the currently-executing run, or -1 if no run is set.
+
+        Depth 0 = orchestrator or scheduled subagent (parent_run_id is None).
+        Depth 1 = first-level child spawned via delegate_task.
+        Depth 2+ = blocked by SubagentManager.spawn().
+
+        Set by AgentRun before each tool call (see issue #43).
+        """
+        run_id = getattr(self, "_current_run_id", None)
+        if run_id is None:
+            return -1
+        run = self.subagent_manager.get(run_id)
+        if run is None:
+            return -1
+        return self.subagent_manager._compute_depth(run.parent_run_id)
 
     def _list_openai_tools(self, skill_names: list[str] | None = None) -> list[dict[str, Any]]:
         patterns = list(CORE_TOOL_PATTERNS)

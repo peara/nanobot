@@ -521,11 +521,19 @@ class AgentRun:
             normalized_args = json.dumps(parsed_args, ensure_ascii=True, sort_keys=True)
         return fn_name, str(normalized_args)
 
-    @staticmethod
-    def _tools_for_chat(tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
-        if allow_scratchpad:
-            return tools
-        return [tool for tool in tools if str(tool.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME]
+    def _tools_for_chat(self, tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
+        # Filter out the scratchpad tool if the protocol says to.
+        if not allow_scratchpad:
+            tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME]
+        # Strip delegate_task at depth >= 1 so the depth-1 subagent cannot
+        # call it (its spawn would be refused by SubagentManager anyway).
+        # The tool is a core tool but depth-gated. See issue #43.
+        # Fall back to -1 if the host doesn't implement _current_run_depth()
+        # (test fakes may not). -1 is not >= 1, so the strip is a no-op.
+        depth = getattr(self._host, "_current_run_depth", lambda: -1)()
+        if depth >= 1:
+            tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != "delegate_task"]
+        return tools
 
     async def run(
         self,
@@ -538,6 +546,25 @@ class AgentRun:
     ) -> tuple[str, list[dict[str, Any]]]:
         if cancel_token and cancel_token.is_cancelled:
             raise LlmCallCancelledError(scope=scope_for_tools)
+        # Publish the current run id on the host so helpers like
+        # _current_run_depth() and the delegate_task tool can compute the
+        # depth of the run currently executing its LLM loop. Cleared in
+        # finally so a stale value never leaks to the next run.
+        self._host._current_run_id = run_id
+        try:
+            return await self._run_impl(scope_for_tools, messages, tools, response_format, run_id, cancel_token)
+        finally:
+            self._host._current_run_id = None
+
+    async def _run_impl(
+        self,
+        scope_for_tools: str,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict[str, Any] | None,
+        run_id: str | None,
+        cancel_token: CancellationToken | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
         include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
