@@ -66,9 +66,10 @@ CORE_TOOL_PATTERNS: list[str] = [
     "timer__*",
     # Scheduler (utility needed across conversations)
     "scheduler__*",
-    # Orchestrator-only: spawn a focused subagent with its own goal/skill matching.
-    # Stripped from depth-1+ subagent tool lists in agent_run.py (see issue #43).
-    "delegate_task",
+    # delegate_task is intentionally absent from CORE_TOOL_PATTERNS — its
+    # spec is prepended directly by _list_openai_tools() (the tool is
+    # dispatched as a control-plane operation by the LLM loop, not via
+    # the standard registry). See issue #43.
 ]
 
 
@@ -111,12 +112,12 @@ class BotCore:
         self.prompts = PromptStore(config.prompt_db_path)
         self.notebook_store = NotebookStore(config.notebook_db_path)
         register_plan_tools(self.tools, self.plan_store)
-        # Late import: DelegateTaskTool references BotCore for the back-reference
-        # needed to spawn child runs, which would create a circular import at
-        # module load time.
-        from nanobot.subagents.delegate_tool import DelegateTaskTool
-
-        self.tools.register(DelegateTaskTool(self))
+        # delegate_task is NOT registered in ToolRegistry. It is a control-plane
+        # operation that needs the parent run's scope/run_id/cancel_token —
+        # leaf tools don't carry that context. Instead, its spec is prepended
+        # to _list_openai_tools() and the LLM loop dispatches it directly via
+        # run_delegate_task(), mirroring how session__scratchpad_write works.
+        # See issue #43.
         self.vector_store: VectorStore | None = None
         self.mem0_skill_store: SkillVectorStore | None = None
         if config.mem0_config_path:
@@ -461,16 +462,18 @@ class BotCore:
                 return skill_names
         return []
 
-    def _current_run_depth(self) -> int:
-        """Return the depth of the currently-executing run, or -1 if no run is set.
+    def _compute_run_depth(self, run_id: str | None) -> int:
+        """Return the depth of the run with the given id, or -1 if unknown.
 
         Depth 0 = orchestrator or scheduled subagent (parent_run_id is None).
         Depth 1 = first-level child spawned via delegate_task.
         Depth 2+ = blocked by SubagentManager.spawn().
 
-        Set by AgentRun before each tool call (see issue #43).
+        Called by AgentRun._tools_for_chat (spec strip) and by
+        run_delegate_task (defensive check). The run_id is passed
+        explicitly from the LLM loop's local state — no shared attribute
+        on BotCore is read. See issue #43.
         """
-        run_id = getattr(self, "_current_run_id", None)
         if run_id is None:
             return -1
         run = self.subagent_manager.get(run_id)
@@ -485,7 +488,13 @@ class BotCore:
                 skill = self.skills.get_by_name(name)
                 if skill and skill.is_active and skill.tools_allowlist:
                     patterns.extend(skill.tools_allowlist)
-        return [scratchpad_tool_spec(), *self.tools.list_openai_specs(patterns)]
+        from nanobot.subagents.delegate_tool import delegate_task_spec
+
+        return [
+            scratchpad_tool_spec(),
+            delegate_task_spec(),
+            *self.tools.list_openai_specs(patterns),
+        ]
 
     def _build_context_report(self, scope: str) -> str:
         return build_context_report(self, scope)

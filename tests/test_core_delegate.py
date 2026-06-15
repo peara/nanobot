@@ -1,10 +1,13 @@
 """Tests for BotCore changes related to delegate_task (issue #43).
 
 Verifies:
-- `delegate_task` is in CORE_TOOL_PATTERNS.
-- BotCore registers the DelegateTaskTool in its ToolRegistry.
-- BotCore._current_run_depth() returns -1 when no run is set.
-- BotCore._current_run_depth() returns the right depth for real runs.
+- `delegate_task` is NOT in CORE_TOOL_PATTERNS (its spec is prepended
+  by _list_openai_tools instead, like session__scratchpad_write).
+- BotCore does NOT register a DelegateTaskTool in its ToolRegistry
+  (the tool is dispatched as a control-plane operation by the LLM loop).
+- BotCore._list_openai_tools() prepends the delegate_task spec.
+- BotCore._compute_run_depth(run_id) returns -1 for unknown / None,
+  0 for root, 1 for first child.
 """
 
 from __future__ import annotations
@@ -14,11 +17,10 @@ from typing import Any, cast
 
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig
 from nanobot.core import CORE_TOOL_PATTERNS, BotCore
-from nanobot.subagents.delegate_tool import DelegateTaskTool
+from nanobot.subagents.delegate_tool import DELEGATE_TASK_NAME, delegate_task_spec
 
 
 def _build_config(tmp_path: Path) -> AppConfig:
-    """Build a minimal AppConfig for instantiating BotCore in tests."""
     return AppConfig(
         assistant_name="Nano",
         database_path=str(tmp_path / "nanobot.db"),
@@ -37,13 +39,6 @@ def _build_config(tmp_path: Path) -> AppConfig:
 
 
 class _FakeLlm:
-    """Minimal LLM stub that returns the next pre-canned reply each call.
-
-    Defined locally because tests/ is not a Python package and cross-test
-    imports would need sys.path hacks. Kept tiny since these tests don't
-    actually invoke the LLM.
-    """
-
     def __init__(self, replies: list[dict]) -> None:
         self._replies = replies
         self._idx = 0
@@ -58,57 +53,77 @@ class _FakeLlm:
 
 
 def _make_bot(tmp_path: Path) -> BotCore:
-    """Build a BotCore for tests; uses a no-op fake LLM."""
     config = _build_config(tmp_path)
-    channel = cast(Any, object())  # unused in these tests
+    channel = cast(Any, object())
     bot = BotCore(config=config, channels={"telegram": channel})
     bot.llm = cast(Any, _FakeLlm(replies=[]))
     return bot
 
 
 class TestCoreToolPatterns:
-    def test_delegate_task_in_core_patterns(self) -> None:
-        """delegate_task must be in CORE_TOOL_PATTERNS so the orchestrator can see it."""
-        assert "delegate_task" in CORE_TOOL_PATTERNS
+    def test_delegate_task_absent_from_core_patterns(self) -> None:
+        """delegate_task must NOT be in CORE_TOOL_PATTERNS — its spec is prepended directly."""
+        assert DELEGATE_TASK_NAME not in CORE_TOOL_PATTERNS
 
 
 class TestToolRegistration:
-    def test_delegate_task_tool_is_registered(self, tmp_path: Path) -> None:
+    def test_delegate_task_tool_not_in_registry(self, tmp_path: Path) -> None:
+        """BotCore does not register delegate_task in the ToolRegistry (control-plane dispatch)."""
         bot = _make_bot(tmp_path)
-        tool = bot.tools.get("delegate_task")
-        assert tool is not None
-        assert isinstance(tool, DelegateTaskTool)
+        assert bot.tools.get(DELEGATE_TASK_NAME) is None
 
-    def test_delegate_task_appears_in_core_tool_list(self, tmp_path: Path) -> None:
+    def test_delegate_task_appears_in_tool_list(self, tmp_path: Path) -> None:
+        """BotCore._list_openai_tools() prepends the delegate_task spec (scratchpad pattern)."""
         bot = _make_bot(tmp_path)
         specs = bot._list_openai_tools(skill_names=None)
         names = {s["function"]["name"] for s in specs if "function" in s}
-        assert "delegate_task" in names
+        assert DELEGATE_TASK_NAME in names
 
-
-class TestCurrentRunDepth:
-    def test_returns_minus_one_when_no_run_id_set(self, tmp_path: Path) -> None:
-        """If _current_run_id is not set, depth is unknown (-1)."""
+    def test_delegate_task_spec_matches_prepended(self, tmp_path: Path) -> None:
+        """The prepended spec is the one returned by delegate_task_spec()."""
         bot = _make_bot(tmp_path)
-        assert bot._current_run_depth() == -1
+        specs = bot._list_openai_tools(skill_names=None)
+        delegate_specs = [s for s in specs if s.get("function", {}).get("name") == DELEGATE_TASK_NAME]
+        assert len(delegate_specs) == 1
+        assert delegate_specs[0] == delegate_task_spec()
+
+
+class TestComputeRunDepth:
+    def test_returns_minus_one_for_none(self, tmp_path: Path) -> None:
+        """If run_id is None, depth is unknown (-1)."""
+        bot = _make_bot(tmp_path)
+        assert bot._compute_run_depth(None) == -1
 
     def test_returns_zero_for_root_run(self, tmp_path: Path) -> None:
         """A run with no parent (orchestrator or scheduled) reports depth 0."""
         bot = _make_bot(tmp_path)
         run = bot.subagent_manager.spawn(scope="telegram:depth0", goal="root")
-        bot._current_run_id = run.id
-        assert bot._current_run_depth() == 0
+        assert bot._compute_run_depth(run.id) == 0
 
     def test_returns_one_for_first_child(self, tmp_path: Path) -> None:
         """A run with an orchestrator as parent reports depth 1 (the child is a delegate_task result)."""
         bot = _make_bot(tmp_path)
         orchestrator = bot.subagent_manager.spawn(scope="telegram:depth0", goal="root")
         child = bot.subagent_manager.spawn(scope="telegram:depth0", parent_run_id=orchestrator.id, goal="child")
-        bot._current_run_id = child.id
-        assert bot._current_run_depth() == 1
+        assert bot._compute_run_depth(child.id) == 1
 
     def test_returns_minus_one_for_unknown_run_id(self, tmp_path: Path) -> None:
-        """If _current_run_id is set but the row does not exist, depth is -1 (defensive)."""
+        """If run_id is set but the row does not exist, depth is -1 (defensive)."""
         bot = _make_bot(tmp_path)
-        bot._current_run_id = "run-does-not-exist"
-        assert bot._current_run_depth() == -1
+        assert bot._compute_run_depth("run-does-not-exist") == -1
+
+
+class TestNoSharedStateAttributes:
+    """The host must not have the _current_* attributes anymore."""
+
+    def test_host_has_no_current_run_id(self, tmp_path: Path) -> None:
+        bot = _make_bot(tmp_path)
+        assert not hasattr(bot, "_current_run_id")
+
+    def test_host_has_no_current_scope(self, tmp_path: Path) -> None:
+        bot = _make_bot(tmp_path)
+        assert not hasattr(bot, "_current_scope")
+
+    def test_host_has_no_current_cancel_token(self, tmp_path: Path) -> None:
+        bot = _make_bot(tmp_path)
+        assert not hasattr(bot, "_current_cancel_token")

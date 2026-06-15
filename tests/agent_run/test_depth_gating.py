@@ -1,5 +1,10 @@
 """Tests for the AgentRun changes that gate delegate_task by depth.
 
+Covers the spec-list strip in _tools_for_chat, parameterized by the
+run_id passed in from the LLM loop's local state. The host's
+_compute_run_depth(run_id) is the depth oracle; the LLM loop no longer
+publishes/clears shared state on the host.
+
 See issue #43.
 """
 
@@ -65,9 +70,9 @@ class _FakeContexts:
 
 
 class _FakeHost:
-    """Minimal host that lets us inject _current_run_depth() per test."""
+    """Minimal host with a configurable _compute_run_depth map."""
 
-    def __init__(self, llm: _FakeLlm, depth: int) -> None:
+    def __init__(self, llm: _FakeLlm, depth_by_run_id: dict[str | None, int]) -> None:
         import tempfile
 
         from nanobot.prompts import PromptStore
@@ -82,11 +87,10 @@ class _FakeHost:
         self.events: list[Any] = []
         self._temp_dir = tempfile.mkdtemp()
         self.prompts = PromptStore(f"{self._temp_dir}/prompts.db", seed_defaults=True)
-        self._current_run_id: str | None = None
-        self._depth = depth
+        self._depth_by_run_id = depth_by_run_id
 
-    def _current_run_depth(self) -> int:
-        return self._depth
+    def _compute_run_depth(self, run_id: str | None) -> int:
+        return self._depth_by_run_id.get(run_id, -1)
 
     async def _dispatch_after_tool_call(self, event: Any) -> None:
         self.events.append(event)
@@ -137,36 +141,49 @@ class TestToolsForChat:
     def test_delegate_task_present_at_depth_0(self) -> None:
         """At depth 0 (orchestrator), delegate_task is in the spec list."""
         llm = _FakeLlm([])
-        host = _FakeHost(llm, depth=0)
+        host = _FakeHost(llm, depth_by_run_id={"run-orch": 0})
         run = AgentRun(host)
-        result = run._tools_for_chat([_delegate_task_spec(), _other_tool_spec()], allow_scratchpad=True)
+        result = run._tools_for_chat(
+            [_delegate_task_spec(), _other_tool_spec()],
+            allow_scratchpad=True,
+            run_id="run-orch",
+        )
         assert "delegate_task" in _names(result)
 
     def test_delegate_task_stripped_at_depth_1(self) -> None:
         """At depth 1 (first child of orchestrator), delegate_task is hidden."""
         llm = _FakeLlm([])
-        host = _FakeHost(llm, depth=1)
+        host = _FakeHost(llm, depth_by_run_id={"run-child": 1})
         run = AgentRun(host)
-        result = run._tools_for_chat([_delegate_task_spec(), _other_tool_spec()], allow_scratchpad=True)
+        result = run._tools_for_chat(
+            [_delegate_task_spec(), _other_tool_spec()],
+            allow_scratchpad=True,
+            run_id="run-child",
+        )
         assert "delegate_task" not in _names(result)
         assert "web__search_web" in _names(result)
 
     def test_delegate_task_stripped_at_deeper_depths(self) -> None:
         """At depth 2+, delegate_task is also hidden (defense in depth)."""
         llm = _FakeLlm([])
-        host = _FakeHost(llm, depth=2)
+        host = _FakeHost(llm, depth_by_run_id={"run-grand": 2})
         run = AgentRun(host)
-        result = run._tools_for_chat([_delegate_task_spec()], allow_scratchpad=True)
+        result = run._tools_for_chat(
+            [_delegate_task_spec()],
+            allow_scratchpad=True,
+            run_id="run-grand",
+        )
         assert "delegate_task" not in _names(result)
 
     def test_scratchpad_still_filtered_when_disallowed(self) -> None:
         """The pre-existing scratchpad-filter still works alongside the depth strip."""
         llm = _FakeLlm([])
-        host = _FakeHost(llm, depth=1)
+        host = _FakeHost(llm, depth_by_run_id={"run-child": 1})
         run = AgentRun(host)
         result = run._tools_for_chat(
             [_delegate_task_spec(), _scratchpad_spec(), _other_tool_spec()],
             allow_scratchpad=False,
+            run_id="run-child",
         )
         names = _names(result)
         assert SCRATCHPAD_TOOL_NAME not in names
@@ -174,7 +191,7 @@ class TestToolsForChat:
         assert "web__search_web" in names
 
     def test_falls_back_to_minus_one_when_host_lacks_method(self) -> None:
-        """If _current_run_depth is missing on the host, default to -1 (no strip)."""
+        """If _compute_run_depth is missing on the host, default to -1 (no strip)."""
         llm = _FakeLlm([])
         host = SimpleNamespace(
             config=SimpleNamespace(working_timezone="UTC"),
@@ -185,44 +202,52 @@ class TestToolsForChat:
             tool_hooks=[],
             tool_guards=[],
             events=[],
-            _current_run_id=None,
         )
         run = AgentRun(host)  # type: ignore[arg-type]
-        result = run._tools_for_chat([_delegate_task_spec()], allow_scratchpad=True)
+        result = run._tools_for_chat(
+            [_delegate_task_spec()],
+            allow_scratchpad=True,
+            run_id="run-anyone",
+        )
         assert "delegate_task" in _names(result)
 
+    def test_no_shared_state_read_in_strip(self) -> None:
+        """The strip reads only the run_id argument, not anything from the host."""
+        llm = _FakeLlm([])
+        host = _FakeHost(llm, depth_by_run_id={"run-a": 0, "run-b": 1})
+        run = AgentRun(host)
+        a = run._tools_for_chat([_delegate_task_spec()], allow_scratchpad=True, run_id="run-a")
+        b = run._tools_for_chat([_delegate_task_spec()], allow_scratchpad=True, run_id="run-b")
+        assert "delegate_task" in _names(a)
+        assert "delegate_task" not in _names(b)
 
-class TestRunPublishesCurrentRunId:
+
+class TestRunDoesNotMutateHost:
+    """AgentRun.run() no longer publishes/clears shared state on the host.
+
+    The delegate_task tool now receives the run context explicitly from
+    the LLM loop's local state, so the host attribute lifecycle is gone.
+    """
+
     @pytest.mark.asyncio
-    async def test_run_sets_current_run_id_on_host(self) -> None:
-        """AgentRun.run() should publish _current_run_id on the host for the duration of the call."""
+    async def test_run_does_not_set_attributes_on_host(self) -> None:
         llm = _FakeLlm([_no_tool_call_reply("ok")])
-        host = _FakeHost(llm, depth=0)
+        host = _FakeHost(llm, depth_by_run_id={"run-abc": 0})
         run = AgentRun(host)
 
-        observed: dict[str, str | None] = {}
-
-        original_chat = llm.chat
-
-        async def chat_spy(messages, tools, response_format=None, *, scope=None, cancel_token=None):
-            observed["during"] = host._current_run_id
-            return await original_chat(messages, tools, response_format, scope=scope, cancel_token=cancel_token)
-
-        llm.chat = chat_spy  # type: ignore[method-assign]
         await run.run(
             scope_for_tools="telegram:1",
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
             run_id="run-abc",
         )
-        assert observed["during"] == "run-abc"
-        assert host._current_run_id is None
+        for attr in ("_current_run_id", "_current_scope", "_current_cancel_token"):
+            assert not hasattr(host, attr), f"host should not have {attr}"
 
     @pytest.mark.asyncio
-    async def test_run_clears_current_run_id_on_exception(self) -> None:
-        """Even if an exception is raised mid-run, the finally clears _current_run_id."""
+    async def test_run_does_not_set_attributes_on_exception(self) -> None:
         llm = _FakeLlm([])
-        host = _FakeHost(llm, depth=0)
+        host = _FakeHost(llm, depth_by_run_id={"run-xyz": 0})
         run = AgentRun(host)
 
         async def boom(messages, tools, response_format=None, *, scope=None, cancel_token=None):
@@ -236,4 +261,5 @@ class TestRunPublishesCurrentRunId:
                 tools=[],
                 run_id="run-xyz",
             )
-        assert host._current_run_id is None
+        for attr in ("_current_run_id", "_current_scope", "_current_cancel_token"):
+            assert not hasattr(host, attr), f"host should not have {attr}"

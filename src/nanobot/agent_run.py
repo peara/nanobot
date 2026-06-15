@@ -25,6 +25,7 @@ from nanobot.core_scratchpad import (
 )
 from nanobot.core_utils import human_now, tool_result_preview
 from nanobot.hooks import ToolCallEvent
+from nanobot.subagents.delegate_tool import DELEGATE_TASK_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,7 @@ class ToolCallDispatcher:
         scope: str,
         run_id: str | None,
         tool_trace: list[dict[str, Any]],
+        cancel_token: CancellationToken | None = None,
     ) -> ToolCallOutcome:
         fn_name = str(tool_call.get("function", {}).get("name", ""))
         guard_ctx.current_tool_name = fn_name
@@ -336,6 +338,35 @@ class ToolCallDispatcher:
                     scratchpad_tool_result(scratchpad_mode, scratchpad),
                     ensure_ascii=True,
                 )
+                logger.info("Tool succeeded tool=%s", fn_name)
+            elif fn_name == DELEGATE_TASK_NAME:
+                # Control-plane dispatch: delegate_task is not in the
+                # ToolRegistry. Its spec is prepended by _list_openai_tools
+                # and intercepted here. We pass scope/run_id/cancel_token
+                # explicitly from the LLM loop's local state — no shared
+                # BotCore attribute is read. See issue #43.
+                # Lazy import: delegate_tool references BotCore under
+                # TYPE_CHECKING, and core imports agent_run at module
+                # load — top-level import here would trip the linter's
+                # import-cycle detector even though no runtime cycle exists.
+                from nanobot.subagents.delegate_tool import run_delegate_task
+
+                self._note_active_step(scope, fn_name)
+                logger.info("Calling tool=%s args=%s", fn_name, args)
+                if run_id is None:
+                    result = json.dumps(
+                        {
+                            "error": "delegate_task: no active run (run_id missing)",
+                        }
+                    )
+                else:
+                    result = await run_delegate_task(
+                        self._host,
+                        args,
+                        scope=scope,
+                        run_id=run_id,
+                        cancel_token=cancel_token,
+                    )
                 logger.info("Tool succeeded tool=%s", fn_name)
             else:
                 self._note_active_step(scope, fn_name)
@@ -521,16 +552,24 @@ class AgentRun:
             normalized_args = json.dumps(parsed_args, ensure_ascii=True, sort_keys=True)
         return fn_name, str(normalized_args)
 
-    def _tools_for_chat(self, tools: list[dict], *, allow_scratchpad: bool) -> list[dict]:
+    def _tools_for_chat(
+        self,
+        tools: list[dict],
+        *,
+        allow_scratchpad: bool,
+        run_id: str | None,
+    ) -> list[dict]:
         # Filter out the scratchpad tool if the protocol says to.
         if not allow_scratchpad:
             tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME]
         # Strip delegate_task at depth >= 1 so the depth-1 subagent cannot
-        # call it (its spawn would be refused by SubagentManager anyway).
-        # The tool is a core tool but depth-gated. See issue #43.
-        # Fall back to -1 if the host doesn't implement _current_run_depth()
-        # (test fakes may not). -1 is not >= 1, so the strip is a no-op.
-        depth = getattr(self._host, "_current_run_depth", lambda: -1)()
+        # call it. The spec is prepended by _list_openai_tools (scratchpad
+        # pattern), but only the orchestrator should see it. See issue #43.
+        # The depth is computed from the run_id local to this LLM call —
+        # no shared state is read. If the host lacks _compute_run_depth
+        # (test fakes may not), fall back to -1, which is not >= 1, so
+        # the strip is a no-op.
+        depth = getattr(self._host, "_compute_run_depth", lambda _id: -1)(run_id)
         if depth >= 1:
             tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != "delegate_task"]
         return tools
@@ -546,32 +585,13 @@ class AgentRun:
     ) -> tuple[str, list[dict[str, Any]]]:
         if cancel_token and cancel_token.is_cancelled:
             raise LlmCallCancelledError(scope=scope_for_tools)
-        # Publish the current run id on the host so helpers like
-        # _current_run_depth() and the delegate_task tool can compute the
-        # depth of the run currently executing its LLM loop. Cleared in
-        # finally so a stale value never leaks to the next run.
-        self._host._current_run_id = run_id
-        try:
-            return await self._run_impl(scope_for_tools, messages, tools, response_format, run_id, cancel_token)
-        finally:
-            self._host._current_run_id = None
-
-    async def _run_impl(
-        self,
-        scope_for_tools: str,
-        messages: list[dict],
-        tools: list[dict],
-        response_format: dict[str, Any] | None,
-        run_id: str | None,
-        cancel_token: CancellationToken | None,
-    ) -> tuple[str, list[dict[str, Any]]]:
         include_scratchpad_prompt = True
         scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
         to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
         prepared_messages = prepare_messages_for_chat(to_send)
         assistant_message = await self._host.llm.chat(
             messages=prepared_messages,
-            tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
+            tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt, run_id=run_id),
             response_format=response_format,
             scope=scope_for_tools,
             cancel_token=cancel_token,
@@ -684,6 +704,7 @@ class AgentRun:
                         scope=scope_for_tools,
                         run_id=run_id,
                         tool_trace=tool_trace,
+                        cancel_token=cancel_token,
                     )
                     if outcome.scratchpad_mode:
                         protocol_state.needs_scratchpad_update = False
@@ -727,7 +748,7 @@ class AgentRun:
                 prepared_messages = prepare_messages_for_chat(to_send)
             assistant_message = await self._host.llm.chat(
                 messages=prepared_messages,
-                tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt),
+                tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt, run_id=run_id),
                 response_format=response_format,
                 scope=f"{scope_for_tools}:continue",
                 cancel_token=cancel_token,
