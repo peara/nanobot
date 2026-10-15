@@ -1,11 +1,11 @@
 # NanoBot Agent Guidelines
 
-**Generated:** 2026-05-02
-**Commit:** 2a294b3
+**Generated:** 2026-10-15
+**Commit:** 7d7dee9
 **Branch:** main
 
 ## Overview
-Minimal personal assistant bot with Telegram interface, OpenAI-compatible LLM backend (Ollama/vLLM), and MCP tool extensibility. Uses Python 3.11+ with uv for dependency management.
+Minimal personal assistant bot with Telegram interface, OpenAI-compatible LLM backend (Ollama/vLLM/LM Studio), and MCP tool extensibility. Uses Python 3.11+ with uv for dependency management.
 
 ## Structure
 ```
@@ -15,21 +15,26 @@ nanobot/
 │   ├── main.py            # Entry point
 │   ├── debug_cli.py       # Debug/inspection CLI
 │   ├── config.py          # Config loading (load_config, AppConfig)
+│   ├── agent_run.py       # AgentRun - LLM chat loop, ToolCallDispatcher, exit paths
+│   ├── agent_tool_guards.py # Tool guards: SchemaValidationGuard, WebScriptGuard
+│   ├── cancel_token.py    # CancellationToken + LlmCallCancelledError (/stop)
+│   ├── core_scratchpad.py # Scratchpad state, tool spec, protocol helpers
 │   ├── mcp_hub.py         # MCP server connections
 │   ├── memory.py          # SQLite conversation history
-│   ├── agent_run.py       # AgentRun - LLM chat loop with tools + finalize path
-│   ├── subagents/         # SubagentManager + SubagentRunStore
+│   ├── subagents/         # SubagentManager + SubagentRunStore + delegate_task
 │   ├── channels/          # Telegram, GitHub, File channel implementations
-│   ├── mcp_servers/       # timer, memory, scheduler, web MCP servers
-│   ├── core_commands/     # Built-in commands (session, status, reset)
+│   ├── mcp_servers/       # timer, scheduler, web, reddit MCP servers
+│   ├── core_commands/     # Built-in commands (session, status, reset, stop, ...)
 │   ├── plans/             # Plan storage and management
 │   ├── tools/             # ToolRegistry + ToolStatsStore
 │   ├── evaluator/         # LearningEvaluator - skill learning extraction
 │   ├── prompts/           # PromptStore - centralized prompt management
 │   ├── memstore/          # Memstore tools for key-value storage
-│   ├── skills/            # Skill injection and matching (mem0-backed)
-│   ├── vector_store/      # Native vector store with multi-collection support
-│   └── hooks/             # Tool event hooks (FileTraceHook, etc.)
+│   ├── skills/            # Skill injection and matching (vector-backed)
+│   ├── vector_store/       # Native vector store with multi-collection support
+│   ├── notebook/          # Bot-owned SQLite notebook (notebook__query)
+│   ├── web_scripts/        # Sandboxed web scripts (AST validator + store)
+│   └── hooks/              # Tool event hooks (FileTraceHook, etc.)
 ├── src/web_agent/         # Web browsing agent (Playwright-based)
 │   ├── browser/           # BrowserInteractor - page interaction, multi-tab, snapshot
 │   ├── service.py         # WebAgentTool - read/interact web pages
@@ -64,15 +69,20 @@ nanobot/
 | Modify message flow | `src/nanobot/core.py` | `_process()`, SubagentManager |
 | Modify agent loop | `src/nanobot/agent_run.py` | `AgentRun.run()` - tool calling, finalize exit path |
 | Modify scratchpad finalize | `src/nanobot/agent_run.py` | `_finalize_response_message()` builds no-tools prompt |
+| Orchestration / delegation | `src/nanobot/subagents/delegate_tool.py` | `delegate_task` — control-plane dispatch, depth gating (issue #43) |
+| Tool guards | `src/nanobot/agent_tool_guards.py` | SchemaValidationGuard, WebScriptGuard — pre-call validation, post-result checks |
+| Cancellation | `src/nanobot/cancel_token.py` | `/stop` → CancellationToken, parent→child propagation |
 | Add browser interaction | `src/web_agent/browser/interactor.py` | `BrowserInteractor` - click, switch_tab, multi-tab |
 | Add web read/interact flow | `src/web_agent/service.py` | `WebAgentTool` - interact_page, read flow |
 | Add run tracking | `src/nanobot/subagents/` | SubagentManager, SubagentRunStore |
+| Notebook (bot-owned data) | `src/nanobot/notebook/` | `notebook__query` — bot's private SQLite notebook |
+| Web scripts (sandboxed) | `src/nanobot/web_scripts/` | AST validator, script store, semantic retrieval |
 | Test fixtures | `tests/conftest.py` | Minimal - most fixtures inline |
 | Config schema | `src/nanobot/config.py` | AppConfig, ModelConfig dataclasses |
 | Skill learning extraction | `src/nanobot/evaluator/` | LearningEvaluator - evaluates agent turns for learnings |
 | Prompt management | `src/nanobot/prompts/` | PromptStore - centralized prompt templates |
 | Key-value storage | `src/nanobot/memstore/` | Memstore tools for context/state |
-| Skill matching/injection | `src/nanobot/skills/` | SkillMatcher, skill tools (mem0-backed) |
+| Skill matching/injection | `src/nanobot/skills/` | SkillMatcher, skill tools (vector-backed) |
 | Vector embeddings | `src/nanobot/vector_store/` | Native vector store with multi-collection support |
 | Tool event hooks | `src/nanobot/hooks/` | FileTraceHook, tool event handlers |
 | LLM call logging | `src/nanobot/llm.py` | `LlmClient.chat()` - all LLM I/O logged via `nanobot.llm.io` |
@@ -111,7 +121,8 @@ just lint                       # Ruff lint only
 just format                     # Ruff format only
 just typecheck                   # mypy only
 
-just test                       # Run all tests
+just test                       # Run unit tests (excludes integration)
+just test-all                   # Run all tests including integration (requires live LM Studio/Qdrant)
 just test-pkg subagents          # Run tests for a package
 just test-file plans/test_plan_store.py  # Run specific test file
 just test-name test_plan_store    # Run tests matching a name
@@ -119,13 +130,16 @@ just test-name test_plan_store    # Run tests matching a name
 just reset                      # Full state reset (scheduler + history + mem0)
 just reset-dry                  # Preview what reset clears
 just reset-local                # Reset local SQLite only (keep mem0)
-just resync-skills              # Re-index intelligent skills to mem0
+just resync-skills              # Re-index intelligent skills to vector store
+just seed-skills                # Seed predefined skills (idempotent)
 
 just scopes                     # List message scopes
 just ctx <scope>                # Show context report
+just browse <scope>             # Browse conversation history for a scope
 just scheduler-list             # List scheduled tasks
 just plan-list                  # List plan runs
 
+just prompts-sync               # Sync prompt templates from defaults.py to DB (no restart needed)
 just eval-list                  # List eval fixtures
 just eval-run <fixture>         # Run eval against a fixture
 

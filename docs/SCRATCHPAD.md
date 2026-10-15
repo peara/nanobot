@@ -4,9 +4,9 @@ Structured working memory for the bot's turn — how it keeps track of goals, pr
 
 ## Overview
 
-Local and smaller LLMs lose track in long tool-calling chains. The scratchpad gives the bot an explicit place to record what it's doing, what it's learned, and what comes next. It's not long-term memory — it's per-turn working state that gets injected into the prompt so the model stays oriented.
+Local and smaller LLMs lose track in long tool-calling chains. The scratchpad gives the bot an explicit place to record what it's doing, what it's learned, and what comes next. It's not long-term memory — it's per-run working state that gets injected into the prompt so the model stays oriented.
 
-Each time the bot starts a new task, it inits the scratchpad. As it calls tools, it appends what it finds. When it's done, it finalizes — which triggers one final no-tools LLM call to produce a clean answer from the summary.
+The scratchpad is not optional for tool-calling turns: the **harness enforces a protocol** — init at the start of a work turn, append after each tool result, finalize before the answer. If the model skips a step, the harness notices and corrects it.
 
 ## State fields
 
@@ -22,9 +22,18 @@ Each time the bot starts a new task, it inits the scratchpad. As it calls tools,
 
 All string fields are clipped to their limits. Arrays are deduplicated and keep only the most recent entries.
 
+## Storage and scope isolation
+
+The scratchpad lives in the `contexts` table, keyed by run:
+
+- Inside a subagent run: `contexts(scope_type="subagent_run", scope_id=run_id, key="scratchpad")` — **every run gets its own scratchpad**, so concurrent runs on the same chat scope never clobber each other's working state.
+- Outside any run (e.g. the `/scratchpad` command): falls back to `contexts(scope_type="chat", scope_id=scope, key="scratchpad")`.
+
+Each new run starts with an empty scratchpad — there is no cross-turn carry-over and nothing to clear at turn start. (This replaced the old design where a single chat-scoped scratchpad was cleared at the start of each user message; per-run isolation is what makes concurrent runs on the same scope — e.g. a user message and a scheduled task arriving together — safe. Without it, both runs would overwrite each other's goal and both would loop without reaching finalize.)
+
 ## Mode lifecycle
 
-The scratchpad operates in three modes, corresponding to the phases of a task:
+Three modes, corresponding to the phases of a task:
 
 ### `init`
 
@@ -36,7 +45,7 @@ Called at the start of a work turn. Resets the scratchpad to empty state and set
 
 ### `append`
 
-Called after each tool result (and before the next tool call). Updates fields incrementally — new `known_facts` and `tool_journal` entries are appended, not replaced. Other fields (`goal`, `context`, `current_step`, `next_step`) are overwritten if provided.
+Called after each tool result (and before the next tool call). Updates fields incrementally — new `known_facts` and `tool_journal` entries are appended and deduplicated, not replaced. Other fields (`goal`, `context`, `current_step`, `next_step`) are overwritten if provided.
 
 ```json
 {"mode": "append", "current_step": "Looked up Bangkok weather", "next_step": "Compare with yesterday", "known_facts": ["Bangkok: 34°C, humid"]}
@@ -56,7 +65,12 @@ Signals that the bot has gathered everything it needs and no more tool calls wil
 
 The scratchpad isn't optional for tool-calling turns. After every external tool result, the model must call `session__scratchpad_write` (append or finalize) before requesting another tool. This is the **scratchpad protocol**.
 
-If the model tries to call an external tool without updating the scratchpad first, the system injects a correction message:
+The enforcement loop tracks cross-round state (`ScratchpadProtocolState` in `agent_run.py`): whether the model saw the init requirement, whether an external tool ran since the last successful append, and how many protocol violations have accumulated this turn. Enforcement has two levels:
+
+- **Strict (after a scratchpad round)** — If the model called `session__scratchpad_write(mode=init)` but then stopped with a non-empty text answer without ever using an external tool or finalizing, that text answer is a protocol violation: it's a "hallucinated completion" — answering without doing the work or formally ending the turn.
+- **Relaxed (after an external tool ran)** — If an external tool has run since the last scratchpad append, the next text-only stop gets a synthetic append built from the model's content (stripping think tags), rather than a hard violation. The model is nudged, not punished, for forgetting the append — but the harness records the state anyway.
+
+If the model violates the protocol (e.g. requests another external tool without the intervening append), the system injects a correction message:
 
 > Protocol violation: after any external tool result, call session__scratchpad_write first (mode='append' or mode='finalize') before requesting another external tool.
 
@@ -64,13 +78,14 @@ The system retries up to 2 times (`MAX_SCRATCHPAD_PROTOCOL_RETRIES`). If the mod
 
 > I got stuck enforcing scratchpad updates in this turn. Please try again.
 
+The init requirement is enforced with bounded recovery too: if a work turn (external tool called) never saw `mode=init`, the harness nudges once before treating later text as an answer.
+
 ## How the scratchpad is injected
 
-The scratchpad appears in the prompt in two ways:
+The scratchpad appears in the prompt in two places:
 
-1. **System message** (`scratchpad_system` template) — Injected at the start of the message list. Contains the full scratchpad state as JSON, labeled as private execution state that should never be revealed verbatim to the user.
-
-2. **User message** (`scratchpad_user` template) — Appended as the last message before the model generates. Reinforces the current state and prompts the model to update before its next action.
+1. **System message** (`scratchpad_system` template) — full scratchpad state as JSON, labeled as private execution state that should never be revealed verbatim to the user.
+2. **User-role message** (`scratchpad_user` template) — appended as the **last message** before the model generates, so the model is clearly prompted to respond to the current state. (Despite the helper's historical name `scratchpad_assistant_message`, it renders with role `user`.)
 
 Both templates are rendered by PromptStore and use `{state_json}` as the variable.
 
@@ -79,13 +94,11 @@ Both templates are rendered by PromptStore and use `{state_json}` as the variabl
 The agent loop has four exit conditions. Two of them use the scratchpad:
 
 1. **Scratchpad finalize** — The model calls `session__scratchpad_write(mode=finalize)`. The loop breaks and makes one no-tools LLM call with the `finalize_response` prompt, which includes `{goal}` and `{summary}` built from the scratchpad.
-
 2. **Tool call limit** (30 calls) — The model hits `MAX_TOOL_CALLS_PER_TURN`. Instead of a hard abort, the loop makes a soft-landing no-tools call using the `tool_call_limit_finalize` prompt, which includes `{goal}` and `{summary}` from the scratchpad. The model gets to summarize partial progress.
 
 The other two exit paths don't use the scratchpad:
 
 3. **Implicit text response** — Model returns text with no tool calls. Loop exits with the text reply.
-
 4. **Identical tool call repeat** (3x) — Hard abort with a fixed error reply.
 
 The finalize path is critical for local/smaller models: without an explicit no-tools call, models tend to hallucinate `scratchpad_write(mode=init)` after finalize, which wipes all accumulated state.
@@ -94,16 +107,16 @@ The finalize path is critical for local/smaller models: without an explicit no-t
 
 | Command | What it does |
 |---------|-------------|
-| `/scratchpad` | Show current scratchpad state |
+| `/scratchpad` | Show the chat-scoped scratchpad state (no run context) |
 | `/scratchpad show` | Same as above |
-| `/scratchpad clear` | Reset scratchpad to empty state |
+| `/scratchpad clear` | Reset the chat-scoped scratchpad to empty state |
 
-The scratchpad is also cleared automatically at the start of each new user message (in `BotCore._process`), so each turn starts fresh.
+Note: these operate on the **chat-scoped fallback** scratchpad, not any active run's scratchpad — a run's scratchpad is only visible through the context store (debug CLI: `just ctx <scope>` with run context).
 
 ## Limits and clipping
 
 | Limit | Value | What it affects |
-|-------|-------|----------------|
+|-------|-------|-----------------|
 | `MAX_FIELD_CHARS` | 600 | `goal`, `current_step`, `next_step`, individual facts/journal entries |
 | `MAX_CONTEXT_CHARS` | 1200 | `context` field (wider allowance for summaries) |
 | `MAX_KNOWN_FACTS` | 30 | Maximum entries in `known_facts` |
@@ -121,7 +134,7 @@ The scratchpad uses four PromptStore templates:
 | Template | Variables | Purpose |
 |----------|-----------|---------|
 | `scratchpad_system` | `state_json` | System message with full state |
-| `scratchpad_user` | `state_json` | User message reinforcing current state |
+| `scratchpad_user` | `state_json` | Last user-role message reinforcing current state |
 | `finalize_response` | `goal`, `summary` | Final no-tools call after finalize |
 | `tool_call_limit_finalize` | `goal`, `summary` | Final no-tools call after hitting tool limit |
 
