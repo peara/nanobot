@@ -1,23 +1,25 @@
 # nanobot
 
-A personal AI agent that orchestrates subagents, browses the web autonomously, runs sandboxed scripts, and learns from every conversation — all on your own hardware, over a chat interface.
+A personal AI agent that orchestrates delegated agents, browses the web autonomously, runs sandboxed scripts, and learns from every conversation — all on your own hardware, over a chat interface.
 
 ## Why nanobot?
 
 I wanted an AI assistant that actually lives on my machine — no cloud dependency, no vendor lock-in, no sending everything to someone else's API. Something that remembers what I care about, can browse the web for me, and gets better at helping over time.
 
-NanoBot runs locally, talks to local LLMs (Ollama, vLLM, anything OpenAI-compatible), and keeps a scratchpad so it doesn't lose track mid-conversation — structured working state for its goal, current step, and what it's learned from tools so far. Longer-term memory: SQLite for exact history, and a vector store for semantic recall of facts and preferences. It doesn't try to be a full operating system — it handles the things I actually need help with through chat: searching, browsing, scheduling, running scripts, and delegating multi-step work to subagents.
+NanoBot runs locally, talks to local LLMs (Ollama, vLLM, LM Studio, anything OpenAI-compatible), and keeps a scratchpad so it doesn't lose track mid-conversation — structured working state for its goal, current step, and what it's learned from tools so far, with a protocol the harness enforces. Longer-term memory: SQLite for exact history, and a native vector store (Qdrant) for semantic recall of facts, skills, and web scripts. It doesn't try to be a full operating system — it handles the things I actually need help with through chat: searching, browsing, scheduling, running scripts, and delegating multi-step work to focused subagents.
 
-## Key Concepts
+## Key concepts
 
-- **Channels** — Telegram, GitHub, and FileChannel all share a common `Channel` abstraction. Messages from any surface flow through the same orchestrator.
-- **Orchestration** — The main agent can spawn specialized subagents for focused tasks, each with its own tool access and run tracking.
-- **Skills** — Auto-learned behaviors that persist across conversations. Three trigger modes let the bot inject relevant context at the right time, and a learning evaluator extracts new skills from good turns.
-- **Scratchpad** — The bot's structured working memory during a turn: goal, current step, accumulated facts, and a tool journal. Init at start, append after each tool call, finalize before the answer. Not long-term storage — it's how the bot keeps its place in multi-step tasks.
-- **Memory** — SQLite for exact transcript and structured facts. VectorStore (Qdrant) for semantic recall across three collections (memories, skills, web scripts).
-- **MCP Extensibility** — Plug in any Model Context Protocol server for new capabilities. Built-in servers for timer, scheduler, web search, and browser automation via Playwright.
+- **Channels** — Telegram, GitHub, and FileChannel all share a common `Channel` abstraction. Messages from any surface flow through the same orchestrator. Slash commands dispatch immediately (outside the queue) so `/stop` can cancel an in-flight run.
+- **Orchestration** — The main agent (depth 0) spawns focused child agents (depth 1) via `delegate_task`, each with a fresh context, its own scratchpad and skill matching, and the same tools minus delegation. Depth is gated at three independent layers.
+- **Scratchpad** — Structured working memory during a run: goal, current step, accumulated facts, and a tool journal. Init at start, append after each tool result (harness-enforced), finalize before the answer. See [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md).
+- **Tool guards** — Every tool call passes a pre-call schema validation and post-result guard layer. Malformed arguments get a structured error the model can correct; script-flow lies (JS submitted as Python, "saved" claims on unusable data) are blocked.
+- **Skills** — Auto-learned behaviors that persist across conversations. Three trigger modes, and a learning evaluator extracts new skills from good turns. See [docs/SKILLS.md](docs/SKILLS.md).
+- **Memory** — SQLite for exact transcript and structured facts. Native multi-collection VectorStore over Qdrant (memories / skills / web scripts) with seven built-in `memory__*` tools.
+- **Notebook** — A bot-owned SQLite notebook (`notebook__query`) for emergent structured data the bot should maintain itself.
+- **MCP extensibility** — Plug in any Model Context Protocol server for new capabilities. Built-in servers for timer, scheduler, web, reddit, and browser automation via Playwright. See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md).
 
-## How It Works
+## How it works
 
 ```mermaid
 flowchart LR
@@ -26,25 +28,23 @@ flowchart LR
     end
 
     subgraph core["Orchestrator"]
-        O[Main agent]
-        EV[LearningEvaluator]
+        O[Main agent — depth 0]
     end
 
     subgraph workers["Delegated agents"]
-        W1[Task agent]
-        W2[...]
+        W1[Child agent — depth 1]
     end
 
     subgraph substrate["Shared substrate"]
         SP[Scratchpad + context policy]
-        MCP[MCP + tools]
+        MCP[MCP + tools + guards]
         SK[Skills]
         PS[Prompts]
     end
 
     subgraph data["Memory"]
         SQL[(SQLite)]
-        VS[(VectorStore)]
+        VS[(VectorStore / Qdrant)]
     end
 
     subgraph sidecar["Sidecars"]
@@ -53,19 +53,17 @@ flowchart LR
     end
 
     TG --> O
-    O --> W1
-    O --> W2
+    O -- delegate_task --> W1
     O --> SP
     O --> MCP
     O --> SQL
     O --> VS
-    EV --> O
-    SCH --> TG
+    SCH --> O
 ```
 
-Messages flow from channels through an async queue into the orchestrator, which dispatches to subagents or handles commands directly. Each subagent gets access to the shared substrate — tools, scratchpad, skills, and prompts. After each turn, the learning evaluator may extract skills from the conversation.
+Messages flow from channels through an async queue into the orchestrator, which spawns a tracked run for every message, dispatches tool calls through the guard layer, and can delegate focused sub-tasks to child agents. After each turn, the learning evaluator may extract skills from the conversation.
 
-> For full architecture details — storage boundaries, hook system, agent loop exit paths, and implementation specifics — see [ARCHITECTURE.md](ARCHITECTURE.md).
+> For full architecture details — runtime flow, orchestration and depth gating, tool guards, storage boundaries, exit paths, and observability state — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Features
 
@@ -73,25 +71,33 @@ Messages flow from channels through an async queue into the orchestrator, which 
 
 Telegram, GitHub, and FileChannel share a common `Channel` abstraction. Messages from any channel flow through the same orchestrator.
 
+### Orchestration via delegate_task
+
+The main agent spawns focused child agents for sub-tasks that benefit from an isolated scratchpad and fresh skill matching. Children can't spawn children — depth is capped at 1 and enforced at three layers (tool-spec strip, spawn refusal, dispatch refusal).
+
 ### Skills system
 
-Three trigger modes: `always` (inject every turn), `pattern` (regex match), `intelligent` (semantic similarity via vector store). The bot can manage its own skills at runtime through built-in CRUD tools.
+Three trigger modes: `always` (inject every turn), `pattern` (regex match), `intelligent` (semantic similarity via vector store). The bot manages its own skills at runtime through CRUD tools.
 
 ### Learning evaluator
 
-Three-phase pipeline: quality assessment, learning extraction, and skill lifecycle (create/update/deprecate). Over time, the evaluator turns good conversations into reusable skills. Enable via `enable_evaluator: true` in config.
+Three-phase pipeline: quality assessment, learning extraction, and skill lifecycle (create/update/deprecate). Over time, the evaluator turns good conversations into reusable skills. Enable via `enable_evaluator: true` in config. See [docs/EVALUATOR.md](docs/EVALUATOR.md).
 
 ### Plans
 
-The `/plan` command creates structured plans with steps, constraints, and success/failure tracking. Each plan run captures intake, execution, and recovery phases.
+The `/plan` command and five `plan__*` tools create structured plans with steps, constraints, and success/failure tracking.
 
 ### Web scripts / NanoScripts
 
-Sandboxed Python extraction scripts stored via MCP tools. An AST validator blocks unsafe imports and calls. Scripts are indexed for semantic search, so the bot can find and reuse relevant scripts automatically.
+Sandboxed Python extraction scripts stored via MCP tools. An AST validator blocks unsafe imports and calls (imports are allowlisted; `os`, `subprocess`, `socket`, and dangerous builtins are blocked). Scripts are indexed for semantic search, so the bot can find and reuse relevant scripts automatically.
+
+### Notebook
+
+`notebook__query` gives the bot its own SQLite notebook for structured data it discovers while working (lists, tallies, small tables) — persisted, queryable, and owned by the bot.
 
 ### Memory & vector store
 
-Native `VectorStore` backed by Qdrant with three collections: memories (facts/preferences), skills (skill embeddings), and web_scripts (script embeddings). Seven built-in memory tools handle search, save, update, and health — not an MCP server, but direct built-in tools.
+Native `VectorStore` backed by Qdrant with three collections: memories (facts/preferences), skills (skill embeddings), and web_scripts (script embeddings). Seven built-in memory tools handle search, save, update, and health — direct built-in tools, not an MCP server.
 
 **Embedding dimensions must match.** `embedding_dims` in the embedder config must equal the model's actual output. `mxbai-embed-large` = 1024 dims. Must also match `embedding_model_dims` in the vector_store config. If you change embedding models, re-create Qdrant collections. Recommended: `mxbai-embed-large` (1024 dims, best quality) or `nomic-embed-text` (lighter/faster fallback).
 
@@ -146,15 +152,11 @@ The `interact_page` tool (via `src/web_agent/`) provides structured page interac
 ## Debug CLI
 
 ```bash
-just debug scopes
+just scopes              # list message scopes
+just ctx <scope>         # context report for a scope
+just scheduler-list      # scheduled tasks
+just plan-list           # recent plan runs
 ```
-
-| Command | Description |
-|---------|-------------|
-| `just debug scopes` | List message scopes |
-| `just debug ctx <scope>` | Show context report for a scope |
-| `just scheduler-list` | List scheduled tasks |
-| `just plan-list` | List recent plan run context traces |
 
 Full command reference: `just --list`. For direct CLI usage, see `uv run python -m nanobot.debug_cli --config config.yaml --help`.
 
