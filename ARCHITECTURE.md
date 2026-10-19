@@ -183,7 +183,7 @@ The tool-calling loop has four exit conditions. Two use the scratchpad to produc
 
 Two additional invariants protect the loop:
 
-- **Scratchpad protocol enforcement** — After an external tool result, the model must call `session__scratchpad_write` (append or finalize) before requesting another external tool. Violations get a correction message, capped at 2 retries, then abort. See [SCRATCHPAD.md](docs/SCRATCHPAD.md).
+- **Scratchpad protocol enforcement** — After an external tool result, the model must call `session__scratchpad_write` (append or finalize) before requesting another external tool. A skipped append is repaired by the harness with a synthetic append; a text-only answer after init with no work done gets a correction nudge, capped at 2 retries, then a safe abort. The scratchpad tool is only offered while an append is due. See [SCRATCHPAD.md](docs/SCRATCHPAD.md).
 - **Empty reply fallback** — An empty/whitespace LLM reply is replaced with a fixed fallback message (and logged), never sent as-is.
 
 ### Message-history surgery

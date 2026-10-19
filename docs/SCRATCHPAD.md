@@ -2,11 +2,13 @@
 
 Structured working memory for the bot's turn — how it keeps track of goals, progress, and findings during multi-step tasks.
 
-## Overview
+## Why the scratchpad exists
 
-Local and smaller LLMs lose track in long tool-calling chains. The scratchpad gives the bot an explicit place to record what it's doing, what it's learned, and what comes next. It's not long-term memory — it's per-run working state that gets injected into the prompt so the model stays oriented.
+Small, locally-run models have a limited context window, and the practical limit is lower still: generation slows as the prompt grows, and quality degrades much sooner than a large model's. In long tool-calling chains they lose track: which step of the plan they are on, what earlier tool results found, whether the work is actually done. History trimming makes this worse — intermediate tool results are dropped from the in-flight message list, so anything the model did not write down is gone by the time the final answer is generated.
 
-The scratchpad is not optional for tool-calling turns: the **harness enforces a protocol** — init at the start of a work turn, append after each tool result, finalize before the answer. If the model skips a step, the harness notices and corrects it.
+The scratchpad is where it writes that down: a structured record — goal, current step, next step, learned facts, tool journal — with every field clipped to a fixed budget and re-injected into each prompt at bounded cost, no matter how long the tool chain gets. Because a small model will not keep this discipline on its own, the harness enforces the update protocol (see [Scratchpad protocol enforcement](#scratchpad-protocol-enforcement)).
+
+The pattern is what Anthropic calls **structured note-taking** — "a technique where the agent regularly writes notes persisted to memory outside of the context window," pulled back into it at later times ([Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)). Two differences: the scratchpad is per-run working state isolated by `run_id` (see [Storage and scope isolation](#storage-and-scope-isolation)), and the protocol is enforced by the harness rather than left to the model's discretion.
 
 ## State fields
 
@@ -33,7 +35,28 @@ Each new run starts with an empty scratchpad — there is no cross-turn carry-ov
 
 ## Mode lifecycle
 
-Three modes, corresponding to the phases of a task:
+Three modes, corresponding to the phases of a task. The full per-turn state machine — including the protocol transitions — looks like this:
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> Empty : run starts (own scratchpad)
+    Empty --> Active : init — wipe, set goal
+    Empty --> AppendDue : tool result, init never called
+    Active --> AppendDue : external tool result
+    AppendDue --> Active : append by model, or synthetic append by harness
+    Active --> Finalized : finalize
+    AppendDue --> Finalized : finalize
+    Finalized --> [*] : no-tools LLM call builds the answer
+    Empty --> [*] : plain text reply, no tools
+    Active --> Correcting : text-only stop right after init-only round
+    Correcting --> Active : model resumes (correction, up to 2)
+    Correcting --> [*] : corrections exhausted — abort reply
+    Active --> [*] : any other text-only stop
+    AppendDue --> [*] : text-only stop, missed append (clean exit)
+```
+
+**AppendDue** is not stored scratchpad content — it is a harness flag meaning an external tool result has arrived and no append has followed. While it is set (and at the first call of a turn), the scratchpad tool is offered to the model; after a write it is removed from the schema until the next tool result. Its user-role state message follows the same gate. **Correcting** is the strict recovery path described in [Scratchpad protocol enforcement](#scratchpad-protocol-enforcement). The remaining loop exits — the tool-call limit and the identical-repeat abort — are listed in [Finalize and exit paths](#finalize-and-exit-paths).
 
 ### `init`
 
@@ -65,20 +88,20 @@ Signals that the bot has gathered everything it needs and no more tool calls wil
 
 The scratchpad isn't optional for tool-calling turns. After every external tool result, the model must call `session__scratchpad_write` (append or finalize) before requesting another tool. This is the **scratchpad protocol**.
 
-The enforcement loop tracks cross-round state (`ScratchpadProtocolState` in `agent_run.py`): whether the model saw the init requirement, whether an external tool ran since the last successful append, and how many protocol violations have accumulated this turn. Enforcement has two levels:
+The enforcement loop (`ScratchpadProtocolState` in `agent_run.py`) tracks two cross-round facts: whether an **append is due** (an external tool result arrived since the last scratchpad write) and whether the previous round was **init-only** (init was called, but no external tool and no finalize followed). The protocol can be broken in two directions, and they are enforced at different strictness because they differ in what is recoverable:
 
-- **Strict (after a scratchpad round)** — If the model called `session__scratchpad_write(mode=init)` but then stopped with a non-empty text answer without ever using an external tool or finalizing, that text answer is a protocol violation: it's a "hallucinated completion" — answering without doing the work or formally ending the turn.
-- **Relaxed (after an external tool ran)** — If an external tool has run since the last scratchpad append, the next text-only stop gets a synthetic append built from the model's content (stripping think tags), rather than a hard violation. The model is nudged, not punished, for forgetting the append — but the harness records the state anyway.
+- **Skipped the append (relaxed)** — after real tool work, the model requests another external tool without a scratchpad write in between. The work happened; only the notes were skipped. The harness writes a **synthetic append** itself, built from the model's own content (thinking tags stripped), logs the violation, and lets the round proceed. Not blocking.
+- **Narrative without work (strict)** — the model called `mode=init`, then stopped with a text answer without ever using a tool or finalizing. Nothing was done, so the answer is a hallucinated completion and must not reach the user. The harness injects a correction system message and re-offers the scratchpad tool, up to 2 times (`MAX_SCRATCHPAD_PROTOCOL_RETRIES`):
 
-If the model violates the protocol (e.g. requests another external tool without the intervening append), the system injects a correction message:
+  > Protocol violation: after any external tool result, call session__scratchpad_write first (mode='append' or mode='finalize') before requesting another external tool.
 
-> Protocol violation: after any external tool result, call session__scratchpad_write first (mode='append' or mode='finalize') before requesting another external tool.
+  If the model still stops, the turn aborts with a fixed safe reply:
 
-The system retries up to 2 times (`MAX_SCRATCHPAD_PROTOCOL_RETRIES`). If the model still violates the protocol, the turn is aborted with:
+  > I got stuck enforcing scratchpad updates in this turn. Please try again.
 
-> I got stuck enforcing scratchpad updates in this turn. Please try again.
+Two things are deliberately **not** enforced. A text-only stop after real tool work is a clean exit — the missing append just means the notes are staler than the transcript. And nothing forces an init: a work turn that never called `mode=init` simply runs without a scratchpad.
 
-The init requirement is enforced with bounded recovery too: if a work turn (external tool called) never saw `mode=init`, the harness nudges once before treating later text as an answer.
+The strongest mechanism is the tool surface itself: `session__scratchpad_write` is offered to the model only while an append is due — after a write it disappears from the tool schema until the next tool result makes it due again. This also guards against over-compliance: when the tool was always present, small models sometimes looped on scratchpad writes and burned the token budget on bookkeeping instead of work.
 
 ## How the scratchpad is injected
 
