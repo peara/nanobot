@@ -9,6 +9,7 @@ from typing import Any
 from nanobot.agent_run import AgentRun
 from nanobot.core_scratchpad import SCRATCHPAD_TOOL_NAME
 from nanobot.prompts import PromptStore
+from nanobot.tools.base import Tool
 from nanobot.tools.registry import ToolRegistry
 
 # ---------------------------------------------------------------------------
@@ -121,6 +122,31 @@ class _FakeHost:
 
     async def _dispatch_after_tool_call(self, event: Any) -> None:
         self.events.append(event)
+
+
+class _OkTool(Tool):
+    """External tool that always succeeds. Tool names NOT registered on the
+    fake host raise inside ToolRegistry.call, which the dispatcher catches —
+    that is how the walks below simulate a failed external attempt."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return f"Fake tool {self._name}"
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args: dict[str, Any]) -> str:
+        del args
+        return "page content: sunny 24C, light wind"
 
 
 # Generic scenario data. A multi-step task that requires the model to
@@ -341,3 +367,164 @@ def test_scratchpad_protocol_init_only_continue_cap_exceeded_aborts_safely() -> 
         assert any(
             m.get("role") == "system" and m.get("content") == SCRATCHPAD_STRICT_CORRECTION for m in recovery_messages
         ), "recovery prompt is missing the strict correction system message"
+
+
+# ---------------------------------------------------------------------------
+# Batch semantics: how the model groups calls into messages must not
+# change the protocol outcome. An external attempt counts as work —
+# success or failure alike — so a failed attempt resolves init-pending
+# and the honest report ships instead of tripping the strict nudge.
+# ---------------------------------------------------------------------------
+
+
+def test_failed_tool_after_init_in_same_batch_ships_honest_report() -> None:
+    """[init, ext(fails)] in ONE message, then an honest text stop.
+
+    The failed attempt is real work: it resolves init-pending, the state is
+    plain AppendDue, and the text stop takes the clean-exit edge. (The old
+    round-based encoding treated a failed attempt as "never tried", so this
+    walk aborted the turn while the same events split across two messages
+    shipped — message grouping decided the protocol outcome.)"""
+    init_args = {
+        "goal": "Tell the user whether it's a good day for a picnic in Tokyo.",
+        "current_step": "Searching for Tokyo weather.",
+        "known_facts": [],
+    }
+    honest_reply = "The web search tool failed, so I cannot answer right now."
+
+    replies: list[dict[str, Any]] = [
+        {
+            "content": "",
+            "tool_calls": [
+                _scratchpad_call("c1", "init", **init_args),
+                _ext_call("c2", "web__search_web", {"query": "Tokyo weather"}),
+            ],
+        },
+        {"content": honest_reply, "tool_calls": None},
+    ]
+    llm = _RecordingFakeLlm(replies)
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    text, trace = asyncio.run(
+        run.run(
+            scope_for_tools=SCRATCHPAD_PROTOCOL_SCOPE,
+            messages=[{"role": "user", "content": SCRATCHPAD_PROTOCOL_USER_MESSAGE}],
+            tools=SCRATCHPAD_PROTOCOL_TOOL_LIST,
+        )
+    )
+
+    assert text == honest_reply
+    # No nudge fired: initial call + one continue call, nothing else.
+    assert len(llm.calls_messages) == 2
+    assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME, "web__search_web"]
+
+
+def test_failed_tool_after_init_in_separate_messages_ships_honest_report() -> None:
+    """[init] then [ext(fails)] in SEPARATE messages, then the same honest
+    text stop. Walks the same diagram as the batched variant — the outcome
+    must be identical, which is the point of attempt = work."""
+    init_args = {
+        "goal": "Tell the user whether it's a good day for a picnic in Tokyo.",
+        "current_step": "Searching for Tokyo weather.",
+        "known_facts": [],
+    }
+    honest_reply = "The web search tool failed, so I cannot answer right now."
+
+    replies: list[dict[str, Any]] = [
+        {"content": "", "tool_calls": [_scratchpad_call("c1", "init", **init_args)]},
+        {"content": "", "tool_calls": [_ext_call("c2", "web__search_web", {"query": "Tokyo weather"})]},
+        {"content": honest_reply, "tool_calls": None},
+    ]
+    llm = _RecordingFakeLlm(replies)
+    host = _FakeHost(llm)
+    run = AgentRun(host)
+
+    text, trace = asyncio.run(
+        run.run(
+            scope_for_tools=SCRATCHPAD_PROTOCOL_SCOPE,
+            messages=[{"role": "user", "content": SCRATCHPAD_PROTOCOL_USER_MESSAGE}],
+            tools=SCRATCHPAD_PROTOCOL_TOOL_LIST,
+        )
+    )
+
+    assert text == honest_reply
+    assert len(llm.calls_messages) == 3
+    assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME, "web__search_web"]
+
+
+def test_finalize_in_batch_with_external_tool_routes_to_finalize_path() -> None:
+    """[finalize, web__read_page] in one message.
+
+    The external call still dispatches (its tool_call_id needs its tool
+    message), but finalize is terminal within its round: the loop routes to
+    the no-tools finalize call instead of a tools-enabled continue. (The old
+    round summary took the used-external branch first and skipped the
+    finalize path entirely for this batch shape.)"""
+    final_answer = "It's sunny and 24C — great day for a picnic."
+    replies: list[dict[str, Any]] = [
+        {
+            "content": "",
+            "tool_calls": [
+                _scratchpad_call("c1", "finalize", goal="Tokyo picnic weather"),
+                _ext_call("c2", "web__read_page", {"url": "https://example.com"}),
+            ],
+        },
+        {"content": final_answer, "tool_calls": None},
+    ]
+    llm = _RecordingFakeLlm(replies)
+    host = _FakeHost(llm)
+    host.tools.register(_OkTool("web__read_page"))
+    run = AgentRun(host)
+
+    text, trace = asyncio.run(
+        run.run(
+            scope_for_tools=SCRATCHPAD_PROTOCOL_SCOPE,
+            messages=[{"role": "user", "content": SCRATCHPAD_PROTOCOL_USER_MESSAGE}],
+            tools=SCRATCHPAD_PROTOCOL_TOOL_LIST,
+        )
+    )
+
+    assert text == final_answer
+    # Both calls dispatched; the second LLM call is the no-tools finalize
+    # prompt, not a tools-enabled continue.
+    assert [item["name"] for item in trace] == [SCRATCHPAD_TOOL_NAME, "web__read_page"]
+    assert len(llm.calls_messages) == 2
+    assert llm.calls_tools[1] == []
+    assert any("completed your research" in str(m.get("content", "")) for m in llm.calls_messages[1])
+
+
+def test_failed_then_successful_tool_in_one_batch_recovers() -> None:
+    """[web__search_web(fails), web__read_page(succeeds)] in one message.
+
+    Within-batch recovery: both calls dispatch in order, and the honest
+    answer built from the successful read ships. (A "drop the rest of the
+    batch after a failed call" rule was considered and rejected — it would
+    destroy this recovery.)"""
+    answer = "The search failed but I read the page: sunny 24C."
+    replies: list[dict[str, Any]] = [
+        {
+            "content": "",
+            "tool_calls": [
+                _ext_call("c1", "web__search_web", {"query": "Tokyo weather"}),
+                _ext_call("c2", "web__read_page", {"url": "https://example.com"}),
+            ],
+        },
+        {"content": answer, "tool_calls": None},
+    ]
+    llm = _RecordingFakeLlm(replies)
+    host = _FakeHost(llm)
+    host.tools.register(_OkTool("web__read_page"))  # search stays unregistered -> fails
+    run = AgentRun(host)
+
+    text, trace = asyncio.run(
+        run.run(
+            scope_for_tools=SCRATCHPAD_PROTOCOL_SCOPE,
+            messages=[{"role": "user", "content": SCRATCHPAD_PROTOCOL_USER_MESSAGE}],
+            tools=SCRATCHPAD_PROTOCOL_TOOL_LIST,
+        )
+    )
+
+    assert text == answer
+    assert [item["name"] for item in trace] == ["web__search_web", "web__read_page"]
+    assert len(llm.calls_messages) == 2
