@@ -83,7 +83,7 @@ Signals that the bot has gathered everything it needs and no more tool calls wil
 {"mode": "finalize", "context": "Bangkok 34°C today vs 31°C yesterday, 3°C warmer"}
 ```
 
-**Critical**: Finalize means finalize. Once called, the model cannot use tools — and it is terminal within its round: if the model batches other calls with the finalize, those calls still dispatch (each `tool_call_id` needs its tool result) but the round routes to the finalize path regardless. All key findings must be in the scratchpad *before* finalizing, because the final answer is built from the scratchpad summary — anything missing is lost.
+**Critical**: Finalize means finalize. Once called, the model cannot use tools — and it is terminal within its round: if the model batches other calls with the finalize, those calls still dispatch (each `tool_call_id` needs its tool result) and the round routes to the finalize path. The one exception is the tool-call budget: a batch that also exhausts `MAX_TOOL_CALLS_PER_TURN` soft-lands via the tool-limit path instead. All key findings must be in the scratchpad *before* finalizing, because the final answer is built from the scratchpad summary — anything missing is lost.
 
 ## Scratchpad protocol enforcement
 

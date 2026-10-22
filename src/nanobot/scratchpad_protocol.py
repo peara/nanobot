@@ -25,7 +25,8 @@ Protocol semantics:
 - Finalize is terminal within its round: once dispatched, later calls
   in the same batch still dispatch (each ``tool_call_id`` needs its
   ``tool`` message) but no further edge transitions, and the round
-  routes to the finalize path regardless of what else it contained.
+  routes to the finalize path (a batch that also exhausts the
+  tool-call budget soft-lands via the tool-limit path instead).
 
 Internally the machine tracks three facts and projects them onto the
 five diagram states:
@@ -113,9 +114,8 @@ class ScratchpadMachine:
 
     def skipped_append(self, requested_calls: list[dict[str, Any]]) -> bool:
         """Relaxed check: an append is due and the batch requests an
-        external tool before any scratchpad write. Equivalent to the old
-        scan (violation iff the batch's first call is external while an
-        append is owed)."""
+        external tool before any scratchpad write — true iff the batch's
+        first call is external while an append is owed."""
         if not self.append_due or not requested_calls:
             return False
         first_name = str(requested_calls[0].get("function", {}).get("name", ""))

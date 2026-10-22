@@ -298,8 +298,8 @@ def test_scratchpad_protocol_init_only_continue_recovers_after_nudge() -> None:
     # and the recovery prompt after the nudge).
     assert len(llm.calls_messages) >= 3
     # The recovery prompt's tool list must include scratchpad so the
-    # model can call finalize. (The fix re-includes it on the recovery
-    # continue call by forcing include_scratchpad_prompt=True.)
+    # model can call finalize — the nudge re-offers it for the recovery
+    # call.
     recovery_call_tools = {t["function"]["name"] for t in llm.calls_tools[2]}
     assert SCRATCHPAD_TOOL_NAME in recovery_call_tools
     # The recovery prompt must actually carry the strict correction system
