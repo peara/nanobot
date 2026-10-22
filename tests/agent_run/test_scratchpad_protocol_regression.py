@@ -276,6 +276,16 @@ def test_scratchpad_protocol_init_only_continue_recovers_after_nudge() -> None:
     # continue call by forcing include_scratchpad_prompt=True.)
     recovery_call_tools = {t["function"]["name"] for t in llm.calls_tools[2]}
     assert SCRATCHPAD_TOOL_NAME in recovery_call_tools
+    # The recovery prompt must actually carry the strict correction system
+    # message (issue #45's core bug: the correction was appended to
+    # `messages` but never re-derived into prepared_messages, so the
+    # recovery call was byte-identical to the violating call).
+    from nanobot.core import SCRATCHPAD_STRICT_CORRECTION  # noqa: PLC0415
+
+    recovery_call_messages = llm.calls_messages[2]
+    assert any(
+        m.get("role") == "system" and m.get("content") == SCRATCHPAD_STRICT_CORRECTION for m in recovery_call_messages
+    ), "recovery prompt is missing the strict correction system message"
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +331,13 @@ def test_scratchpad_protocol_init_only_continue_cap_exceeded_aborts_safely() -> 
     assert text != "I'll get started on this soon."
     assert text != "Let me think more about this."
     assert text != "I'm still thinking."
+    # Companion to the recovery-test assertion (issue #45): every recovery
+    # prompt must carry the strict correction — the cap is reached through
+    # nudges that the model must actually see.
+    from nanobot.core import SCRATCHPAD_STRICT_CORRECTION  # noqa: PLC0415
+
+    assert len(llm.calls_messages) == 4
+    for recovery_messages in (llm.calls_messages[2], llm.calls_messages[3]):
+        assert any(
+            m.get("role") == "system" and m.get("content") == SCRATCHPAD_STRICT_CORRECTION for m in recovery_messages
+        ), "recovery prompt is missing the strict correction system message"

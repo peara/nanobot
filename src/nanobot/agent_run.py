@@ -25,6 +25,7 @@ from nanobot.core_scratchpad import (
 )
 from nanobot.core_utils import human_now, tool_result_preview
 from nanobot.hooks import ToolCallEvent
+from nanobot.scratchpad_protocol import ScratchpadMachine
 from nanobot.subagents.delegate_tool import DELEGATE_TASK_NAME
 
 logger = logging.getLogger(__name__)
@@ -103,98 +104,6 @@ def _finalize_response_message(host: Any, scope: str, *, run_id: str | None = No
     )
 
 
-ScratchpadProtocolAction = Literal["no_violation", "nudge", "abort"]
-
-
-@dataclass
-class ScratchpadRoundSummary:
-    saw_scratchpad_init: bool
-    used_external_tool: bool
-    finalized_scratchpad: bool
-
-
-@dataclass
-class ScratchpadProtocolState:
-    """Cross-round state for the scratchpad-protocol enforcement loop.
-
-    Tracks:
-      - protocol_violation_count: cumulative nudges issued for the same turn
-      - pending_scratchpad_round: True if the last completed round called
-        scratchpad mode="init" but no external tool and no finalize. The
-        next text-only stop with non-empty content is a violation.
-      - needs_scratchpad_update: True when an external tool has run since
-        the last successful scratchpad append. Drives the "relaxed"
-        protocol check on the next round (synthetic append from content).
-      - include_scratchpad_prompt: whether the next LLM call should
-        include session__scratchpad_write in the tool schema. Mirrors
-        needs_scratchpad_update, with explicit re-enable after a nudge.
-
-    Per-round flags (saw_init/used_external/finalized) are accumulated
-    via note_* methods and consolidated at commit_round().
-    """
-
-    protocol_violation_count: int = 0
-    pending_scratchpad_round: bool = False
-    needs_scratchpad_update: bool = False
-    include_scratchpad_prompt: bool = True
-    _round_saw_scratchpad_init: bool = False
-    _round_used_external_tool: bool = False
-    _round_finalized_scratchpad: bool = False
-
-    def evaluate_text_only(
-        self,
-        assistant_message: dict[str, Any],
-        *,
-        scope: str,
-    ) -> ScratchpadProtocolAction:
-        if not (self.pending_scratchpad_round and (assistant_message.get("content") or "").strip()):
-            return "no_violation"
-        next_count = self.protocol_violation_count + 1
-        if next_count > _core_protocol_constants().MAX_SCRATCHPAD_PROTOCOL_RETRIES:
-            logger.warning(
-                "Scratchpad protocol violation cap exceeded scope=%s retries=%d",
-                scope,
-                next_count,
-            )
-            return "abort"
-        logger.warning(
-            "Scratchpad protocol violation (nudging) scope=%s retry=%d",
-            scope,
-            next_count,
-        )
-        self.protocol_violation_count = next_count
-        self.include_scratchpad_prompt = True
-        return "nudge"
-
-    def note_scratchpad_init(self) -> None:
-        self._round_saw_scratchpad_init = True
-
-    def note_external_tool_used(self) -> None:
-        self._round_used_external_tool = True
-        self.needs_scratchpad_update = True
-
-    def note_scratchpad_finalize(self) -> None:
-        self._round_finalized_scratchpad = True
-        self.needs_scratchpad_update = False
-
-    def note_synthetic_append_success(self) -> None:
-        self.needs_scratchpad_update = False
-
-    def commit_round(self) -> ScratchpadRoundSummary:
-        summary = ScratchpadRoundSummary(
-            saw_scratchpad_init=self._round_saw_scratchpad_init,
-            used_external_tool=self._round_used_external_tool,
-            finalized_scratchpad=self._round_finalized_scratchpad,
-        )
-        self.pending_scratchpad_round = (
-            summary.saw_scratchpad_init and not summary.used_external_tool and not summary.finalized_scratchpad
-        )
-        self._round_saw_scratchpad_init = False
-        self._round_used_external_tool = False
-        self._round_finalized_scratchpad = False
-        return summary
-
-
 def trim_to_last_tool_round(messages: list[dict]) -> list[dict]:
     """Keep only the last round of tool use (assistant with tool_calls + its tool results)."""
     prefix_end = 0
@@ -256,6 +165,89 @@ def prepare_messages_for_chat(messages: list[dict]) -> list[dict]:
     return [*system_messages, *non_system]
 
 
+def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
+    fn_name = str(tool_call.get("function", {}).get("name", ""))
+    raw_args = tool_call.get("function", {}).get("arguments") or "{}"
+    try:
+        parsed_args = json.loads(raw_args)
+    except json.JSONDecodeError:
+        normalized_args = raw_args
+    else:
+        normalized_args = json.dumps(parsed_args, ensure_ascii=True, sort_keys=True)
+    return fn_name, str(normalized_args)
+
+
+def _strict_correction_message() -> dict[str, str]:
+    """System message injected after a strict-path violation (nudge)."""
+    return {"role": "system", "content": _core_protocol_constants().SCRATCHPAD_STRICT_CORRECTION}
+
+
+def _assistant_transcript(
+    assistant_message: dict[str, Any],
+    requested_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Transcript entry for an assistant message that requested tool calls."""
+    return {
+        "role": "assistant",
+        "content": assistant_message.get("content") or "",
+        "tool_calls": requested_calls,
+    }
+
+
+def _tool_transcript(tool_call: dict[str, Any], outcome: ToolCallOutcome) -> dict[str, Any]:
+    """Transcript entry for one dispatched tool call's result."""
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call["id"],
+        "name": outcome.name,
+        "content": outcome.result_text,
+    }
+
+
+class _RoundRepeatTracker:
+    """Detects a tool-call round repeating identically (loop guard)."""
+
+    def __init__(self, scope: str) -> None:
+        self._scope = scope
+        self._signatures: list[tuple[str, str]] | None = None
+        self._repeats = 0
+
+    def note(self, requested_calls: list[dict[str, Any]]) -> bool:
+        """Record one round; True when identical repeats hit the abort cap."""
+        signatures = [_tool_call_signature(call) for call in requested_calls]
+        self._repeats = self._repeats + 1 if self._signatures == signatures else 1
+        self._signatures = signatures
+        if self._repeats >= MAX_IDENTICAL_TOOL_CALL_REPEATS:
+            logger.warning(
+                "Aborting repeated identical tool calls scope=%s repeats=%d calls=%s",
+                self._scope,
+                self._repeats,
+                signatures,
+            )
+            return True
+        return False
+
+
+class _ToolBudget:
+    """Counts tool calls against the per-turn limit."""
+
+    def __init__(self, scope: str) -> None:
+        self._scope = scope
+        self._spent = 0
+
+    def spend(self) -> bool:
+        """Consume one tool call; True when the limit is exceeded."""
+        self._spent += 1
+        if self._spent > MAX_TOOL_CALLS_PER_TURN:
+            logger.warning(
+                "Aborting tool loop after limit scope=%s total_tool_calls=%d",
+                self._scope,
+                self._spent,
+            )
+            return True
+        return False
+
+
 @dataclass(frozen=True)
 class ToolCallOutcome:
     """Result of dispatching a single tool call. Caller appends the tool message."""
@@ -275,7 +267,7 @@ class ToolCallDispatcher:
     Owns the per-call side effects (hook dispatch, trace append, active_requests
     current_step, scratchpad calls, tool calls). Returns a ToolCallOutcome; the
     caller is responsible for appending the tool message to its message list
-    and for any cross-round protocol_state updates the outcome implies.
+    and for feeding the outcome to the protocol machine.
     """
 
     def __init__(self, host: Any) -> None:
@@ -344,7 +336,7 @@ class ToolCallDispatcher:
                 # ToolRegistry. Its spec is prepended by _list_openai_tools
                 # and intercepted here. We pass scope/run_id/cancel_token
                 # explicitly from the LLM loop's local state — no shared
-                # BotCore attribute is read. See issue #43.
+                # BotCore attribute is read.
                 # Lazy import: delegate_tool references BotCore under
                 # TYPE_CHECKING, and core imports agent_run at module
                 # load — top-level import here would trip the linter's
@@ -488,6 +480,66 @@ class AgentRun:
                 return rewritten
         return reply
 
+    def _build_chat_messages(
+        self,
+        messages: list[dict],
+        *,
+        scope: str,
+        run_id: str | None,
+        trim: bool,
+        include_scratchpad: bool,
+        extra: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Single message-assembly path for every llm.chat() call in the run:
+        trim to the last tool round -> scratchpad user-message injection
+        (when the tool is offered) -> optional finalize prompt ->
+        prepare_messages_for_chat.
+
+        ``messages`` is the single source of truth; the returned list is
+        derived here immediately before the call that consumes it and is
+        never carried across loop iterations. ``trim=False`` is used only
+        for the initial call, where the caller's full history (which may
+        contain earlier turns' tool rounds) must not be truncated.
+        """
+        parts = trim_to_last_tool_round(messages) if trim else list(messages)
+        if include_scratchpad:
+            scratchpad_msg = scratchpad_assistant_message(self._host, scope, run_id=run_id)
+            if scratchpad_msg:
+                parts = [*parts, scratchpad_msg]
+        if extra is not None:
+            parts = [*parts, extra]
+        return prepare_messages_for_chat(parts)
+
+    def _write_synthetic_append(
+        self,
+        machine: ScratchpadMachine,
+        requested_calls: list[dict[str, Any]],
+        assistant_message: dict[str, Any],
+        *,
+        scope: str,
+        run_id: str | None,
+    ) -> None:
+        """Relaxed-path recovery: the batch leads with an external call while
+        an append is owed. Non-blocking — the harness writes a synthetic
+        append built from the model's own content, and the round proceeds."""
+        proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
+        logger.warning(
+            "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
+            scope,
+            proposed_tools,
+        )
+        raw_content = assistant_message.get("content") or ""
+        if not raw_content.strip():
+            return
+        try:
+            apply_scratchpad_append_from_content(self._host, scope, raw_content, run_id=run_id)
+            machine.on_scratchpad_write()
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to apply synthetic scratchpad from content scope=%s",
+                scope,
+            )
+
     async def _finalize_with_tool_call_limit(
         self,
         messages: list[dict],
@@ -497,9 +549,14 @@ class AgentRun:
         cancel_token: CancellationToken | None,
     ) -> tuple[str, list[dict[str, Any]]]:
         finalize_msg = _tool_call_limit_finalize_message(self._host, scope, run_id=run_id)
-        trimmed = trim_to_last_tool_round(messages)
-        to_send = trimmed + ([finalize_msg] if finalize_msg else [])
-        prepared_messages = prepare_messages_for_chat(to_send)
+        prepared_messages = self._build_chat_messages(
+            messages,
+            scope=scope,
+            run_id=run_id,
+            trim=True,
+            include_scratchpad=False,
+            extra=finalize_msg,
+        )
         final_message = await self._host.llm.chat(
             messages=prepared_messages,
             tools=[],
@@ -519,9 +576,14 @@ class AgentRun:
         guard_ctx: ToolCallContext,
     ) -> tuple[str, list[dict[str, Any]]]:
         finalize_msg = _finalize_response_message(self._host, scope, run_id=run_id)
-        trimmed = trim_to_last_tool_round(messages)
-        to_send = trimmed + ([finalize_msg] if finalize_msg else [])
-        prepared_messages = prepare_messages_for_chat(to_send)
+        prepared_messages = self._build_chat_messages(
+            messages,
+            scope=scope,
+            run_id=run_id,
+            trim=True,
+            include_scratchpad=False,
+            extra=finalize_msg,
+        )
         final_message = await self._host.llm.chat(
             messages=prepared_messages,
             tools=[],
@@ -540,18 +602,6 @@ class AgentRun:
         reply = self._rewrite_finalize_reply(reply, guard_ctx)
         return reply, tool_trace
 
-    @staticmethod
-    def _tool_call_signature(tool_call: dict[str, Any]) -> tuple[str, str]:
-        fn_name = str(tool_call.get("function", {}).get("name", ""))
-        raw_args = tool_call.get("function", {}).get("arguments") or "{}"
-        try:
-            parsed_args = json.loads(raw_args)
-        except json.JSONDecodeError:
-            normalized_args = raw_args
-        else:
-            normalized_args = json.dumps(parsed_args, ensure_ascii=True, sort_keys=True)
-        return fn_name, str(normalized_args)
-
     def _tools_for_chat(
         self,
         tools: list[dict],
@@ -564,11 +614,11 @@ class AgentRun:
             tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != SCRATCHPAD_TOOL_NAME]
         # Strip delegate_task at depth >= 1 so the depth-1 subagent cannot
         # call it. The spec is prepended by _list_openai_tools (scratchpad
-        # pattern), but only the orchestrator should see it. See issue #43.
-        # The depth is computed from the run_id local to this LLM call —
-        # no shared state is read. If the host lacks _compute_run_depth
-        # (test fakes may not), fall back to -1, which is not >= 1, so
-        # the strip is a no-op.
+        # pattern), but only the orchestrator should see it. The depth is
+        # computed from the run_id local to this LLM call — no shared state
+        # is read. If the host lacks _compute_run_depth (test fakes may
+        # not), fall back to -1, which is not >= 1, so the strip is a
+        # no-op.
         depth = getattr(self._host, "_compute_run_depth", lambda _id: -1)(run_id)
         if depth >= 1:
             tools = [t for t in tools if str(t.get("function", {}).get("name", "")) != "delegate_task"]
@@ -585,112 +635,55 @@ class AgentRun:
     ) -> tuple[str, list[dict[str, Any]]]:
         if cancel_token and cancel_token.is_cancelled:
             raise LlmCallCancelledError(scope=scope_for_tools)
-        include_scratchpad_prompt = True
-        scratchpad_msg = scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
-        to_send = messages + ([scratchpad_msg] if scratchpad_msg else [])
-        prepared_messages = prepare_messages_for_chat(to_send)
+        # ScratchpadMachine (scratchpad_protocol.py — the docs/SCRATCHPAD.md
+        # "Mode lifecycle" diagram as code) is the single protocol authority:
+        # tool gating, the append-due check, and the nudge/abort decision.
+        # Only init arms the strict trigger — a long append-only sequence
+        # ending in a final answer is a legitimate pattern.
+        machine = ScratchpadMachine(max_corrections=_core_protocol_constants().MAX_SCRATCHPAD_PROTOCOL_RETRIES)
+        prepared_messages = self._build_chat_messages(
+            messages,
+            scope=scope_for_tools,
+            run_id=run_id,
+            trim=False,
+            include_scratchpad=machine.offer_tool,
+        )
         assistant_message = await self._host.llm.chat(
             messages=prepared_messages,
-            tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt, run_id=run_id),
+            tools=self._tools_for_chat(tools, allow_scratchpad=machine.offer_tool, run_id=run_id),
             response_format=response_format,
             scope=scope_for_tools,
             cancel_token=cancel_token,
         )
         tool_trace: list[dict[str, Any]] = []
-        total_tool_calls = 0
         guard_ctx = ToolCallContext(scope=scope_for_tools)
-        previous_round_signatures: list[tuple[str, str]] | None = None
-        identical_round_repeats = 0
-        include_scratchpad_prompt = True
-        protocol_state = ScratchpadProtocolState()
+        repeats = _RoundRepeatTracker(scope=scope_for_tools)
+        budget = _ToolBudget(scope=scope_for_tools)
 
-        # Scratchpad-protocol enforcement: if the model called
-        # session__scratchpad_write mode="init" but did not follow with
-        # an external tool or a finalize, and then emits a text-only
-        # stop, nudge it up to MAX_SCRATCHPAD_PROTOCOL_RETRIES times
-        # before aborting. We only catch init (not append) because a long
-        # append-only sequence followed by a final answer is a legitimate
-        # pattern (see test_agent_run_does_not_abort_on_many_scratchpad_tool_calls).
-        # See tests/agent_run/test_scratchpad_protocol_regression.py
-        # and ScratchpadProtocolState.evaluate_text_only.
         while True:
             if cancel_token and cancel_token.is_cancelled:
                 raise LlmCallCancelledError(scope=scope_for_tools)
             if not assistant_message.get("tool_calls"):
-                action = protocol_state.evaluate_text_only(assistant_message, scope=scope_for_tools)
-                if action == "abort":
+                verdict = machine.on_text_only_stop(
+                    has_content=bool((assistant_message.get("content") or "").strip()),
+                    scope=scope_for_tools,
+                )
+                if verdict == "abort":
                     return _core_protocol_constants().SCRATCHPAD_PROTOCOL_ABORT_REPLY, tool_trace
-                if action == "no_violation":
+                if verdict == "clean_exit":
                     break
-                # action == "nudge": state mutated (count + include flag);
-                # caller must append the correction system message itself.
-                messages.append(
-                    {"role": "system", "content": _core_protocol_constants().SCRATCHPAD_PROTOCOL_CORRECTION}
-                )
-                include_scratchpad_prompt = protocol_state.include_scratchpad_prompt
+                messages.append(_strict_correction_message())
             else:
-                requested_calls = assistant_message["tool_calls"]
-                requested_signatures = [self._tool_call_signature(tool_call) for tool_call in requested_calls]
-                if previous_round_signatures == requested_signatures:
-                    identical_round_repeats += 1
-                else:
-                    identical_round_repeats = 1
-                previous_round_signatures = requested_signatures
-                if identical_round_repeats >= MAX_IDENTICAL_TOOL_CALL_REPEATS:
-                    logger.warning(
-                        "Aborting repeated identical tool calls scope=%s repeats=%d calls=%s",
-                        scope_for_tools,
-                        identical_round_repeats,
-                        requested_signatures,
-                    )
+                calls = assistant_message["tool_calls"]
+                if repeats.note(calls):
                     return REPEATED_TOOL_CALL_ABORT_REPLY, tool_trace
-                include_scratchpad_prompt = protocol_state.needs_scratchpad_update
-                if protocol_state.needs_scratchpad_update:
-                    scratchpad_seen = False
-                    protocol_violation = False
-                    for tool_call in requested_calls:
-                        name = str(tool_call.get("function", {}).get("name", ""))
-                        if name == SCRATCHPAD_TOOL_NAME:
-                            scratchpad_seen = True
-                            continue
-                        if not scratchpad_seen:
-                            protocol_violation = True
-                            break
-                    if protocol_violation:
-                        proposed_tools = [str(call.get("function", {}).get("name", "")) for call in requested_calls]
-                        logger.warning(
-                            "Scratchpad protocol violation (relaxed, not blocking) scope=%s proposed_tools=%s",
-                            scope_for_tools,
-                            proposed_tools,
-                        )
-                        raw_content = assistant_message.get("content") or ""
-                        if raw_content.strip():
-                            try:
-                                apply_scratchpad_append_from_content(
-                                    self._host, scope_for_tools, raw_content, run_id=run_id
-                                )
-                                protocol_state.note_synthetic_append_success()
-                            except Exception:  # pylint: disable=broad-except
-                                logger.exception(
-                                    "Failed to apply synthetic scratchpad from content scope=%s",
-                                    scope_for_tools,
-                                )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": assistant_message.get("content") or "",
-                        "tool_calls": requested_calls,
-                    }
-                )
-                post_finalize_reply: str | None = None
-                for tool_call in requested_calls:
-                    total_tool_calls += 1
-                    if total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
-                        logger.warning(
-                            "Aborting tool loop after limit scope=%s total_tool_calls=%d",
-                            scope_for_tools,
-                            total_tool_calls,
-                        )
+                if machine.skipped_append(calls):
+                    self._write_synthetic_append(
+                        machine, calls, assistant_message, scope=scope_for_tools, run_id=run_id
+                    )
+                messages.append(_assistant_transcript(assistant_message, calls))
+                for call in calls:
+                    if budget.spend():
                         return await self._finalize_with_tool_call_limit(
                             messages,
                             tool_trace,
@@ -699,35 +692,20 @@ class AgentRun:
                             cancel_token,
                         )
                     outcome = await self._dispatcher.dispatch(
-                        tool_call,
+                        call,
                         guard_ctx,
                         scope=scope_for_tools,
                         run_id=run_id,
                         tool_trace=tool_trace,
                         cancel_token=cancel_token,
                     )
-                    if outcome.scratchpad_mode:
-                        protocol_state.needs_scratchpad_update = False
-                        if outcome.scratchpad_mode == "init":
-                            protocol_state.note_scratchpad_init()
-                        elif outcome.scratchpad_mode == "finalize":
-                            protocol_state.note_scratchpad_finalize()
-                    elif outcome.ok:
-                        protocol_state.note_external_tool_used()
-                    else:
-                        protocol_state.needs_scratchpad_update = True
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "name": outcome.name,
-                            "content": outcome.result_text,
-                        }
-                    )
-                round_summary = protocol_state.commit_round()
-                if round_summary.used_external_tool:
-                    include_scratchpad_prompt = True
-                elif round_summary.finalized_scratchpad:
+                    machine.on_dispatch(outcome.scratchpad_mode)
+                    messages.append(_tool_transcript(call, outcome))
+                if machine.finalized:
+                    # Finalize is terminal within its round: later calls in
+                    # the batch still dispatched above (each tool_call_id
+                    # needs its tool message), but the round routes to the
+                    # finalize path regardless of what else it contained.
                     return await self._finalize_after_scratchpad(
                         messages,
                         tool_trace,
@@ -736,19 +714,19 @@ class AgentRun:
                         cancel_token,
                         guard_ctx,
                     )
-                if post_finalize_reply is not None:
-                    logger.warning("Guard force-finalize reached (disabled) scope=%s", scope_for_tools)
-                trimmed = trim_to_last_tool_round(messages)
-                scratchpad_msg = (
-                    scratchpad_assistant_message(self._host, scope_for_tools, run_id=run_id)
-                    if include_scratchpad_prompt
-                    else None
-                )
-                to_send = trimmed + ([scratchpad_msg] if scratchpad_msg else [])
-                prepared_messages = prepare_messages_for_chat(to_send)
+            # prepared_messages is re-derived from `messages` + machine state
+            # immediately before the llm.chat() call that consumes it — never
+            # carried across loop iterations.
+            prepared_messages = self._build_chat_messages(
+                messages,
+                scope=scope_for_tools,
+                run_id=run_id,
+                trim=True,
+                include_scratchpad=machine.offer_tool,
+            )
             assistant_message = await self._host.llm.chat(
                 messages=prepared_messages,
-                tools=self._tools_for_chat(tools, allow_scratchpad=include_scratchpad_prompt, run_id=run_id),
+                tools=self._tools_for_chat(tools, allow_scratchpad=machine.offer_tool, run_id=run_id),
                 response_format=response_format,
                 scope=f"{scope_for_tools}:continue",
                 cancel_token=cancel_token,
