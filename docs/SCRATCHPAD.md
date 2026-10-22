@@ -49,14 +49,15 @@ stateDiagram-v2
     AppendDue --> Finalized : finalize
     Finalized --> [*] : no-tools LLM call builds the answer
     Empty --> [*] : plain text reply, no tools
-    Active --> Correcting : text-only stop right after init-only round
-    Correcting --> Active : model resumes (correction, up to 2)
+    Active --> Correcting : narrative text stop while init pending
+    Correcting --> AppendDue : model resumes with a tool attempt (up to 2 nudges)
+    Correcting --> Finalized : model resumes with finalize
     Correcting --> [*] : corrections exhausted — abort reply
     Active --> [*] : any other text-only stop
     AppendDue --> [*] : text-only stop, missed append (clean exit)
 ```
 
-**AppendDue** is not stored scratchpad content — it is a harness flag meaning an external tool result has arrived and no append has followed. While it is set (and at the first call of a turn), the scratchpad tool is offered to the model; after a write it is removed from the schema until the next tool result. Its user-role state message follows the same gate. **Correcting** is the strict recovery path described in [Scratchpad protocol enforcement](#scratchpad-protocol-enforcement). The remaining loop exits — the tool-call limit and the identical-repeat abort — are listed in [Finalize and exit paths](#finalize-and-exit-paths).
+**AppendDue** is not stored scratchpad content — it is a harness flag meaning an external tool result has arrived and no append has followed. While it is set (and at the first call of a turn), the scratchpad tool is offered to the model; after a write it is removed from the schema until the next tool result. Its user-role state message follows the same gate. **Correcting** is the strict recovery path described in [Scratchpad protocol enforcement](#scratchpad-protocol-enforcement): the machine stays in Correcting through the recovery prompt (a re-init during recovery keeps it there) until the model resumes with a real tool attempt or a finalize. The init-pending trigger itself is a hidden marker on Active — armed by init, invisible in the diagram; the entry edge to Correcting fires from it. The remaining loop exits — the tool-call limit and the identical-repeat abort — are listed in [Finalize and exit paths](#finalize-and-exit-paths).
 
 ### `init`
 
@@ -82,26 +83,26 @@ Signals that the bot has gathered everything it needs and no more tool calls wil
 {"mode": "finalize", "context": "Bangkok 34°C today vs 31°C yesterday, 3°C warmer"}
 ```
 
-**Critical**: Finalize means finalize. Once called, the model cannot use tools. All key findings must be in the scratchpad *before* finalizing, because the final answer is built from the scratchpad summary — anything missing is lost.
+**Critical**: Finalize means finalize. Once called, the model cannot use tools — and it is terminal within its round: if the model batches other calls with the finalize, those calls still dispatch (each `tool_call_id` needs its tool result) but the round routes to the finalize path regardless. All key findings must be in the scratchpad *before* finalizing, because the final answer is built from the scratchpad summary — anything missing is lost.
 
 ## Scratchpad protocol enforcement
 
 The scratchpad isn't optional for tool-calling turns. After every external tool result, the model must call `session__scratchpad_write` (append or finalize) before requesting another tool. This is the **scratchpad protocol**.
 
-The enforcement loop (`ScratchpadProtocolState` in `agent_run.py`) tracks two cross-round facts: whether an **append is due** (an external tool result arrived since the last scratchpad write) and whether the previous round was **init-only** (init was called, but no external tool and no finalize followed). The protocol can be broken in two directions, and they are enforced at different strictness because they differ in what is recoverable:
+`ScratchpadMachine` (`scratchpad_protocol.py`) is the enforcement authority — the diagram above as code, with edge methods named after its transitions. It tracks two facts and exposes them as the diagram states: whether an **append is due** (an external tool result arrived since the last scratchpad write) and whether **init is pending** (init was called and no external tool *attempt* or finalize has followed). An attempt counts as work, success or failure alike — so how the model groups calls into messages cannot change the protocol outcome. A scratchpad append does not count as work: writing notes does not disarm the strict trigger. The protocol can be broken in two directions, and they are enforced at different strictness because they differ in what is recoverable:
 
 - **Skipped the append (relaxed)** — after real tool work, the model requests another external tool without a scratchpad write in between. The work happened; only the notes were skipped. The harness writes a **synthetic append** itself, built from the model's own content (thinking tags stripped), logs the violation, and lets the round proceed. Not blocking.
-- **Narrative without work (strict)** — the model called `mode=init`, then stopped with a text answer without ever using a tool or finalizing. Nothing was done, so the answer is a hallucinated completion and must not reach the user. The harness injects a correction system message and re-offers the scratchpad tool, up to 2 times (`MAX_SCRATCHPAD_PROTOCOL_RETRIES`):
+- **Narrative without work (strict)** — the model called `mode=init`, then stopped with a text answer without any external tool attempt or finalize following it. Nothing was done, so the answer is a hallucinated completion and must not reach the user. The harness injects a correction system message and re-offers the scratchpad tool, up to 2 times (`MAX_SCRATCHPAD_PROTOCOL_RETRIES`):
 
-  > Protocol violation: after any external tool result, call session__scratchpad_write first (mode='append' or mode='finalize') before requesting another external tool.
+  > Protocol violation: you stopped with a text answer right after a scratchpad init, but you did no work. Resume now with your tools, or call session__scratchpad_write with mode='finalize' using what you actually have.
 
   If the model still stops, the turn aborts with a fixed safe reply:
 
   > I got stuck enforcing scratchpad updates in this turn. Please try again.
 
-Two things are deliberately **not** enforced. A text-only stop after real tool work is a clean exit — the missing append just means the notes are staler than the transcript. And nothing forces an init: a work turn that never called `mode=init` simply runs without a scratchpad.
+Two things are deliberately **not** enforced. A text-only stop after real tool work — successful or failed — is a clean exit: the model attempted something, so its honest report (including "the tool failed, I cannot answer") ships. And nothing forces an init: a work turn that never called `mode=init` simply runs without a scratchpad.
 
-The strongest mechanism is the tool surface itself: `session__scratchpad_write` is offered to the model only while an append is due — after a write it disappears from the tool schema until the next tool result makes it due again. This also guards against over-compliance: when the tool was always present, small models sometimes looped on scratchpad writes and burned the token budget on bookkeeping instead of work.
+The strongest mechanism is the tool surface itself: `session__scratchpad_write` is offered to the model only while an append is due (and at the first call of a turn, and on the single recovery call after a nudge) — after a write it disappears from the tool schema until the next tool result makes it due again. This also guards against over-compliance: when the tool was always present, small models sometimes looped on scratchpad writes and burned the token budget on bookkeeping instead of work.
 
 ## How the scratchpad is injected
 
@@ -114,15 +115,16 @@ Both templates are rendered by PromptStore and use `{state_json}` as the variabl
 
 ## Finalize and exit paths
 
-The agent loop has four exit conditions. Two of them use the scratchpad:
+The agent loop has five exit conditions. Two of them use the scratchpad:
 
 1. **Scratchpad finalize** — The model calls `session__scratchpad_write(mode=finalize)`. The loop breaks and makes one no-tools LLM call with the `finalize_response` prompt, which includes `{goal}` and `{summary}` built from the scratchpad.
 2. **Tool call limit** (30 calls) — The model hits `MAX_TOOL_CALLS_PER_TURN`. Instead of a hard abort, the loop makes a soft-landing no-tools call using the `tool_call_limit_finalize` prompt, which includes `{goal}` and `{summary}` from the scratchpad. The model gets to summarize partial progress.
 
-The other two exit paths don't use the scratchpad:
+The other three exit paths don't use the scratchpad:
 
 3. **Implicit text response** — Model returns text with no tool calls. Loop exits with the text reply.
 4. **Identical tool call repeat** (3x) — Hard abort with a fixed error reply.
+5. **Strict-protocol abort** — A narrative text stop that ignores `MAX_SCRATCHPAD_PROTOCOL_RETRIES` correction nudges after an init with no work. Hard abort with a fixed safe reply (see [Scratchpad protocol enforcement](#scratchpad-protocol-enforcement)).
 
 The finalize path is critical for local/smaller models: without an explicit no-tools call, models tend to hallucinate `scratchpad_write(mode=init)` after finalize, which wipes all accumulated state.
 

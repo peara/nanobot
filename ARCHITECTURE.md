@@ -206,10 +206,11 @@ After each completed run, the `LearningEvaluator` runs (if enabled) and may auto
 |-----------|--------|------|
 | **BotCore** | `core.py` | Orchestrator: message queue, command dispatch, evaluator integration |
 | **LlmClient** | `llm.py` | OpenAI-compatible chat completions client, all LLM I/O logged via `nanobot.llm.io` |
-| **AgentRun + ToolCallDispatcher** | `agent_run.py` | LLM chat loop, scratchpad protocol, tool dispatch with guards |
+| **AgentRun + ToolCallDispatcher** | `agent_run.py` | LLM chat loop, tool dispatch with guards |
 | **SubagentManager** | `subagents/` | Spawn/execute subagent runs; depth-gated; observability tracking |
 | **CommandManager** | `core_commands/` | Slash commands: help, ctx/ctxfull, reset, plan, scratchpad, reload, session, status, stop |
 | **Scratchpad** | `core_scratchpad.py` | Per-run structured working state (goal, steps, facts, tool journal) |
+| **ScratchpadMachine** | `scratchpad_protocol.py` | Scratchpad protocol state machine: tool gating, nudge/abort decision, append-due check |
 | **SkillMatcher** | `skills/matcher.py` | Resolves which skills to inject (always/pattern/intelligent) |
 | **LearningEvaluator** | `evaluator/` | Turns good conversations into skills (quality → learning → lifecycle) |
 | **McpHub** | `mcp_hub.py` | Connects to configured MCP servers, routes tool calls |
