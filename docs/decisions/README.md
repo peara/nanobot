@@ -15,7 +15,7 @@ Most records here are **retroactive**: the decisions shipped first and were docu
 ## Conventions
 
 - File name: `ADR-NNNN-<slug>.md`, numbered in the order written; numbers are never reused or renumbered.
-- Sections per record: Context → Decision → Alternatives considered → Consequences. Consequences must state real downsides, not only benefits.
-- Status is one of: Proposed, Accepted, Accepted (retroactive), Superseded (with a pointer to the superseding record).
-- Every retroactive record cites the commit/PR (and, where relevant, issue or incident) where the decision shipped, verified via `git log` / `gh`.
+- Sections per record: Context → Decision → Alternatives considered → Consequences → References (max 3 durable links). Consequences must state real downsides, not only benefits.
+- Status is one of: Proposed, Accepted, Accepted (retroactive), Superseded (with a pointer to the superseding record). Retroactive records name the single most relevant PR or issue in the status line.
+- Body prose states evidence as timeless facts — forces and insight, not changelogs. Commit hashes, dates, and PR/issue/incident identifiers live only in the status line and References, verified via `git log` / `gh` — no invented history.
 - ADRs are immutable once Accepted: a changed decision gets a new record that supersedes the old one.
