@@ -16,10 +16,8 @@ from opentelemetry.trace import SpanKind
 
 from nanobot.cancel_token import LlmCallCancelledError
 from nanobot.config import TracingConfig
-from nanobot.tracing import current_run_id, init_tracing, payload_capture_enabled
-from nanobot.tracing import semconv
+from nanobot.tracing import current_run_id, init_tracing, payload_capture_enabled, semconv
 from nanobot.tracing.decorators import traced
-from nanobot.tracing.store import TraceStore
 
 
 def _rows(db_path: str) -> list[dict[str, Any]]:
