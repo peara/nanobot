@@ -5,10 +5,14 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode
+
 from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
+from nanobot.core_utils import clip
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
 from nanobot.skills.injection import build_skill_messages, build_tool_catalog_message
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
+from nanobot.tracing import get_tracer, run_id_context, semconv
 
 if TYPE_CHECKING:
     from nanobot.agent_run import AgentRun
@@ -124,6 +128,34 @@ class SubagentManager:
         self._contexts.put("subagent_run", run.id, "status", {"value": "running"})
         logger.info("Starting subagent run run_id=%s", run.id)
 
+        span_attributes: dict[str, Any] = {
+            semconv.GEN_AI_OPERATION_NAME: semconv.OP_INVOKE_AGENT,
+            semconv.RUN_ID: run.id,
+            semconv.SCOPE: run.scope,
+            semconv.RUN_DEPTH: self._compute_depth(run.parent_run_id),
+        }
+        if run.parent_run_id:
+            span_attributes[semconv.PARENT_RUN_ID] = run.parent_run_id
+        if run.goal:
+            span_attributes[semconv.RUN_GOAL] = clip(run.goal, 200)
+
+        with (
+            run_id_context(run.id),
+            get_tracer().start_as_current_span(
+                semconv.OP_INVOKE_AGENT, kind=SpanKind.INTERNAL, attributes=span_attributes
+            ) as span,
+        ):
+            return await self._execute_traced(run, messages, tools, response_format, cancel_token, span)
+
+    async def _execute_traced(
+        self,
+        run: SubagentRun,
+        messages: list[dict],
+        tools: list[dict],
+        response_format: dict[str, Any] | None,
+        cancel_token: CancellationToken | None,
+        span: Span,
+    ) -> SubagentRunResult:
         active_skills_data = self._contexts.get("subagent_run", run.id, "active_skills")
         skill_messages: list[dict] = []
         if active_skills_data and isinstance(active_skills_data, dict):
@@ -171,6 +203,7 @@ class SubagentManager:
         except LlmCallCancelledError:
             success = False
             error = "cancelled"
+            span.set_attribute(semconv.CANCELLED, True)
             self._store.set_status(run.id, "cancelled", error=error)
             self._contexts.put("subagent_run", run.id, "error", {"message": error})
             self._contexts.put("subagent_run", run.id, "status", {"value": "cancelled"})
@@ -179,6 +212,8 @@ class SubagentManager:
         except Exception as exc:
             success = False
             error = str(exc)
+            span.set_status(Status(StatusCode.ERROR, error))
+            span.record_exception(exc)
             self._store.set_status(run.id, "failed", error=error)
             self._contexts.put("subagent_run", run.id, "error", {"message": error})
             self._contexts.put("subagent_run", run.id, "status", {"value": "failed"})

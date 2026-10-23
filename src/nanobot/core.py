@@ -37,6 +37,7 @@ from nanobot.skills import RatioFilter, SkillStore, SkillVectorStore, register_s
 from nanobot.subagents import SubagentManager
 from nanobot.subagents.manager import SubagentRunResult
 from nanobot.tools import McpToolSource, ToolRegistry, ToolStatsStore
+from nanobot.tracing import init_tracing, shutdown_tracing
 from nanobot.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,9 @@ class BotCore:
     def __init__(self, config: AppConfig, channels: dict[str, Any]) -> None:
         self.config = config
         self.channels = channels
+        self._tracing_alerted = False
+        if config.tracing is not None:
+            init_tracing(config.tracing, on_export_failure=self._alert_tracing_export_failure)
         self.llm = LlmClient(config.model)
         self.memory = ConversationStore(config.database_path)
         self.contexts = ContextStore(config.database_path)
@@ -189,6 +193,33 @@ class BotCore:
                 pass
         await self.scheduler.stop()
         await self._mcp_source.stop()
+        shutdown_tracing()
+
+    def _alert_tracing_export_failure(self, description: str) -> None:
+        """Exporter-failure alerting: telemetry must not fail silently.
+
+        Always logs; notifies the owner once per process (latch) so a
+        persistently broken exporter does not spam the chat.
+        """
+        logger.error("OTel span exporter failure: %s", description)
+        if self._tracing_alerted or not self.config.owner_chat_id:
+            return
+        self._tracing_alerted = True
+        scope = f"telegram:{self.config.owner_chat_id}"
+        db_path = self.config.tracing.db_path if self.config.tracing else "traces.db"
+        text = f"Tracing failure: spans may be missing from {db_path}. ({description})"
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("No running event loop; tracing failure alert not delivered: %s", description)
+            return
+        loop.create_task(self._deliver_tracing_alert(scope, text))
+
+    async def _deliver_tracing_alert(self, scope: str, text: str) -> None:
+        try:
+            await self._send(scope, text)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to deliver tracing-failure alert scope=%s", scope)
 
     def cancel_request(self, scope: str) -> bool:
         """Cancel a specific in-flight request. Returns True if a token was found and cancelled."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from nanobot.config import AppConfig, load_config
@@ -10,6 +11,8 @@ from nanobot.hooks import HookDebugCommand, build_default_tool_hooks
 from nanobot.plans import PlanStore
 from nanobot.prompts import PromptStore
 from nanobot.skills import SkillStore, SkillVectorStore
+from nanobot.tracing import semconv
+from nanobot.tracing.store import SpanRecord, TraceStore
 from nanobot.vector_store import VectorStore
 
 PLACEHOLDER_SCOPES = {"12345", "123456789", "1234567890", "<current_chat_id>", "current_chat_id", "default"}
@@ -373,6 +376,173 @@ def _skills_resync(config: AppConfig) -> None:
     print("Done.")
 
 
+def _trace_db_path(config: AppConfig) -> str:
+    if config.tracing is None:
+        raise SystemExit("Tracing is not configured. Add a `tracing:` section to config.yaml (see docs/TRACING.md).")
+    return config.tracing.db_path
+
+
+def _fmt_duration(duration_ms: float) -> str:
+    if duration_ms >= 1000:
+        return f"{duration_ms / 1000:.2f}s"
+    return f"{duration_ms:.0f}ms"
+
+
+def _span_time(rec: SpanRecord) -> str:
+    return datetime.fromtimestamp(rec.start_ts).strftime("%H:%M:%S")
+
+
+def _format_span_line(rec: SpanRecord) -> str:
+    attrs = rec.attributes()
+    parts = [rec.name]
+    if rec.name == semconv.OP_INVOKE_AGENT:
+        parts.append(f"run_id={rec.run_id or '-'}")
+        if semconv.RUN_DEPTH in attrs:
+            parts.append(f"depth={attrs[semconv.RUN_DEPTH]}")
+        goal = attrs.get(semconv.RUN_GOAL)
+        if goal:
+            parts.append(f'goal="{goal}"')
+    elif rec.name == semconv.OP_CHAT:
+        model = attrs.get(semconv.GEN_AI_RESPONSE_MODEL) or attrs.get(semconv.GEN_AI_REQUEST_MODEL) or "-"
+        parts.append(f"model={model}")
+        if semconv.GEN_AI_USAGE_INPUT_TOKENS in attrs:
+            parts.append(f"in={attrs[semconv.GEN_AI_USAGE_INPUT_TOKENS]}")
+        if semconv.GEN_AI_USAGE_OUTPUT_TOKENS in attrs:
+            parts.append(f"out={attrs[semconv.GEN_AI_USAGE_OUTPUT_TOKENS]}")
+        finish = attrs.get(semconv.GEN_AI_RESPONSE_FINISH_REASONS) or []
+        parts.append(f"finish={','.join(str(f) for f in finish) or '-'}")
+        if attrs.get(semconv.LLM_EMPTY_CONTENT):
+            parts.append("empty_content")
+        if attrs.get(semconv.CANCELLED):
+            parts.append("cancelled")
+    elif rec.name == semconv.OP_EXECUTE_TOOL:
+        parts.append(f"tool={attrs.get(semconv.GEN_AI_TOOL_NAME, '-')}")
+        if semconv.RUN_ID in attrs:
+            parts.append(f"run_id={attrs[semconv.RUN_ID]}")
+    elif rec.name == semconv.SPAN_DELEGATE_TASK:
+        if semconv.CHILD_RUN_ID in attrs:
+            parts.append(f"child_run_id={attrs[semconv.CHILD_RUN_ID]}")
+        goal = attrs.get(semconv.RUN_GOAL)
+        if goal:
+            parts.append(f'goal="{goal}"')
+    if rec.status == "error":
+        parts.append(f"ERROR={rec.status_message or '?'}")
+    parts.append(_fmt_duration(rec.duration_ms))
+    return " ".join(parts)
+
+
+def _print_span_tree(
+    rec: SpanRecord,
+    children: dict[str | None, list[SpanRecord]],
+    line_prefix: str,
+    kids_prefix: str,
+) -> None:
+    print(f"{line_prefix}{_span_time(rec)} {_format_span_line(rec)}")
+    kids = children.get(rec.span_id, [])
+    for i, kid in enumerate(kids):
+        last = i == len(kids) - 1
+        branch = "└─ " if last else "├─ "
+        _print_span_tree(
+            kid,
+            children,
+            kids_prefix + branch,
+            kids_prefix + ("   " if last else "│  "),
+        )
+
+
+def _trace_token_accounting(trace_spans: list[SpanRecord]) -> None:
+    runs: dict[str, dict[str, int]] = {}
+    for rec in trace_spans:
+        if rec.name != semconv.OP_CHAT:
+            continue
+        attrs = rec.attributes()
+        run_key = rec.run_id or "-"
+        bucket = runs.setdefault(run_key, {"calls": 0, "input": 0, "output": 0})
+        bucket["calls"] += 1
+        bucket["input"] += int(attrs.get(semconv.GEN_AI_USAGE_INPUT_TOKENS, 0) or 0)
+        bucket["output"] += int(attrs.get(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 0) or 0)
+    if not runs:
+        return
+    print("\nToken accounting:")
+    for run_key, bucket in runs.items():
+        total = bucket["input"] + bucket["output"]
+        print(
+            f"  {run_key}: {bucket['calls']} chat call(s), "
+            f"input={bucket['input']} output={bucket['output']} total={total}"
+        )
+
+
+def _trace_anomalies(trace_spans: list[SpanRecord]) -> None:
+    length_truncations = 0
+    empty_replies = 0
+    cancelled = 0
+    errors = 0
+    for rec in trace_spans:
+        attrs = rec.attributes()
+        if rec.name == semconv.OP_CHAT:
+            if "length" in (attrs.get(semconv.GEN_AI_RESPONSE_FINISH_REASONS) or []):
+                length_truncations += 1
+            if attrs.get(semconv.LLM_EMPTY_CONTENT):
+                empty_replies += 1
+            if attrs.get(semconv.CANCELLED):
+                cancelled += 1
+        if rec.status == "error":
+            errors += 1
+    print("\nAnomalies:")
+    print(f"  length truncations: {length_truncations}")
+    print(f"  empty replies: {empty_replies}")
+    print(f"  cancelled spans: {cancelled}")
+    print(f"  error spans: {errors}")
+
+
+def _trace_list(config: AppConfig, limit: int) -> None:
+    store = TraceStore(_trace_db_path(config))
+    rows = store.recent_runs(limit=limit)
+    if not rows:
+        print("No traced runs found.")
+        return
+    print(f"{'run_id':<16} {'started':<20} {'spans':>5} {'errors':>6}")
+    for row in rows:
+        started = datetime.fromtimestamp(float(row["started_ts"])).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{row['run_id']:<16} {started:<20} {row['span_count']:>5} {row['error_count'] or 0:>6}")
+
+
+def _latest_trace_run_id(db_path: str) -> str | None:
+    rows = TraceStore(db_path).recent_runs(limit=1)
+    return str(rows[0]["run_id"]) if rows else None
+
+
+def _trace_show(config: AppConfig, run_id: str) -> None:
+    store = TraceStore(_trace_db_path(config))
+    run_spans = store.list_by_run(run_id)
+    if not run_spans:
+        print(f"No spans found for run_id: {run_id}")
+        return
+    anchor = run_spans[0]
+    trace_spans = store.list_by_trace(anchor.trace_id)
+    span_ids = {s.span_id for s in trace_spans}
+    children: dict[str | None, list[SpanRecord]] = {}
+    roots: list[SpanRecord] = []
+    for rec in trace_spans:
+        if rec.parent_span_id and rec.parent_span_id in span_ids:
+            children.setdefault(rec.parent_span_id, []).append(rec)
+        else:
+            roots.append(rec)
+    if len(trace_spans) > len(run_spans):
+        print(f"(run {run_id} is part of a larger trace — showing the full tree)\n")
+    print(f"Trace replay for {run_id}")
+    print(f"trace_id: {anchor.trace_id}")
+    started = datetime.fromtimestamp(anchor.start_ts)
+    ended = datetime.fromtimestamp(max(s.end_ts for s in trace_spans))
+    print(f"started: {started.strftime('%Y-%m-%d %H:%M:%S')}  ended: {ended.strftime('%H:%M:%S')}")
+    print(f"spans: {len(trace_spans)}")
+    print("\nSpan tree:")
+    for root in sorted(roots, key=lambda s: s.start_ts):
+        _print_span_tree(root, children, "", "")
+    _trace_token_accounting(trace_spans)
+    _trace_anomalies(trace_spans)
+
+
 def main() -> None:
     hook_commands: dict[str, HookDebugCommand] = {}
     parser = argparse.ArgumentParser(description="nanobot debug CLI")
@@ -418,6 +588,14 @@ def main() -> None:
     plans_show.add_argument("id", type=int, help="Plan ID")
 
     sub.add_parser("skills-resync", help="Resync intelligent skills to mem0 (remove + re-store)")
+
+    trace = sub.add_parser("trace", help="Inspect OTel span traces (ROADMAP Phase D)")
+    trace_sub = trace.add_subparsers(dest="trace_cmd", required=True)
+    trace_list = trace_sub.add_parser("list", help="List recent traced runs")
+    trace_list.add_argument("--limit", type=int, default=20, help="Number of recent runs to show")
+    trace_show = trace_sub.add_parser("show", help="Replay a run end-to-end from its spans")
+    trace_show.add_argument("--run-id", help="Run id, e.g. run-abc123")
+    trace_show.add_argument("--latest", action="store_true", help="Use the most recent traced run")
 
     for hook in build_default_tool_hooks():
         debug_commands = getattr(hook, "debug_commands", None)
@@ -482,6 +660,19 @@ def main() -> None:
     if args.cmd == "skills-resync":
         _skills_resync(config)
         return
+
+    if args.cmd == "trace":
+        if args.trace_cmd == "list":
+            _trace_list(config, int(args.limit))
+            return
+        if args.trace_cmd == "show":
+            run_id = args.run_id
+            if args.latest:
+                run_id = _latest_trace_run_id(_trace_db_path(config))
+            if not run_id:
+                raise SystemExit("Run id is required. Pass --run-id or --latest.")
+            _trace_show(config, run_id)
+            return
 
     if args.cmd in hook_commands:
         hook_commands[args.cmd].run(args, config.database_path)

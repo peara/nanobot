@@ -61,6 +61,18 @@ class LoggingConfig:
 
 
 @dataclass
+class TracingConfig:
+    """OTel tracing settings (ROADMAP Phase D). None in AppConfig = tracing off.
+
+    Payload capture as span attributes is default-off: `nanobot.llm.io` keeps
+    full-payload logging duty; spans carry the skeleton + metadata only.
+    """
+
+    db_path: str = "./data/traces.db"
+    capture_payloads: bool = False
+
+
+@dataclass
 class AppConfig:
     assistant_name: str
     database_path: str
@@ -81,6 +93,7 @@ class AppConfig:
     notebook_db_path: str = "./data/notebook.db"
     mem0_config_path: str | None = None
     logging: LoggingConfig | None = None
+    tracing: TracingConfig | None = None
 
 
 def _expand_env_value(value: Any) -> Any:
@@ -143,6 +156,16 @@ def load_config(config_path: str) -> AppConfig:
         notebook_db_path=data.get("notebook_db_path", "./data/notebook.db"),
         mem0_config_path=data.get("mem0_config_path"),
         logging=_parse_logging(data.get("logging")),
+        tracing=_parse_tracing(data.get("tracing")),
+    )
+
+
+def _parse_tracing(raw: dict[str, Any] | None) -> TracingConfig | None:
+    if raw is None:
+        return None
+    return TracingConfig(
+        db_path=str(raw.get("db_path", "./data/traces.db")),
+        capture_payloads=bool(raw.get("capture_payloads", False)),
     )
 
 

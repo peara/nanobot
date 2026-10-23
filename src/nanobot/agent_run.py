@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode
+
 from nanobot.agent_tool_guards import (
     PostResultAction,
     PreCallResult,
@@ -27,6 +29,7 @@ from nanobot.core_utils import human_now, tool_result_preview
 from nanobot.hooks import ToolCallEvent
 from nanobot.scratchpad_protocol import ScratchpadMachine
 from nanobot.subagents.delegate_tool import DELEGATE_TASK_NAME
+from nanobot.tracing import get_tracer, semconv
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +295,42 @@ class ToolCallDispatcher:
         cancel_token: CancellationToken | None = None,
     ) -> ToolCallOutcome:
         fn_name = str(tool_call.get("function", {}).get("name", ""))
+        span_attributes: dict[str, Any] = {
+            semconv.GEN_AI_OPERATION_NAME: semconv.OP_EXECUTE_TOOL,
+            semconv.GEN_AI_TOOL_NAME: fn_name,
+            semconv.SCOPE: scope,
+        }
+        if run_id:
+            span_attributes[semconv.RUN_ID] = run_id
+        with get_tracer().start_as_current_span(
+            semconv.OP_EXECUTE_TOOL, kind=SpanKind.INTERNAL, attributes=span_attributes
+        ) as span:
+            outcome = await self._dispatch_traced(
+                span,
+                tool_call,
+                guard_ctx,
+                scope=scope,
+                run_id=run_id,
+                tool_trace=tool_trace,
+                cancel_token=cancel_token,
+            )
+            span.set_attribute(semconv.TOOL_OK, outcome.ok)
+            if not outcome.ok and outcome.error:
+                span.set_status(Status(StatusCode.ERROR, outcome.error))
+            return outcome
+
+    async def _dispatch_traced(
+        self,
+        span: Span,
+        tool_call: dict[str, Any],
+        guard_ctx: ToolCallContext,
+        *,
+        scope: str,
+        run_id: str | None,
+        tool_trace: list[dict[str, Any]],
+        cancel_token: CancellationToken | None = None,
+    ) -> ToolCallOutcome:
+        fn_name = str(tool_call.get("function", {}).get("name", ""))
         guard_ctx.current_tool_name = fn_name
         guard_ctx.total_calls += 1
         raw_args = tool_call.get("function", {}).get("arguments") or "{}"
@@ -367,6 +406,7 @@ class ToolCallDispatcher:
                 logger.info("Tool succeeded tool=%s", fn_name)
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("Tool failed tool=%s", fn_name)
+            span.record_exception(exc)
             ok = False
             error = str(exc)
             result = f"Tool call failed: {exc}"

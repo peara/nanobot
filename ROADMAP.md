@@ -56,25 +56,32 @@ Deferred from the original sketch:
 
 ---
 
-## Phase D — Observability: OTel-traced runs, SQLite-persisted (next up)
+## Phase D — Observability: OTel-traced runs, SQLite-persisted ✅ (shipped 2026-10, issue #48)
 
 **Goal**: turn log-based observability into queryable, joinable traces, instrumented to the OpenTelemetry GenAI semantic conventions so the backend becomes a config decision, not a rewrite. Prerequisite for the eval gate, the ASR measurement lane, debugging stuck runs (issue #35), **and the artifact provenance in Phase E** — artifacts are traceable to runs only if LLM calls carry run_id spans.
 
-**Shape (decided 2026-10-15):**
+**Shape (decided 2026-10-15, shipped):**
 
-- [ ] Manual OTel instrumentation at four sites — `opentelemetry-sdk` only, no auto-instrumentation packages (one LLM call site, one tool dispatch point — manual is cheap and controls the attributes):
+- [x] Manual OTel instrumentation at four sites — `opentelemetry-sdk` only, no auto-instrumentation packages (one LLM call site, one tool dispatch point — manual is cheap and controls the attributes):
   - Agent run span (`SubagentManager.execute`) — `invoke_agent`, INTERNAL
   - LLM chat span (`LlmClient.chat`) — `chat`, CLIENT: model, tokens, finish_reason
-  - Tool call span (`ToolCallDispatcher.dispatch`) — `execute_tool`, INTERNAL
+  - [x] Tool call span (`ToolCallDispatcher.dispatch`) — `execute_tool`, INTERNAL
   - Delegated child span (`run_delegate_task`) — parent context propagates for free
-- [ ] Custom `SpanExporter` persisting spans to SQLite (trace_id, span_id, parent_span_id, run_id, kind, name, attrs, timing) — `just trace <run_id>` works with zero infra; add an OTLP exporter when a platform (Langfuse et al.) enters, same instrumentation, no rewrite.
-- [ ] `gen_ai.*` attribute names wrapped in one `semconv.py` module, pinned to the vintage Langfuse documents — the conventions are Development-status and churning (token renames in 1.37, `invoke_agent` span-kind split in 1.41, repo move Jun 2026); the wrapper owns the strings and the migration window.
-- [ ] run_id threading so spans join with `subagent_runs`, `tool_calls`, and scratchpad states.
-- [ ] `just trace <run_id>` — debug CLI view: replay a run end-to-end (LLM rounds → tool calls → delegated children), plus per-run token accounting.
-- [ ] Payload capture as span attributes behind a config flag, default off — `nanobot.llm.io` keeps full-payload logging duty; spans carry the skeleton + metadata. Redaction gate lives at attribute-setting time for when the flag turns on.
-- [ ] Alerting on exporter failure (telemetry fails silently too) and anomalies (finish_reason=length spikes, empty-reply fallbacks).
+- [x] Custom `SpanExporter` persisting spans to SQLite (trace_id, span_id, parent_span_id, run_id, kind, name, attrs, timing) — `just trace <run_id>` works with zero infra; add an OTLP exporter when a platform (Langfuse et al.) enters, same instrumentation, no rewrite.
+- [x] `gen_ai.*` attribute names wrapped in one `semconv.py` module, pinned to the vintage Langfuse documents — the conventions are Development-status and churning (token renames in 1.37, `invoke_agent` span-kind split in 1.41, repo move Jun 2026); the wrapper owns the strings and the migration window.
+- [x] run_id threading so spans join with `subagent_runs`, `tool_calls`, and scratchpad states.
+- [x] `just trace <run_id>` — debug CLI view: replay a run end-to-end (LLM rounds → tool calls → delegated children), plus per-run token accounting.
+- [x] Payload capture as span attributes behind a config flag, default off — `nanobot.llm.io` keeps full-payload logging duty; spans carry the skeleton + metadata. Redaction gate lives at attribute-setting time for when the flag turns on.
+- [x] Alerting on exporter failure (telemetry fails silently too) and anomalies (finish_reason=length spikes, empty-reply fallbacks).
 
-Related open issues: #35 (observability for context overflow and stuck subagent debugging), #42 (MCP subprocess log surfacing).
+**Decisions (2026-10-23, shipped in #48):**
+
+- Tracing is opt-in via a `tracing:` config section (absent = off) rather than always-on, so test configs and fresh checkouts never write a stray `data/traces.db`; spans live in a dedicated `data/traces.db` following the store-per-concern layout.
+- The fourth span at `run_delegate_task` is named `delegate_task`; delegated children nest under the parent trace via ambient context, verified by test.
+- The semconv pin follows Langfuse's ingestion code, which reads `gen_ai.system` (pre-1.37 name) but the post-v1.28 token names (`gen_ai.usage.input_tokens`/`output_tokens`) — the "token renames in 1.37" note above was actually v1.28.0; v1.37.0 renamed `gen_ai.system` → `gen_ai.provider.name` (which Langfuse does not read). Details in docs/TRACING.md.
+- Exporter failure alerts the owner once per process (latch) — always logged, never silent, never spammy.
+
+Related open issues: #35 (observability for context overflow and stuck subagent debugging — P0/P1 closed by this; subagent timeout and `just subagent` CLI stay), #42 (MCP subprocess log surfacing).
 
 ---
 
