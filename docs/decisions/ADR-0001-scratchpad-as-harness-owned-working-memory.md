@@ -63,7 +63,7 @@ back in later — with two deltas: the state is per-run, and the update protocol
   work is a clean exit).
 - Per-run isolation makes concurrent runs and delegation safe with no clearing protocol.
 
-**Downides (honest):**
+**Downsides (honest):**
 
 - The model spends calls writing notes — and can over-comply, burning the whole budget on bookkeeping
   (the token-loop failure, PR #9; see ADR-0002).

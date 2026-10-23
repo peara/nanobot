@@ -64,7 +64,7 @@ the model **as the tool result**, in-band feedback it can act on in the next rou
 - One boundary catches both schema noise and semantic lies, which individual tools could not see (only the
   boundary knows turn-level state like "the create actually failed").
 
-**Downides (honest):**
+**Downsides (honest):**
 
 - Several guard checks are heuristic pattern lists (JavaScript markers, "data didn't survive" phrasings) —
   they can false-positive on legitimate text or miss paraphrases; they are string matching, not parsing.

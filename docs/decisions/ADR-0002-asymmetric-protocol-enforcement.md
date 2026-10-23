@@ -66,7 +66,7 @@ Enforce the protocol in the harness — not with prompts alone — but **asymmet
 - The truth table is executable (`ScratchpadMachine`, edge methods named after its transitions) and pinned
   by protocol-walk tests, so refactors can be caught.
 
-**Downides (honest):**
+**Downsides (honest):**
 
 - The policy is genuinely subtle — attempts count as work while appends do not, batched calls change
   protocol outcomes, the tool surface shifts between rounds. It took a production incident and a
