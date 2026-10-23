@@ -282,6 +282,7 @@ Today's observability is **log-based, not query-based**:
 ## Related documents
 
 - [ROADMAP.md](ROADMAP.md) — Phases, milestones, and open design choices.
+- [docs/decisions/README.md](docs/decisions/README.md) — Architecture Decision Records: the why behind shipped design decisions, with alternatives and consequences.
 - [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md) — Scratchpad lifecycle, modes, protocol enforcement, and limits.
 - [docs/SKILLS.md](docs/SKILLS.md) — Skill schema, trigger modes, matching, and CRUD tools.
 - [docs/EVALUATOR.md](docs/EVALUATOR.md) — Three-phase evaluation pipeline and fault tolerance.
