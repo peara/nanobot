@@ -80,9 +80,10 @@ class ActiveRequest:
     current_step: str
 
 
-SCRATCHPAD_PROTOCOL_CORRECTION = (
-    "Protocol violation: after any external tool result, call session__scratchpad_write first "
-    "(mode='append' or mode='finalize') before requesting another external tool."
+SCRATCHPAD_STRICT_CORRECTION = (
+    "Protocol violation: you stopped with a text answer right after a scratchpad init, "
+    "but you did no work. Resume now with your tools, or call session__scratchpad_write "
+    "with mode='finalize' using what you actually have."
 )
 MAX_SCRATCHPAD_PROTOCOL_RETRIES = 2
 SCRATCHPAD_PROTOCOL_ABORT_REPLY = "I got stuck enforcing scratchpad updates in this turn. Please try again."
