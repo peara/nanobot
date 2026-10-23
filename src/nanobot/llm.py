@@ -8,11 +8,12 @@ from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
-from opentelemetry.trace import Span, SpanKind, Status, StatusCode
+from opentelemetry.trace import SpanKind, get_current_span
 
 from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.config import ModelConfig
-from nanobot.tracing import current_run_id, get_tracer, semconv, set_payload_attributes
+from nanobot.tracing import current_run_id, semconv, set_payload_attributes
+from nanobot.tracing.decorators import traced
 
 logger = logging.getLogger(__name__)
 _io_logger = logging.getLogger("nanobot.llm.io")
@@ -39,6 +40,29 @@ def _tool_names(tools: list[dict] | None) -> list[str]:
     return [t.get("function", {}).get("name", "?") for t in tools]
 
 
+def _chat_span_attributes(
+    client: LlmClient,
+    messages: list[dict],
+    tools: list[dict],
+    response_format: dict[str, Any] | None = None,
+    *,
+    scope: str | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    span_attributes: dict[str, Any] = {
+        semconv.GEN_AI_SYSTEM: semconv.GEN_AI_SYSTEM_VALUE,
+        semconv.GEN_AI_REQUEST_MODEL: client.model,
+        semconv.GEN_AI_REQUEST_MAX_TOKENS: client.max_tokens,
+        semconv.GEN_AI_REQUEST_TEMPERATURE: client.temperature,
+        semconv.SCOPE: scope or "-",
+        semconv.LLM_TOOL_COUNT: len(tools or []),
+    }
+    run_id = current_run_id()
+    if run_id:
+        span_attributes[semconv.RUN_ID] = run_id
+    return span_attributes
+
+
 class LlmClient:
     def __init__(self, config: ModelConfig) -> None:
         self.client = AsyncOpenAI(
@@ -50,6 +74,12 @@ class LlmClient:
         self.temperature = config.temperature
         self.max_tokens = config.max_tokens
 
+    @traced(
+        semconv.OP_CHAT,
+        kind=SpanKind.CLIENT,
+        operation=semconv.OP_CHAT,
+        attributes=_chat_span_attributes,
+    )
     async def chat(
         self,
         messages: list[dict],
@@ -59,42 +89,6 @@ class LlmClient:
         scope: str | None = None,
         cancel_token: CancellationToken | None = None,
     ) -> dict:
-        span_attributes: dict[str, Any] = {
-            semconv.GEN_AI_OPERATION_NAME: semconv.OP_CHAT,
-            semconv.GEN_AI_SYSTEM: semconv.GEN_AI_SYSTEM_VALUE,
-            semconv.GEN_AI_REQUEST_MODEL: self.model,
-            semconv.GEN_AI_REQUEST_MAX_TOKENS: self.max_tokens,
-            semconv.GEN_AI_REQUEST_TEMPERATURE: self.temperature,
-            semconv.SCOPE: scope or "-",
-            semconv.LLM_TOOL_COUNT: len(tools or []),
-        }
-        run_id = current_run_id()
-        if run_id:
-            span_attributes[semconv.RUN_ID] = run_id
-        with get_tracer().start_as_current_span(
-            semconv.OP_CHAT, kind=SpanKind.CLIENT, attributes=span_attributes
-        ) as span:
-            try:
-                return await self._chat(span, messages, tools, response_format, scope=scope, cancel_token=cancel_token)
-            except LlmCallCancelledError:
-                span.set_attribute(semconv.CANCELLED, True)
-                raise
-            except Exception as exc:
-                span.set_attribute(semconv.GEN_AI_ERROR_TYPE, type(exc).__name__)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
-                span.record_exception(exc)
-                raise
-
-    async def _chat(
-        self,
-        span: Span,
-        messages: list[dict],
-        tools: list[dict],
-        response_format: dict[str, Any] | None,
-        *,
-        scope: str | None,
-        cancel_token: CancellationToken | None,
-    ) -> dict:
         if cancel_token is not None and cancel_token.is_cancelled:
             raise LlmCallCancelledError(scope=scope)
 
@@ -103,6 +97,7 @@ class LlmClient:
             kwargs["response_format"] = response_format
         msg_count, msg_chars = _message_summary(messages)
         tool_names = _tool_names(tools)
+        span = get_current_span()
         span.set_attribute(semconv.LLM_MESSAGE_COUNT, msg_count)
         span.set_attribute(semconv.LLM_MESSAGE_CHARS, msg_chars)
         _io_logger.info(

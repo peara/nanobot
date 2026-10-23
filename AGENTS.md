@@ -30,7 +30,7 @@ nanobot/
 │   ├── evaluator/         # LearningEvaluator - skill learning extraction
 │   ├── prompts/           # PromptStore - centralized prompt management
 │   ├── memstore/          # Memstore tools for key-value storage
-│   ├── tracing/           # OTel spans: semconv pin, SQLite exporter, span store
+│   ├── tracing/           # OTel spans: @traced decorator, semconv pin, SQLite exporter, span store
 │   ├── skills/            # Skill injection and matching (vector-backed)
 │   ├── vector_store/       # Native vector store with multi-collection support
 │   ├── notebook/          # Bot-owned SQLite notebook (notebook__query)

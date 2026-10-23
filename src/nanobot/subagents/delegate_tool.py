@@ -31,11 +31,12 @@ import json
 import logging
 from typing import Any
 
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode, get_current_span
 
 from nanobot.cancel_token import CancellationToken
 from nanobot.core_utils import clip, human_now
-from nanobot.tracing import get_tracer, semconv
+from nanobot.tracing import semconv
+from nanobot.tracing.decorators import traced
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,42 @@ def delegate_task_spec() -> dict[str, Any]:
     }
 
 
+def _delegate_task_span_attributes(
+    core: Any,
+    args: dict[str, Any],
+    *,
+    scope: str,
+    run_id: str,
+    cancel_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    goal = str(args.get("goal", "") or "").strip()
+    span_attributes: dict[str, Any] = {
+        semconv.GEN_AI_TOOL_NAME: DELEGATE_TASK_NAME,
+        semconv.SCOPE: scope,
+    }
+    if run_id:
+        span_attributes[semconv.RUN_ID] = run_id
+    if goal:
+        span_attributes[semconv.RUN_GOAL] = clip(goal, 200)
+    return span_attributes
+
+
+def _delegate_task_on_result(span: Span, result_json: str) -> None:
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        return
+    error = payload.get("error")
+    if error:
+        span.set_status(Status(StatusCode.ERROR, str(error)))
+
+
+@traced(
+    semconv.SPAN_DELEGATE_TASK,
+    kind=SpanKind.INTERNAL,
+    attributes=_delegate_task_span_attributes,
+    on_result=_delegate_task_on_result,
+)
 async def run_delegate_task(
     core: Any,
     args: dict[str, Any],
@@ -105,86 +142,69 @@ async def run_delegate_task(
     Returns a JSON string suitable for use as a tool result message.
     """
     goal = str(args.get("goal", "") or "").strip()
-    span_attributes: dict[str, Any] = {
-        semconv.GEN_AI_TOOL_NAME: DELEGATE_TASK_NAME,
-        semconv.SCOPE: scope,
-    }
-    if run_id:
-        span_attributes[semconv.RUN_ID] = run_id
-    if goal:
-        span_attributes[semconv.RUN_GOAL] = clip(goal, 200)
-    with get_tracer().start_as_current_span(
-        semconv.SPAN_DELEGATE_TASK, kind=SpanKind.INTERNAL, attributes=span_attributes
-    ) as span:
-        depth = _depth_of_run(core, run_id)
-        if depth >= 1:
-            logger.warning("delegate_task called at depth >= 1; refusing")
-            span.set_status(Status(StatusCode.ERROR, DEPTH_REFUSED_MESSAGE))
-            return json.dumps({"error": DEPTH_REFUSED_MESSAGE})
+    depth = _depth_of_run(core, run_id)
+    if depth >= 1:
+        logger.warning("delegate_task called at depth >= 1; refusing")
+        return json.dumps({"error": DEPTH_REFUSED_MESSAGE})
 
-        if not goal:
-            span.set_status(Status(StatusCode.ERROR, "delegate_task: 'goal' is required and must be non-empty"))
-            return json.dumps({"error": "delegate_task: 'goal' is required and must be non-empty"})
+    if not goal:
+        return json.dumps({"error": "delegate_task: 'goal' is required and must be non-empty"})
 
-        if run_id is None:
-            span.set_status(Status(StatusCode.ERROR, "delegate_task: no active orchestrator run"))
-            return json.dumps(
-                {
-                    "error": "delegate_task: no active orchestrator run (parent run_id missing)",
-                }
-            )
-
-        system_content = core.prompts.render("subagent_delegated")
-        time_content = core.prompts.render(
-            "subagent_time",
-            working_timezone=core.config.working_timezone,
-            current_time=human_now(core.config.working_timezone),
-        )
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "system", "content": time_content},
-            {"role": "user", "content": goal},
-        ]
-
-        run = core.subagent_manager.spawn(
-            scope=scope,
-            parent_run_id=run_id,
-            goal=goal,
-        )
-        span.set_attribute(semconv.CHILD_RUN_ID, run.id)
-        logger.info(
-            "delegate_task spawned child run_id=%s parent_run_id=%s scope=%s",
-            run.id,
-            run_id,
-            scope,
-        )
-
-        # The child gets delegate_task in its tool list (it's prepended by
-        # _list_openai_tools), but the child's AgentRun._tools_for_chat strips
-        # it before the LLM sees it (depth >= 1). So the child can never call
-        # delegate_task even if it tried.
-        skill_names = core._get_active_skill_names(run.id)
-        tools = core._list_openai_tools(skill_names)
-        result = await core.subagent_manager.execute(
-            run,
-            messages,
-            tools,
-            cancel_token=cancel_token,
-        )
-
-        if not result.success and result.error:
-            span.set_status(Status(StatusCode.ERROR, result.error))
-
+    if run_id is None:
         return json.dumps(
             {
-                "run_id": result.run_id,
-                "reply": result.reply,
-                "success": result.success,
-                "tool_calls": result.tool_trace,
-                "error": result.error,
-            },
-            ensure_ascii=False,
+                "error": "delegate_task: no active orchestrator run (parent run_id missing)",
+            }
         )
+
+    system_content = core.prompts.render("subagent_delegated")
+    time_content = core.prompts.render(
+        "subagent_time",
+        working_timezone=core.config.working_timezone,
+        current_time=human_now(core.config.working_timezone),
+    )
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "system", "content": time_content},
+        {"role": "user", "content": goal},
+    ]
+
+    run = core.subagent_manager.spawn(
+        scope=scope,
+        parent_run_id=run_id,
+        goal=goal,
+    )
+    get_current_span().set_attribute(semconv.CHILD_RUN_ID, run.id)
+    logger.info(
+        "delegate_task spawned child run_id=%s parent_run_id=%s scope=%s",
+        run.id,
+        run_id,
+        scope,
+    )
+
+    # The child gets delegate_task in its tool list (it's prepended by
+    # _list_openai_tools), but the child's AgentRun._tools_for_chat strips
+    # it before the LLM sees it (depth >= 1). So the child can never call
+    # delegate_task even if it tried.
+    skill_names = core._get_active_skill_names(run.id)
+    tools = core._list_openai_tools(skill_names)
+    result = await core.subagent_manager.execute(
+        run,
+        messages,
+        tools,
+        cancel_token=cancel_token,
+    )
+
+    return json.dumps(
+        {
+            "run_id": result.run_id,
+            "reply": result.reply,
+            "success": result.success,
+            "tool_calls": result.tool_trace,
+            "error": result.error,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _depth_of_run(core: Any, run_id: str | None) -> int:

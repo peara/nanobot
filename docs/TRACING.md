@@ -15,10 +15,15 @@ rewrite.
 | Span store | `src/nanobot/tracing/store.py` | `spans` table in `data/traces.db` |
 | Exporter | `src/nanobot/tracing/exporter.py` | `SQLiteSpanExporter` + failure alerting |
 | Runtime | `src/nanobot/tracing/__init__.py` | Tracer provider, run_id contextvar, payload gate |
+| Decorator | `src/nanobot/tracing/decorators.py` | `@traced(...)` — owns span lifecycle for all sites |
 | CLI view | `src/nanobot/debug_cli.py` | `just trace <run_id>` |
 
 Manual instrumentation only — `opentelemetry-sdk`, no auto-instrumentation
-packages. Four span sites:
+packages. Span lifecycle (open/end, kind, name, exception recording, status,
+run-id context) is centralized in the `@traced` decorator; each call site is
+one decorator line plus an attribute extractor, with `get_current_span()` sets
+only where the body alone knows the data (HTTP responses, mid-function
+discoveries, swallowed-exception tracebacks). Four span sites:
 
 | Span | Site | Kind | Key attributes |
 |---|---|---|---|
@@ -26,6 +31,14 @@ packages. Four span sites:
 | `chat` | `LlmClient.chat` | CLIENT | model, tokens, finish_reason, error.type |
 | `execute_tool` | `ToolCallDispatcher.dispatch` | INTERNAL | tool name, run_id, ok/error status |
 | `delegate_task` | `run_delegate_task` | INTERNAL | goal, child_run_id, refusal errors |
+
+The decorator's shared exception policy: `LlmCallCancelledError` marks the
+span `nanobot.cancelled` and re-raises (never error status); any other
+exception sets `gen_ai.error.type`, status ERROR, and records the exception.
+Sites with non-raising contracts (execute, dispatch) swallow their
+exceptions internally and derive the span status from the returned result
+via `on_result` instead. OTel's own auto-record-on-exception context-manager
+default is disabled so this policy is the single owner of error semantics.
 
 Every message — main chat, scheduled tasks, delegated children — flows through
 `SubagentManager.execute`, so the `invoke_agent` span is the trace root for all
