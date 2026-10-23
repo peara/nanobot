@@ -156,6 +156,20 @@ browse scope config=config:
 tools scope config=config:
     uv run python -m nanobot.debug_cli --config {{ config }} tools --scope {{ scope }}
 
+# ── Tracing (OTel spans, ROADMAP Phase D) ──────
+
+# Replay a traced run end-to-end (span tree + token accounting)
+trace run_id config=config:
+    uv run python -m nanobot.debug_cli --config {{ config }} trace show --run-id {{ run_id }}
+
+# Replay the most recent traced run
+trace-latest config=config:
+    uv run python -m nanobot.debug_cli --config {{ config }} trace show --latest
+
+# List recent traced runs
+trace-list config=config:
+    uv run python -m nanobot.debug_cli --config {{ config }} trace list
+
 # ── Eval ───────────────────────────────────────
 
 # List available eval fixtures and prompts

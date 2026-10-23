@@ -156,6 +156,9 @@ just scopes              # list message scopes
 just ctx <scope>         # context report for a scope
 just scheduler-list      # scheduled tasks
 just plan-list           # recent plan runs
+just trace <run_id>      # replay a run from its OTel spans (tree + tokens + anomalies)
+just trace-latest        # replay the most recent traced run
+just trace-list          # recent traced runs
 ```
 
 Full command reference: `just --list`. For direct CLI usage, see `uv run python -m nanobot.debug_cli --config config.yaml --help`.

@@ -24,6 +24,7 @@ dependencies = [
   "selectolax>=0.3.27",
   "trafilatura>=2.0.0",
   "crawl4ai>=0.7.0",
+  "opentelemetry-sdk>=1.45.1",
 ]
 
 [tool.setuptools]

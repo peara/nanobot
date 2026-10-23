@@ -5,10 +5,15 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode, get_current_span
+
 from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
+from nanobot.core_utils import clip
 from nanobot.skills import Skill, SkillMatcher, SkillStore, SkillVectorStore
 from nanobot.skills.injection import build_skill_messages, build_tool_catalog_message
 from nanobot.subagents.store import SubagentRun, SubagentRunStore
+from nanobot.tracing import semconv
+from nanobot.tracing.decorators import traced
 
 if TYPE_CHECKING:
     from nanobot.agent_run import AgentRun
@@ -40,6 +45,33 @@ class SubagentRunResult:
     reply: str
     tool_trace: list[dict[str, Any]]
     error: str | None = None
+
+
+def _invoke_agent_span_attributes(
+    manager: SubagentManager,
+    run: SubagentRun,
+    messages: list[dict],
+    tools: list[dict],
+    response_format: dict[str, Any] | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {
+        semconv.RUN_ID: run.id,
+        semconv.SCOPE: run.scope,
+        semconv.RUN_DEPTH: manager._compute_depth(run.parent_run_id),
+    }
+    if run.parent_run_id:
+        attrs[semconv.PARENT_RUN_ID] = run.parent_run_id
+    if run.goal:
+        attrs[semconv.RUN_GOAL] = clip(run.goal, 200)
+    return attrs
+
+
+def _invoke_agent_on_result(span: Span, result: SubagentRunResult) -> None:
+    if result.error == "cancelled":
+        span.set_attribute(semconv.CANCELLED, True)
+    elif result.error:
+        span.set_status(Status(StatusCode.ERROR, result.error))
 
 
 class SubagentManager:
@@ -112,6 +144,14 @@ class SubagentManager:
         logger.info("Spawned subagent run run_id=%s scope=%s parent=%s", run_id, scope, parent_run_id)
         return run
 
+    @traced(
+        semconv.OP_INVOKE_AGENT,
+        kind=SpanKind.INTERNAL,
+        operation=semconv.OP_INVOKE_AGENT,
+        attributes=_invoke_agent_span_attributes,
+        on_result=_invoke_agent_on_result,
+        use_run_id_context=True,
+    )
     async def execute(
         self,
         run: SubagentRun,
@@ -179,6 +219,7 @@ class SubagentManager:
         except Exception as exc:
             success = False
             error = str(exc)
+            get_current_span().record_exception(exc)
             self._store.set_status(run.id, "failed", error=error)
             self._contexts.put("subagent_run", run.id, "error", {"message": error})
             self._contexts.put("subagent_run", run.id, "status", {"value": "failed"})

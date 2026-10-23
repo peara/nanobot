@@ -30,6 +30,7 @@ nanobot/
 │   ├── evaluator/         # LearningEvaluator - skill learning extraction
 │   ├── prompts/           # PromptStore - centralized prompt management
 │   ├── memstore/          # Memstore tools for key-value storage
+│   ├── tracing/           # OTel spans: @traced decorator, semconv pin, SQLite exporter, span store
 │   ├── skills/            # Skill injection and matching (vector-backed)
 │   ├── vector_store/       # Native vector store with multi-collection support
 │   ├── notebook/          # Bot-owned SQLite notebook (notebook__query)
@@ -55,6 +56,7 @@ nanobot/
 │   ├── skills/            # Tests for skills/
 │   ├── subagents/         # Tests for subagents/
 │   ├── tools/             # Tests for tools/
+│   ├── tracing/           # Tests for tracing/ (exporter, spans, instrumentation)
 │   ├── vector_store/      # Tests for vector_store/
 │   └── test_*.py          # Top-level module tests
 └── config.yaml            # Bot configuration
@@ -82,6 +84,7 @@ nanobot/
 | Skill learning extraction | `src/nanobot/evaluator/` | LearningEvaluator - evaluates agent turns for learnings |
 | Prompt management | `src/nanobot/prompts/` | PromptStore - centralized prompt templates |
 | Key-value storage | `src/nanobot/memstore/` | Memstore tools for context/state |
+| OTel tracing (Phase D) | `src/nanobot/tracing/` | Manual spans (invoke_agent/chat/execute_tool/delegate_task), SQLite exporter, `just trace <run_id>` |
 | Skill matching/injection | `src/nanobot/skills/` | SkillMatcher, skill tools (vector-backed) |
 | Vector embeddings | `src/nanobot/vector_store/` | Native vector store with multi-collection support |
 | Tool event hooks | `src/nanobot/hooks/` | FileTraceHook, tool event handlers |
@@ -98,6 +101,7 @@ Tests mirror source structure. For `src/nanobot/subagents/manager.py`, tests go 
 | `src/nanobot/evaluator/` | `tests/evaluator/` |
 | `src/nanobot/mcp_servers/` | `tests/mcp_servers/` |
 | `src/nanobot/memstore/` | `tests/memstore/` |
+| `src/nanobot/tracing/` | `tests/tracing/` |
 | `src/nanobot/plans/` | `tests/plans/` |
 | `src/nanobot/prompts/` | `tests/prompts/` |
 | `src/nanobot/skills/` | `tests/skills/` |
@@ -249,6 +253,7 @@ Before exploring the codebase, check these docs — they often contain the answe
 | MCP Servers (config, lifecycle, required_env, override pattern, adding new servers) | `docs/MCP_SERVERS.md` | Adding MCP servers, config override, debugging server startup |
 | Web Agent (browser interaction, content extraction, snapshots, multi-tab, hooks) | `docs/WEB_AGENT.md` | Modifying browser interaction, extraction pipeline, adding web tools |
 | Logging (config-driven setup, handler factory, per-module filtering, LLM/evaluator log separation) | `docs/logging.md` | Adding log handlers, debugging logging config, LLM call tracing |
+| Tracing (OTel spans, SQLite exporter, semconv pin, run_id threading, `just trace`) | `docs/TRACING.md` | Adding spans, debugging runs from traces, payload capture, re-pinning semconv |
 | Vector Store / Qdrant (lock contention, separate configs, constructor injection) | `docs/mem0-vector-store-patterns.md` | Adding VectorStore consumers, debugging Qdrant lock errors, sharing instances |
 | Reddit MCP (public JSON endpoints, rate limits, tool reference, error handling) | `docs/REDDIT.md` | Modifying Reddit tools, debugging rate limits, adding Reddit features |
 
