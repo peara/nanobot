@@ -137,7 +137,7 @@ async def run_delegate_task(
     BotCore is read. The delegation span opened here is parented under the
     caller's execute_tool span via the ambient OTel context (no explicit
     propagation), and the child run's invoke_agent span in turn nests under
-    this one — delegated children join the parent's trace for free.
+    this one — delegated children join the parent's trace.
 
     Returns a JSON string suitable for use as a tool result message.
     """

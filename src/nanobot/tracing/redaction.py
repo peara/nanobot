@@ -48,9 +48,9 @@ def _init_scanner_settings() -> None:
     settings = get_settings()
     settings.clear()
     settings.configure_plugins(_PLUGINS)
-    # Heuristic filters assume source-code context and suppress real secrets in
-    # JSON payloads (verified: is_likely_id_string kills JSON password values).
-    # Redaction wants maximum recall; there is no code-context FP cost here.
+    # Heuristic filters assume source-code context and suppress real secrets
+    # in JSON payloads (e.g. is_likely_id_string drops JSON password values);
+    # redaction wants maximum recall.
     settings.filters = {}
     _settings_initialized = True
 

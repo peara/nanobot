@@ -1,10 +1,8 @@
-"""Redaction battery — the upgrade canary for detect-secrets.
+"""Pins the redact_payload contract over realistic secret shapes.
 
-Pins a `redact_payload` contract over realistic secret shapes across the
-gitleaks rule families. detect-secrets is pinned (==1.5.0) because the
-integration reaches into plugin internals (denylist regexes, entropy limits);
-if the library is upgraded and these tests fail, re-verify the plugin-attribute
-access patterns before shipping the bump.
+detect-secrets is pinned (==1.5.0) because nanobot.tracing.redaction reaches
+into plugin internals (denylist regexes, entropy limits). If a version bump
+fails these tests, re-verify those access patterns.
 """
 
 from __future__ import annotations

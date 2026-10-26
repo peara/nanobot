@@ -1,10 +1,10 @@
-"""End-to-end instrumentation tests over a real BotCore (issue #48).
+"""End-to-end instrumentation tests over a real BotCore.
 
-The four span sites are exercised through the real flow — SubagentManager.execute,
-AgentRun's LLM loop, ToolCallDispatcher.dispatch, and run_delegate_task — with
-only the OpenAI transport stubbed. This is the acceptance-criteria test: a run
-with LLM rounds, tool calls, and a delegated child produces a full parent→child
-span tree in SQLite, joinable with subagent_runs via run_id.
+Exercises the instrumented flows — SubagentManager.execute, AgentRun's LLM
+loop, ToolCallDispatcher.dispatch, run_delegate_task, and the plan runner —
+with only the OpenAI transport stubbed. A run with LLM rounds, tool calls,
+and a delegated child must produce a full parent→child span tree in SQLite,
+joinable with subagent_runs via run_id.
 """
 
 from __future__ import annotations
@@ -208,7 +208,7 @@ class TestFullSpanTree:
 
 
 class TestErrorVisibility:
-    """Issue #35 P0: LLM errors must be visible with request-size counts."""
+    """LLM errors must be visible on spans with request-size counts."""
 
     @pytest.mark.asyncio
     async def test_llm_error_marks_chat_and_run_spans(self, tmp_path: Path) -> None:
@@ -272,8 +272,7 @@ class TestDelegationRefusalTraced:
 
 
 class TestPlanFlowTraced:
-    """Plan runs must produce the same invoke_agent-rooted tree as subagent
-    runs (review finding: process_plan bypasses SubagentManager.execute)."""
+    """Plan runs must produce the same invoke_agent-rooted tree as subagent runs."""
 
     @pytest.mark.asyncio
     async def test_plan_run_produces_invoke_agent_root_with_llm_rounds(self, tmp_path: Path) -> None:

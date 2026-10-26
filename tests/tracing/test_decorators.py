@@ -1,7 +1,7 @@
-"""Unit tests for the traced() decorator (PR #49 refactor).
+"""Unit tests for the traced() decorator.
 
-The decorator owns span lifecycle; these tests pin its contract so the four
-instrumentation sites only need to pin their own attributes.
+Pins the span-lifecycle contract so instrumentation sites only need to pin
+their own attributes.
 """
 
 from __future__ import annotations

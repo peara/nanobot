@@ -378,7 +378,10 @@ def _skills_resync(config: AppConfig) -> None:
 
 def _trace_db_path(config: AppConfig) -> str:
     if config.tracing is None:
-        raise SystemExit("Tracing is not configured. Add a `tracing:` section to config.yaml (see docs/TRACING.md).")
+        raise SystemExit(
+            "Tracing is not configured. Add a `tracing:` section to config.yaml:\n"
+            '  tracing:\n    db_path: "./data/traces.db"\n    capture_payloads: false'
+        )
     return config.tracing.db_path
 
 
@@ -591,7 +594,7 @@ def main() -> None:
 
     sub.add_parser("skills-resync", help="Resync intelligent skills to mem0 (remove + re-store)")
 
-    trace = sub.add_parser("trace", help="Inspect OTel span traces (ROADMAP Phase D)")
+    trace = sub.add_parser("trace", help="Inspect OTel span traces")
     trace_sub = trace.add_subparsers(dest="trace_cmd", required=True)
     trace_list = trace_sub.add_parser("list", help="List recent traced runs")
     trace_list.add_argument("--limit", type=int, default=20, help="Number of recent runs to show")

@@ -1,4 +1,4 @@
-"""Tests for the `trace` subcommand of the debug CLI (issue #48).
+"""Tests for the `trace` subcommand of the debug CLI.
 
 Feeds a seeded TraceStore through the _trace_list/_trace_show view functions
 and asserts the replay output: tree indentation, per-run token accounting,

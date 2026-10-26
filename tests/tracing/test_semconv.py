@@ -1,9 +1,8 @@
-"""Lock the pinned GenAI semconv vintage (issue #48).
+"""Locks the pinned GenAI semconv attribute strings.
 
-These exact strings are the contract with the Langfuse-documented attribute
-vintage (see src/nanobot/tracing/semconv.py docstring). Any intentional
-re-pin of the vintage must consciously update both semconv.py and these
-assertions — that is the migration window the wrapper owns.
+The strings are the contract with the Langfuse-documented vintage. An
+intentional re-pin updates src/nanobot/tracing/semconv.py and these
+assertions — nothing else.
 """
 
 from __future__ import annotations

@@ -1,18 +1,17 @@
 """Decorator-based span instrumentation — the one place span lifecycle lives.
 
-Call sites declare *what* a span is (name, kind, operation, attributes from
-the call arguments) plus optionally how to enrich it from the return value
-(``on_result``). This module owns the *how*: start/end, exception recording,
-status, run-id context propagation. The four Phase D sites each reduce to a
-decorator line plus one extractor (and where only the body knows, a minimal
-``get_current_span()`` set — response payloads, mid-function discoveries,
-and swallowed-exception tracebacks).
+A call site declares *what* a span is: name, kind, operation, attributes
+built from the call arguments, and optionally an ``on_result`` enrichment
+from the return value. This module owns *how* a span runs: open/end,
+exception recording, status, and run-id context propagation. Runtime facts
+only the function body can know (HTTP responses, mid-function discoveries,
+tracebacks of exceptions the body swallows) are set via ``get_current_span()``.
 
-Exception policy (shared by all sites): ``LlmCallCancelledError`` marks the
-span cancelled and re-raises; any other exception sets ``gen_ai.error.type``,
-status ERROR, records the exception, and re-raises. Functions with
-non-raising contracts (``execute``, ``dispatch``) swallow their exceptions
-before this policy sees them — those sites derive their status from the
+Exception policy for anything escaping the decorated function:
+``LlmCallCancelledError`` marks the span cancelled and re-raises; every other
+exception sets ``gen_ai.error.type``, status ERROR, records the exception,
+and re-raises. Functions with non-raising contracts (execute, dispatch)
+swallow their exceptions internally and derive span status from the
 returned result via ``on_result`` instead.
 """
 

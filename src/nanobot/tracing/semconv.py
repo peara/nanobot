@@ -1,32 +1,21 @@
-"""GenAI semantic-convention strings for nanobot's manual OTel instrumentation.
+"""GenAI semantic-convention attribute strings — the single owner.
 
-Pinned vintage: the OTel GenAI conventions as documented by Langfuse
-(langfuse.com/docs/opentelemetry/get-started attribute-mapping table and the
-langfuse ingestion code, OtelIngestionProcessor.ts):
+Pinned to the attribute names Langfuse's OpenTelemetry ingestion consumes:
 
-- Tokens: ``gen_ai.usage.input_tokens`` / ``gen_ai.usage.output_tokens`` —
-  the names after the v1.28.0 rename (Langfuse still reads the pre-1.28
-  ``prompt_tokens``/``completion_tokens`` as backward compat; the current
-  names are canonical).
-- System: ``gen_ai.system`` — kept on the pre-1.37 name because Langfuse's
-  ingestion reads ``gen_ai.system`` and does NOT read its v1.37.0
-  replacement ``gen_ai.provider.name``.
-- Span kinds: pre-v1.41.0 ``invoke_agent`` semantics (INTERNAL) — which also
-  matches the v1.41 in-process-agent variant: no server.address/port, no
-  token usage on the agent span.
-- Content: ``gen_ai.prompt`` / ``gen_ai.completion`` JSON-string attributes
-  (payload capture only) — consumed by Langfuse as input/output.
+- Tokens: ``gen_ai.usage.input_tokens`` / ``gen_ai.usage.output_tokens``
+  (Langfuse also accepts the older ``prompt_tokens`` / ``completion_tokens``).
+- System: ``gen_ai.system`` — Langfuse does not read its successor
+  ``gen_ai.provider.name``.
+- Content: ``gen_ai.prompt`` / ``gen_ai.completion`` as JSON strings
+  (payload capture only).
+- Span kind: ``invoke_agent`` INTERNAL — the in-process-agent variant.
 
-The upstream conventions are Development-status and churning (token renames
-in v1.28.0, gen_ai.system rename in v1.37.0, the invoke_agent span-kind
-split in v1.41.0, the GenAI repo move in v1.42.0 / June 2026). This module
-owns every attribute string we emit, so a future re-pin is a diff against
-this one file — never a sweep through instrumentation sites. When a platform
-(Langfuse et al.) enters and brings an OTLP exporter, migrate the strings
-here; the spans, exporters, and CLI do not change.
+The upstream conventions are development-status and rename attributes
+between versions; every string we emit is defined here, so a re-pin is a
+diff against this one file and nothing else.
 
-Everything not covered by the GenAI conventions (run join keys, anomaly
-flags) lives under the ``nanobot.*`` namespace below.
+Attributes not covered by the conventions (run join keys, anomaly flags)
+live under the ``nanobot.*`` namespace below.
 """
 
 GEN_AI_SYSTEM = "gen_ai.system"

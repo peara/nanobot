@@ -1,14 +1,13 @@
-"""OTel tracing runtime for nanobot (ROADMAP Phase D, issue #48).
+"""OTel tracing runtime for nanobot.
 
 Manual instrumentation only — opentelemetry-sdk, no auto-instrumentation.
-Four span sites (see docs/TRACING.md): invoke_agent, chat, execute_tool,
-delegate_task. Spans persist to SQLite via SQLiteSpanExporter so `just trace
-<run_id>` works with zero infra; an OTLP exporter later is a config decision,
-not a rewrite.
+Spans persist to SQLite via ``SQLiteSpanExporter``; ``just trace <run_id>``
+reads them. An OTLP exporter can be added later without changing any
+instrumentation site.
 
-When tracing is not initialized (no `tracing:` config section, or test
-fakes), get_tracer() returns no-op spans and every helper below degrades to
-a cheap no-op — instrumentation sites never branch on tracing state.
+Without ``init_tracing`` (no ``tracing:`` config section, or test fakes),
+``get_tracer()`` returns no-op spans and every helper below degrades to a
+cheap no-op — instrumentation sites never branch on tracing state.
 """
 
 from __future__ import annotations
@@ -110,10 +109,9 @@ def payload_capture_enabled() -> bool:
 def set_payload_attributes(span: Span, payloads: dict[str, str]) -> None:
     """Set payload attributes only when tracing.capture_payloads is on.
 
-    nanobot.llm.io keeps full-payload logging duty; spans carry the skeleton
-    + metadata by default. When the flag turns on, every payload passes
-    through redact_payload here — the single choke point (detect-secrets
-    backed; see nanobot.tracing.redaction).
+    `nanobot.llm.io` keeps full-payload logging duty; spans carry the
+    skeleton + metadata by default. Every captured payload passes through
+    `redact_payload` before landing on the span — the single choke point.
     """
     if not payload_capture_enabled():
         return

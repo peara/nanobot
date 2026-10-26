@@ -62,7 +62,7 @@ class LoggingConfig:
 
 @dataclass
 class TracingConfig:
-    """OTel tracing settings (ROADMAP Phase D). None in AppConfig = tracing off.
+    """OTel tracing settings; ``None`` in AppConfig disables tracing.
 
     Payload capture as span attributes is default-off: `nanobot.llm.io` keeps
     full-payload logging duty; spans carry the skeleton + metadata only.
