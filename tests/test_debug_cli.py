@@ -189,3 +189,35 @@ class TestTraceShow:
         TraceStore(str(tmp_path / "traces.db"))
         _trace_show(_build_config(tmp_path), "run-nope")
         assert "No spans found for run_id: run-nope" in capsys.readouterr().out
+
+    def test_error_chat_line_shows_request_sizes(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        store = TraceStore(str(tmp_path / "traces.db"))
+        store.insert_spans(
+            [
+                _record(
+                    "a" * 16,
+                    name=semconv.OP_INVOKE_AGENT,
+                    kind="INTERNAL",
+                    run_id="run-err",
+                    attributes={semconv.RUN_ID: "run-err"},
+                ),
+                _record(
+                    "b" * 16,
+                    parent_span_id="a" * 16,
+                    name=semconv.OP_CHAT,
+                    run_id="run-err",
+                    start_ts=1001.0,
+                    status="error",
+                    status_message="400: context length exceeded",
+                    attributes={
+                        semconv.GEN_AI_REQUEST_MODEL: "stub",
+                        semconv.LLM_MESSAGE_COUNT: 3,
+                        semconv.LLM_MESSAGE_CHARS: 566,
+                    },
+                ),
+            ]
+        )
+        _trace_show(_build_config(tmp_path), "run-err")
+        out = capsys.readouterr().out
+        assert "ERROR=400: context length exceeded" in out
+        assert "msgs=3 chars=566" in out

@@ -49,7 +49,10 @@ def _open_span(
     if operation is not None:
         span_attributes[semconv.GEN_AI_OPERATION_NAME] = operation
     if attributes is not None:
-        span_attributes.update(attributes(*args, **kwargs))
+        try:
+            span_attributes.update(attributes(*args, **kwargs))
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Span attribute extractor failed span=%s", name)
     run_id = span_attributes.get(semconv.RUN_ID)
     context = run_id_context(str(run_id)) if use_run_id_context and run_id else contextlib.nullcontext()
     # record_exception/set_status_on_exception off: the policy below is the
@@ -66,7 +69,10 @@ def _open_span(
 
 def _settle_result(span: Span, result: Any, on_result: Callable[[Span, Any], None] | None) -> Any:
     if on_result is not None:
-        on_result(span, result)
+        try:
+            on_result(span, result)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Span on_result handler failed")
     return result
 
 

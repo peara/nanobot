@@ -21,6 +21,7 @@ import pytest
 
 from nanobot.config import AppConfig, ChannelConfig, McpServerConfig, ModelConfig, TracingConfig
 from nanobot.core import BotCore
+from nanobot.plans import process_plan
 from nanobot.subagents.delegate_tool import DEPTH_REFUSED_MESSAGE, run_delegate_task
 from nanobot.tracing import get_tracer, semconv
 from nanobot.tracing.store import TraceStore
@@ -197,12 +198,11 @@ class TestFullSpanTree:
         bot = BotCore(config=config, channels={"telegram": cast(Any, object())})
         bot.llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=_StubCompletions(responses))))
         parent = bot.subagent_manager.spawn(scope="telegram:1", goal="g")
-        await bot.subagent_manager.execute(
-            parent, [{"role": "user", "content": "sk-abcdefgh12345678"}], bot._list_openai_tools([])
-        )
+        secret = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        await bot.subagent_manager.execute(parent, [{"role": "user", "content": secret}], bot._list_openai_tools([]))
         chat_span = next(s for s in _spans(tmp_path).list_by_run(parent.id) if s.name == semconv.OP_CHAT)
         attrs = chat_span.attributes()
-        assert "sk-abcdefgh12345678" not in attrs[semconv.GEN_AI_PROMPT]
+        assert secret not in attrs[semconv.GEN_AI_PROMPT]
         assert "[REDACTED]" in attrs[semconv.GEN_AI_PROMPT]
         assert attrs[semconv.GEN_AI_COMPLETION] == "the answer"
 
@@ -269,6 +269,53 @@ class TestDelegationRefusalTraced:
         delegate_span = next(s for s in _spans(tmp_path).list_by_run(child.id) if s.name == semconv.SPAN_DELEGATE_TASK)
         assert delegate_span.status == "error"
         assert delegate_span.status_message == DEPTH_REFUSED_MESSAGE
+
+
+class TestPlanFlowTraced:
+    """Plan runs must produce the same invoke_agent-rooted tree as subagent
+    runs (review finding: process_plan bypasses SubagentManager.execute)."""
+
+    @pytest.mark.asyncio
+    async def test_plan_run_produces_invoke_agent_root_with_llm_rounds(self, tmp_path: Path) -> None:
+        responses = [
+            _fake_response(
+                content='{"goal": "research tracing", "constraints": [], "required_inputs": [], '
+                '"risk_flags": [], "notes": ""}',
+                prompt_tokens=150,
+                completion_tokens=15,
+            ),
+            _fake_response(content="plan executed final result", prompt_tokens=400, completion_tokens=60),
+        ]
+        bot = _make_bot(tmp_path, responses)
+        sent: list[tuple[str, str]] = []
+
+        async def fake_send(scope: str, text: str) -> None:
+            sent.append((scope, text))
+
+        bot._send = fake_send  # type: ignore[method-assign]
+
+        await process_plan(bot, "telegram:1", "/plan research tracing")
+
+        run_id = bot.contexts.get("chat", "telegram:1", "last_plan_run_id")["run_id"]
+        store = _spans(tmp_path)
+        spans = store.list_by_run(run_id)
+        by_name = {s.name: s for s in spans}
+        assert set(by_name) == {semconv.OP_INVOKE_AGENT, semconv.OP_CHAT}
+        assert len([s for s in spans if s.name == semconv.OP_CHAT]) == 2
+
+        root = by_name[semconv.OP_INVOKE_AGENT]
+        assert root.parent_span_id is None
+        assert root.attributes()[semconv.RUN_DEPTH] == 0
+        assert root.attributes()[semconv.RUN_GOAL] == "research tracing"
+        assert root.attributes()[semconv.SCOPE] == "telegram:1"
+
+        chats = sorted((s for s in spans if s.name == semconv.OP_CHAT), key=lambda s: s.start_ts)
+        assert len({s.trace_id for s in [root, *chats]}) == 1
+        assert all(c.parent_span_id == root.span_id for c in chats)
+        assert all(c.attributes()[semconv.RUN_ID] == run_id for c in chats)
+        assert chats[1].attributes()[semconv.GEN_AI_USAGE_INPUT_TOKENS] == 400
+
+        assert sent and "plan executed final result" in sent[-1][1]
 
 
 class TestExporterFailureAlerting:

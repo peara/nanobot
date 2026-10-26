@@ -161,3 +161,38 @@ class TestTracingOff:
         with pytest.raises(LlmCallCancelledError):
             await _cancel()
         assert payload_capture_enabled() is False
+
+
+class TestTelemetryNeverBreaksTheOperation:
+    """A raising extractor or on_result hook must not break the call."""
+
+    @pytest.mark.asyncio
+    async def test_raising_extractor_still_runs_function(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "traces.db")
+        init_tracing(TracingConfig(db_path=db))
+
+        def bad_attributes(x: int, *, scope: str = "run-z") -> dict[str, Any]:
+            raise RuntimeError("extractor bug")
+
+        @traced("fragile", kind=SpanKind.INTERNAL, attributes=bad_attributes)
+        async def fragile(x: int, *, scope: str = "run-z") -> int:
+            return x + 1
+
+        assert await fragile(5) == 6
+        rows = _rows(db)
+        assert len(rows) == 1
+        assert json.loads(rows[0]["attributes_json"]) == {}  # span opens with no attrs
+
+    @pytest.mark.asyncio
+    async def test_raising_on_result_still_returns_result(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "traces.db")
+        init_tracing(TracingConfig(db_path=db))
+
+        def bad_on_result(span: Any, result: int) -> None:
+            raise RuntimeError("on_result bug")
+
+        @traced("fragile", kind=SpanKind.INTERNAL, on_result=bad_on_result)
+        async def fragile() -> int:
+            return 42
+
+        assert await fragile() == 42

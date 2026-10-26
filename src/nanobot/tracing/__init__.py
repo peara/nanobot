@@ -14,7 +14,6 @@ a cheap no-op — instrumentation sites never branch on tracing state.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -28,20 +27,12 @@ from opentelemetry.trace import Span
 
 from nanobot.config import TracingConfig
 from nanobot.tracing.exporter import SQLiteSpanExporter
+from nanobot.tracing.redaction import redact_payload
 from nanobot.tracing.store import TraceStore
 
 logger = logging.getLogger(__name__)
 
 _run_id_var: ContextVar[str | None] = ContextVar("nanobot_run_id", default=None)
-
-_SECRET_PATTERNS = re.compile(
-    r"(sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|"
-    r"(?:api_?key|token|password|secret)[\"']?\s*[:=]\s*[\"']?[\S]{4,})",
-    re.IGNORECASE,
-)
-
-_REDACTED = "[REDACTED]"
-_PAYLOAD_CHAR_LIMIT = 4000
 
 
 @dataclass
@@ -116,22 +107,13 @@ def payload_capture_enabled() -> bool:
     return _runtime is not None and _runtime.capture_payloads
 
 
-def redact_payload(text: str, limit: int = _PAYLOAD_CHAR_LIMIT) -> str:
-    """Redaction gate for payload attributes: mask secret-looking strings,
-    then clip. Runs at attribute-setting time, only when capture is on.
-    """
-    masked = _SECRET_PATTERNS.sub(_REDACTED, text)
-    if len(masked) > limit:
-        masked = f"{masked[:limit]}...[clipped {len(text) - limit} chars]"
-    return masked
-
-
 def set_payload_attributes(span: Span, payloads: dict[str, str]) -> None:
     """Set payload attributes only when tracing.capture_payloads is on.
 
     nanobot.llm.io keeps full-payload logging duty; spans carry the skeleton
     + metadata by default. When the flag turns on, every payload passes
-    through redact_payload here — the single choke point.
+    through redact_payload here — the single choke point (detect-secrets
+    backed; see nanobot.tracing.redaction).
     """
     if not payload_capture_enabled():
         return

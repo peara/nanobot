@@ -48,11 +48,17 @@ class TraceStore:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        if db_path != ":memory:":
+        # ":memory:" needs one persistent connection — a fresh
+        # sqlite3.connect(":memory:") per call would give every call its own
+        # empty database, losing the schema _init_db just created.
+        self._memory_conn: sqlite3.Connection | None = sqlite3.connect(":memory:") if db_path == ":memory:" else None
+        if self._memory_conn is None:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        if self._memory_conn is not None:
+            return self._memory_conn
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:

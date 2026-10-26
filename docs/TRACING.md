@@ -23,14 +23,31 @@ packages. Span lifecycle (open/end, kind, name, exception recording, status,
 run-id context) is centralized in the `@traced` decorator; each call site is
 one decorator line plus an attribute extractor, with `get_current_span()` sets
 only where the body alone knows the data (HTTP responses, mid-function
-discoveries, swallowed-exception tracebacks). Four span sites:
+discoveries, swallowed-exception tracebacks). Span sites:
 
 | Span | Site | Kind | Key attributes |
 |---|---|---|---|
-| `invoke_agent` | `SubagentManager.execute` | INTERNAL | run_id, parent_run_id, scope, goal, depth |
+| `invoke_agent` | `SubagentManager.execute` (root for main-chat, scheduled, delegated runs) | INTERNAL | run_id, parent_run_id, scope, goal, depth |
+| `invoke_agent` | `_execute_plan_traced` in `plans/runner.py` (root for `/plan` runs) | INTERNAL | run_id, scope, goal, depth |
 | `chat` | `LlmClient.chat` | CLIENT | model, tokens, finish_reason, error.type |
 | `execute_tool` | `ToolCallDispatcher.dispatch` | INTERNAL | tool name, run_id, ok/error status |
 | `delegate_task` | `run_delegate_task` | INTERNAL | goal, child_run_id, refusal errors |
+
+Main-chat messages, scheduled tasks, and delegated children flow through
+`SubagentManager.execute`; `/plan` runs flow through the traced wrapper in
+`plans/runner.py` — both emit the `invoke_agent` trace root for their run and
+open the run-id contextvar. The evaluator's post-turn LLM calls (quality /
+learning extraction) deliberately run *outside* any run: they emit standalone
+root `chat` spans with no run_id, unreachable via `just trace` (which queries
+by run) — their I/O duty stays with `nanobot.evaluator.io` logging, and the
+spans are queryable via SQL on the `spans` table if ever needed.
+
+**Anomaly alerting decision (owner, 2026-10-23):** anomalies are *persisted
+and surfaced*, not push-alerted — `finish_reason=length` and empty replies
+land as span attributes (plus the pre-existing `llm.py` WARNING logs) and are
+summarized by `just trace` on demand. Exporter failure remains the only push
+alert (once per process to the owner), since a broken exporter makes all of
+the above invisible.
 
 The decorator's shared exception policy: `LlmCallCancelledError` marks the
 span `nanobot.cancelled` and re-raises (never error status); any other
@@ -40,10 +57,12 @@ exceptions internally and derive the span status from the returned result
 via `on_result` instead. OTel's own auto-record-on-exception context-manager
 default is disabled so this policy is the single owner of error semantics.
 
-Every message — main chat, scheduled tasks, delegated children — flows through
-`SubagentManager.execute`, so the `invoke_agent` span is the trace root for all
-runs and carries the `subagent_runs` join key. Delegated children nest under
-the parent's trace for free (ambient OTel context — no explicit propagation).
+Main-chat messages, scheduled tasks, and delegated children flow through
+`SubagentManager.execute`, so the `invoke_agent` span is the trace root for
+those runs and carries the `subagent_runs` join key. `/plan` runs get the same
+root from the traced wrapper in `plans/runner.py`. Delegated children nest
+under the parent's trace for free (ambient OTel context — no explicit
+propagation).
 
 ## Configuration
 
@@ -62,8 +81,17 @@ tracing:
 - **`capture_payloads`** — default **off**. `nanobot.llm.io` logging keeps
   full-payload duty; spans carry the skeleton + metadata only. When on,
   `gen_ai.prompt` / `gen_ai.completion` attributes are recorded — every
-  payload passes through the redaction gate at attribute-setting time
-  (secret-shaped strings masked, content clipped at 4000 chars).
+  payload passes through the redaction gate at attribute-setting time.
+  Redaction is backed by [`detect-secrets`](https://github.com/Yelp/detect-secrets)
+  (pinned `==1.5.0`): the gitleaks rule families — AWS keys, GitHub PATs,
+  Slack/OpenAI tokens, JWTs, PEM private-key blocks, Basic auth,
+  keyword-adjacent values (`password=`/`api_key=`), high-entropy strings.
+  Best effort, **not a guarantee**: known residual gaps are low-entropy
+  base64 blobs, multi-word unquoted prose values (trimmed to first token),
+  and short synthetic strings below the entropy gates. The battery in
+  `tests/tracing/test_redaction.py` doubles as the upgrade canary — the
+  integration reaches detect-secrets plugin internals, so re-verify on any
+  version bump.
 
 ## run_id threading
 

@@ -5,19 +5,33 @@ import logging
 import uuid
 from typing import Any
 
-from nanobot.core_utils import command_body, extract_json_object, looks_garbled_text
+from opentelemetry.trace import SpanKind, Status, StatusCode, get_current_span
+
+from nanobot.core_utils import clip, command_body, extract_json_object, looks_garbled_text
 from nanobot.plans.models import PlanBrief
+from nanobot.tracing import semconv
+from nanobot.tracing.decorators import traced
 
 logger = logging.getLogger(__name__)
 
 
-async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
-    request_text = command_body(raw_text)
-    if not request_text:
-        await bot._send(chat_scope, "Usage: /plan <request>")
-        return
+def _plan_span_attributes(bot: Any, chat_scope: str, raw_text: str, request_text: str, run_id: str) -> dict[str, Any]:
+    return {
+        semconv.RUN_ID: run_id,
+        semconv.SCOPE: chat_scope,
+        semconv.RUN_DEPTH: 0,
+        semconv.RUN_GOAL: clip(request_text, 200),
+    }
 
-    run_id = f"run-{uuid.uuid4().hex[:10]}"
+
+@traced(
+    semconv.OP_INVOKE_AGENT,
+    kind=SpanKind.INTERNAL,
+    operation=semconv.OP_INVOKE_AGENT,
+    attributes=_plan_span_attributes,
+    use_run_id_context=True,
+)
+async def _execute_plan_traced(bot: Any, chat_scope: str, raw_text: str, request_text: str, run_id: str) -> None:
     logger.info("Starting plan run run_id=%s chat_scope=%s", run_id, chat_scope)
     bot.memory.add_message(chat_scope, "user", raw_text)
     bot.contexts.put("chat", chat_scope, "last_plan_run_id", {"run_id": run_id})
@@ -126,6 +140,8 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
         await bot._send(chat_scope, final_reply)
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Plan run failed run_id=%s", run_id)
+        get_current_span().set_status(Status(StatusCode.ERROR, str(exc)))
+        get_current_span().record_exception(exc)
         bot.contexts.put("plan_run", run_id, "error", {"message": str(exc)})
         bot.contexts.put("plan_run", run_id, "status", {"value": "failed"})
         # If a plan was created before execution, record the failure in the plan
@@ -140,3 +156,12 @@ async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
             except Exception:
                 logger.exception("Failed to annotate plan with failure for plan_id=%s", saved_plan_id)
         await bot._send(chat_scope, f"Plan run failed ({run_id}): {exc}")
+
+
+async def process_plan(bot: Any, chat_scope: str, raw_text: str) -> None:
+    request_text = command_body(raw_text)
+    if not request_text:
+        await bot._send(chat_scope, "Usage: /plan <request>")
+        return
+    run_id = f"run-{uuid.uuid4().hex[:10]}"
+    await _execute_plan_traced(bot, chat_scope, raw_text, request_text, run_id)

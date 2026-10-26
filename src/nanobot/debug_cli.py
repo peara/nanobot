@@ -415,6 +415,8 @@ def _format_span_line(rec: SpanRecord) -> str:
             parts.append("empty_content")
         if attrs.get(semconv.CANCELLED):
             parts.append("cancelled")
+        if rec.status == "error" and semconv.LLM_MESSAGE_CHARS in attrs:
+            parts.append(f"msgs={attrs.get(semconv.LLM_MESSAGE_COUNT, '-')} chars={attrs[semconv.LLM_MESSAGE_CHARS]}")
     elif rec.name == semconv.OP_EXECUTE_TOOL:
         parts.append(f"tool={attrs.get(semconv.GEN_AI_TOOL_NAME, '-')}")
         if semconv.RUN_ID in attrs:
@@ -669,6 +671,8 @@ def main() -> None:
             run_id = args.run_id
             if args.latest:
                 run_id = _latest_trace_run_id(_trace_db_path(config))
+                if not run_id:
+                    raise SystemExit("No traced runs found.")
             if not run_id:
                 raise SystemExit("Run id is required. Pass --run-id or --latest.")
             _trace_show(config, run_id)

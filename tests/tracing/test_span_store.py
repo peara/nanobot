@@ -59,6 +59,16 @@ def test_init_creates_schema_idempotently(tmp_path: Path) -> None:
     ]
 
 
+def test_memory_db_persists_across_connections() -> None:
+    """':memory:' must share one connection — per-call connects would each
+    create a fresh empty database and lose the schema."""
+    store = TraceStore(":memory:")
+    store.insert_spans([_record("a" * 16, run_id="run-1")])
+    assert store.get("a" * 16) is not None
+    assert [r.name for r in store.list_by_run("run-1")] == ["chat"]
+    assert len(store.recent_runs(limit=5)) == 1
+
+
 def test_insert_and_get_roundtrip(tmp_path: Path) -> None:
     store = TraceStore(str(tmp_path / "traces.db"))
     rec = _record("a" * 16, run_id="run-1", scope="telegram:1")

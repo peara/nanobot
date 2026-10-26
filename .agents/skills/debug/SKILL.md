@@ -23,6 +23,7 @@ Use this when:
 All persistent state lives in SQLite:
 - Main DB (`data/nanobot.db`): messages, contexts (including plan_run traces)
 - Scheduler DB (`data/scheduler.db`): scheduled tasks
+- Traces DB (`data/traces.db`): OTel spans — the run-level picture (LLM rounds, tool calls, delegated children, errors) when a `tracing:` section is configured in `config.yaml` (see docs/TRACING.md)
 - Log files (`data/nanobot.log` by default, configured in `logging` section of `config.yaml`): rotation and paths are config-driven
 
 ### 2. Scopes are hierarchical
@@ -30,13 +31,32 @@ All persistent state lives in SQLite:
 - Plan run scope: `plan_run:run-<uuid>` - stores execution traces
 - Context keys: arbitrary JSON values under `(scope_type, scope_id, key)`
 
-### 3. Always check plan_run traces first
+### 3. `just trace` first for run-level questions
+When debugging a specific run (stuck run, wrong tool flow, LLM error, delegated child behavior), replay it from spans BEFORE manual SQLite/llm.log digging:
+1. Find the run_id (`just trace-list`, or scope context / `just plan-list` for plan runs)
+2. `just trace <run_id>` — full span tree (LLM rounds → tool calls → delegated children), per-run token accounting, anomaly summary (length truncations, empty replies, error spans)
+3. Only then drop to `llm.log` (full payloads) or raw SQL for details spans don't carry
+
+### 4. Always check plan_run traces first
 When debugging unexpected /plan behavior:
 1. Get the run_id from chat context or `plan list`
-2. Inspect with `plan show --run-id <id>`
-3. Check intake_raw, execution_raw, tool_trace, error fields
+2. Replay it: `just trace <run_id>`
+3. Inspect with `plan show --run-id <id>` for the plan-specific fields (intake_raw, execution_raw, tool_trace, error)
 
 ## Common Patterns
+
+### Replay a run from its spans (tracing)
+```bash
+# List recent traced runs (span counts + error counts)
+just trace-list
+
+# Replay a run end-to-end: span tree, per-run token accounting, anomalies
+just trace run-abc123
+
+# Most recent traced run
+just trace-latest
+```
+Reads `data/traces.db` (requires a `tracing:` section in config.yaml). Error spans render with `ERROR=<message>` plus request sizes (`msgs=N chars=N`); LLM 400/context-overflow errors are visible with their request sizes — no manual SQLite spelunking.
 
 ### Inspect conversation context
 ```bash
@@ -194,6 +214,7 @@ When the bot skipped a step, gave a wrong answer, or called the wrong tool:
 
 When something is wrong:
 - [ ] Check `scopes` to verify the scope exists
+- [ ] Identify the run_id, then replay it: `just trace <run_id>` (span tree + tokens + anomalies) — covers stuck runs, tool flows, delegated children, LLM errors
 - [ ] Check `ctx --scope <id>` to see recent messages
 - [ ] Check `plan list` if /plan was used - get the run_id
 - [ ] Check `plan show --run-id <id>` for full execution trace

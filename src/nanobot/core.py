@@ -199,12 +199,13 @@ class BotCore:
         """Exporter-failure alerting: telemetry must not fail silently.
 
         Always logs; notifies the owner once per process (latch) so a
-        persistently broken exporter does not spam the chat.
+        persistently broken exporter does not spam the chat. The latch is
+        only consumed after a delivery is actually scheduled — a failure
+        that hits while no event loop is running must not spend it.
         """
         logger.error("OTel span exporter failure: %s", description)
         if self._tracing_alerted or not self.config.owner_chat_id:
             return
-        self._tracing_alerted = True
         scope = f"telegram:{self.config.owner_chat_id}"
         db_path = self.config.tracing.db_path if self.config.tracing else "traces.db"
         text = f"Tracing failure: spans may be missing from {db_path}. ({description})"
@@ -213,6 +214,7 @@ class BotCore:
         except RuntimeError:
             logger.warning("No running event loop; tracing failure alert not delivered: %s", description)
             return
+        self._tracing_alerted = True
         loop.create_task(self._deliver_tracing_alert(scope, text))
 
     async def _deliver_tracing_alert(self, scope: str, text: str) -> None:

@@ -275,7 +275,7 @@ Observability is log-based **plus OTel-traced** (Phase D, issue #48 — see [doc
 | Tool calls (200-char previews) | `tool_calls` SQLite table | Yes | Yes |
 | Run metadata + status + goal | `subagent_runs` SQLite table | Yes | Yes (row key) |
 | Scratchpad state | `contexts` table, per run | Yes | Yes |
-| Evaluator LLM I/O | `nanobot.evaluator.io` → `data/evaluator.log` | Until rotation | No |
+| Evaluator LLM I/O | `nanobot.evaluator.io` → `data/evaluator.log` | Until rotation | No — its post-turn `chat` calls emit standalone root spans in traces.db, outside any run (see [TRACING.md](docs/TRACING.md)) |
 | Final transcript | `messages` table | Yes | No |
 
 Every LLM round, tool call, and delegated child lands in one parent→child span tree per run, joinable with `subagent_runs` via run_id. `just trace <run_id>` replays a run end-to-end with per-run token accounting; LLM errors are visible as error spans with request sizes and exception events. Payload capture as span attributes is a config flag, default off — `nanobot.llm.io` keeps full-payload logging duty. The `gen_ai.*` attribute names are pinned to the Langfuse-documented vintage in one `semconv.py` module, so moving to an OTLP backend later is a config decision, not a rewrite.

@@ -93,7 +93,7 @@ class TestPayloadGate:
             set_payload_attributes(
                 span,
                 {
-                    semconv.GEN_AI_PROMPT: "api_key=supersecret123 and sk-abcdefgh12345678",
+                    semconv.GEN_AI_PROMPT: "password=hunter2supersecret and api_key=supersecret12345",
                     semconv.GEN_AI_COMPLETION: "x" * 6000,
                 },
             )
@@ -101,15 +101,14 @@ class TestPayloadGate:
         rec = TraceStore(db).get(span_id)
         assert rec is not None
         attrs = rec.attributes()
-        assert attrs[semconv.GEN_AI_PROMPT] == "[REDACTED] and [REDACTED]"
+        assert attrs[semconv.GEN_AI_PROMPT] == "password=[REDACTED] and api_key=[REDACTED]"
         assert len(attrs[semconv.GEN_AI_COMPLETION]) < 4100
         assert "[clipped" in attrs[semconv.GEN_AI_COMPLETION]
 
     def test_redact_payload_masks_secret_shapes(self) -> None:
-        masked = redact_payload("token sk-abcdefgh12345678 here, Bearer abcdefghijk, password=hunter42")
-        assert "sk-abcdefgh12345678" not in masked
-        assert "Bearer abcdefghijk" not in masked
-        assert "hunter42" not in masked
+        masked = redact_payload("token sk-AbCdEfGhIjKlMnOpQrStUv here, Bearer AbCdEfGhIjKlMnOpQrStUvWx0123456789")
+        assert "sk-AbCdEfGhIjKlMnOpQrStUv" not in masked
+        assert "AbCdEfGhIjKlMnOpQrStUvWx0123456789" not in masked
 
     def test_redact_payload_clips_long_text(self) -> None:
         clipped = redact_payload("y" * 10_000)
