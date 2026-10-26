@@ -208,6 +208,7 @@ After each completed run, the `LearningEvaluator` runs (if enabled) and may auto
 | **LlmClient** | `llm.py` | OpenAI-compatible chat completions client, all LLM I/O logged via `nanobot.llm.io` |
 | **AgentRun + ToolCallDispatcher** | `agent_run.py` | LLM chat loop, tool dispatch with guards |
 | **SubagentManager** | `subagents/` | Spawn/execute subagent runs; depth-gated; observability tracking |
+| **Tracing** | `tracing/` | OTel spans (invoke_agent, chat, execute_tool, delegate_task) → SQLite exporter; semconv pin |
 | **CommandManager** | `core_commands/` | Slash commands: help, ctx/ctxfull, reset, plan, scratchpad, reload, session, status, stop |
 | **Scratchpad** | `core_scratchpad.py` | Per-run structured working state (goal, steps, facts, tool journal) |
 | **ScratchpadMachine** | `scratchpad_protocol.py` | Scratchpad protocol state machine: tool gating, nudge/abort decision, append-due check |
@@ -218,7 +219,7 @@ After each completed run, the `LearningEvaluator` runs (if enabled) and may auto
 | **PromptStore** | `prompts/` | Centralized prompt templates with variable rendering |
 | **SchedulerRunner** | `scheduler_runner.py` | Polls due tasks from scheduler DB, enqueues to BotCore |
 
-Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/SCRATCHPAD.md), [SKILLS.md](docs/SKILLS.md), [EVALUATOR.md](docs/EVALUATOR.md), [CHANNELS.md](docs/CHANNELS.md), [WEB_AGENT.md](docs/WEB_AGENT.md), [MCP_SERVERS.md](docs/MCP_SERVERS.md), [REDDIT.md](docs/REDDIT.md), [logging.md](docs/logging.md), [CANCELLATION.md](docs/CANCELLATION.md).
+Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/SCRATCHPAD.md), [SKILLS.md](docs/SKILLS.md), [EVALUATOR.md](docs/EVALUATOR.md), [CHANNELS.md](docs/CHANNELS.md), [WEB_AGENT.md](docs/WEB_AGENT.md), [MCP_SERVERS.md](docs/MCP_SERVERS.md), [REDDIT.md](docs/REDDIT.md), [logging.md](docs/logging.md), [TRACING.md](docs/TRACING.md), [CANCELLATION.md](docs/CANCELLATION.md).
 
 ---
 
@@ -230,6 +231,7 @@ Dedicated docs cover the non-obvious subsystems in detail: [SCRATCHPAD.md](docs/
 | **ContextStore** | `context_store.py` | `contexts` | Scoped JSON — scratchpad (under `subagent_run:{run_id}`), pointers, traces, run status/result |
 | **SchedulerStore** | `scheduler_store.py` | `scheduled_tasks` | Time-based task queue |
 | **SubagentRunStore** | `subagents/store.py` | `subagent_runs` | Run metadata (scope, status, timing, `parent_run_id` → depth chain) |
+| **TraceStore** | `tracing/store.py` | `spans` (traces.db) | OTel spans — trace/span/parent ids, `run_id` join, attrs, timing |
 | **ToolStatsStore** | `tools/stats.py` | `tool_calls` | Tool invocations with `run_id` link, previews only |
 | **PromptStore** | `prompts/store.py` | `prompts` | Centralized prompt templates (versioning, variable rendering) |
 | **PlanStore** | `plans/store.py` | `plans` | Structured plans with steps and success/failure tracking |
@@ -264,18 +266,21 @@ Future hooks (suggested, not contracted): `before_tool_call`, `on_turn_complete`
 
 ## Observability: what is and isn't traced
 
-Today's observability is **log-based, not query-based**:
+Observability is log-based **plus OTel-traced** (Phase D, issue #48 — see [docs/TRACING.md](docs/TRACING.md)):
 
 | Signal | Where | Persists? | run_id? |
 |---|---|---|---|
 | Full LLM request/response payloads | `nanobot.llm.io` logger → `data/llm.log` | Until rotation (5MB × 5 backups) | No — scope tag in log text only |
+| OTel spans (`invoke_agent` / `chat` / `execute_tool` / `delegate_task`) | `spans` SQLite table (traces.db) via custom exporter | Yes | Yes (`nanobot.run_id` attribute) |
 | Tool calls (200-char previews) | `tool_calls` SQLite table | Yes | Yes |
 | Run metadata + status + goal | `subagent_runs` SQLite table | Yes | Yes (row key) |
 | Scratchpad state | `contexts` table, per run | Yes | Yes |
-| Evaluator LLM I/O | `nanobot.evaluator.io` → `data/evaluator.log` | Until rotation | No |
+| Evaluator LLM I/O | `nanobot.evaluator.io` → `data/evaluator.log` | Until rotation | No — its post-turn `chat` calls emit standalone root spans in traces.db, outside any run (see [TRACING.md](docs/TRACING.md)) |
 | Final transcript | `messages` table | Yes | No |
 
-**Known gap (issue #35)**: LLM calls are not persisted to SQLite and don't carry `run_id` correlation. You cannot join "every LLM round in run X" with its tool calls and scratchpad states after log rotation, and there is no per-run token accounting. The `nanobot.llm.io` INFO lines already capture the shape (scope tag, token counts, finish_reason, elapsed) — what's missing is a table and a join key. This is the first code piece on the roadmap (see [ROADMAP.md](ROADMAP.md) Phase D).
+Every LLM round, tool call, and delegated child lands in one parent→child span tree per run, joinable with `subagent_runs` via run_id. `just trace <run_id>` replays a run end-to-end with per-run token accounting; LLM errors are visible as error spans with request sizes and exception events. Payload capture as span attributes is a config flag, default off — `nanobot.llm.io` keeps full-payload logging duty. The `gen_ai.*` attribute names are pinned to the Langfuse-documented vintage in one `semconv.py` module, so moving to an OTLP backend later is a config decision, not a rewrite.
+
+The remainder of issue #35 (subagent timeout, `just subagent` CLI) stays open in #35.
 
 ---
 

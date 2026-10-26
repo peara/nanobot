@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
+from opentelemetry.trace import SpanKind, get_current_span
 
 from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
 from nanobot.config import ModelConfig
+from nanobot.tracing import current_run_id, semconv, set_payload_attributes
+from nanobot.tracing.decorators import traced
 
 logger = logging.getLogger(__name__)
 _io_logger = logging.getLogger("nanobot.llm.io")
@@ -36,6 +40,29 @@ def _tool_names(tools: list[dict] | None) -> list[str]:
     return [t.get("function", {}).get("name", "?") for t in tools]
 
 
+def _chat_span_attributes(
+    client: LlmClient,
+    messages: list[dict],
+    tools: list[dict],
+    response_format: dict[str, Any] | None = None,
+    *,
+    scope: str | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    span_attributes: dict[str, Any] = {
+        semconv.GEN_AI_SYSTEM: semconv.GEN_AI_SYSTEM_VALUE,
+        semconv.GEN_AI_REQUEST_MODEL: client.model,
+        semconv.GEN_AI_REQUEST_MAX_TOKENS: client.max_tokens,
+        semconv.GEN_AI_REQUEST_TEMPERATURE: client.temperature,
+        semconv.SCOPE: scope or "-",
+        semconv.LLM_TOOL_COUNT: len(tools or []),
+    }
+    run_id = current_run_id()
+    if run_id:
+        span_attributes[semconv.RUN_ID] = run_id
+    return span_attributes
+
+
 class LlmClient:
     def __init__(self, config: ModelConfig) -> None:
         self.client = AsyncOpenAI(
@@ -47,6 +74,12 @@ class LlmClient:
         self.temperature = config.temperature
         self.max_tokens = config.max_tokens
 
+    @traced(
+        semconv.OP_CHAT,
+        kind=SpanKind.CLIENT,
+        operation=semconv.OP_CHAT,
+        attributes=_chat_span_attributes,
+    )
     async def chat(
         self,
         messages: list[dict],
@@ -64,6 +97,9 @@ class LlmClient:
             kwargs["response_format"] = response_format
         msg_count, msg_chars = _message_summary(messages)
         tool_names = _tool_names(tools)
+        span = get_current_span()
+        span.set_attribute(semconv.LLM_MESSAGE_COUNT, msg_count)
+        span.set_attribute(semconv.LLM_MESSAGE_CHARS, msg_chars)
         _io_logger.info(
             "REQUEST scope=%s model=%s msgs=%d chars=%d tools=%s temp=%.2f max_tokens=%d response_format=%s",
             scope or "-",
@@ -149,4 +185,20 @@ class LlmClient:
                 scope or "-",
                 message,
             )
+        span.set_attribute(semconv.GEN_AI_RESPONSE_FINISH_REASONS, [choice.finish_reason])
+        if usage is not None:
+            span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, usage.prompt_tokens)
+            span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, usage.completion_tokens)
+        if getattr(response, "model", None):
+            span.set_attribute(semconv.GEN_AI_RESPONSE_MODEL, response.model)
+        if not tool_calls and not (isinstance(content, str) and content.strip()):
+            span.set_attribute(semconv.LLM_EMPTY_CONTENT, True)
+        span.set_attribute(semconv.LLM_ELAPSED_SECONDS, round(elapsed, 3))
+        set_payload_attributes(
+            span,
+            {
+                semconv.GEN_AI_PROMPT: json.dumps(messages, ensure_ascii=True),
+                semconv.GEN_AI_COMPLETION: str(content),
+            },
+        )
         return message

@@ -31,8 +31,12 @@ import json
 import logging
 from typing import Any
 
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode, get_current_span
+
 from nanobot.cancel_token import CancellationToken
-from nanobot.core_utils import human_now
+from nanobot.core_utils import clip, human_now
+from nanobot.tracing import semconv
+from nanobot.tracing.decorators import traced
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,42 @@ def delegate_task_spec() -> dict[str, Any]:
     }
 
 
+def _delegate_task_span_attributes(
+    core: Any,
+    args: dict[str, Any],
+    *,
+    scope: str,
+    run_id: str,
+    cancel_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    goal = str(args.get("goal", "") or "").strip()
+    span_attributes: dict[str, Any] = {
+        semconv.GEN_AI_TOOL_NAME: DELEGATE_TASK_NAME,
+        semconv.SCOPE: scope,
+    }
+    if run_id:
+        span_attributes[semconv.RUN_ID] = run_id
+    if goal:
+        span_attributes[semconv.RUN_GOAL] = clip(goal, 200)
+    return span_attributes
+
+
+def _delegate_task_on_result(span: Span, result_json: str) -> None:
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        return
+    error = payload.get("error")
+    if error:
+        span.set_status(Status(StatusCode.ERROR, str(error)))
+
+
+@traced(
+    semconv.SPAN_DELEGATE_TASK,
+    kind=SpanKind.INTERNAL,
+    attributes=_delegate_task_span_attributes,
+    on_result=_delegate_task_on_result,
+)
 async def run_delegate_task(
     core: Any,
     args: dict[str, Any],
@@ -94,16 +134,19 @@ async def run_delegate_task(
     Called by ToolCallDispatcher.dispatch when the LLM emits a delegate_task
     tool call. The parent context (scope, run_id, cancel_token) is passed
     explicitly from the LLM loop's local variables — no shared state on
-    BotCore is read.
+    BotCore is read. The delegation span opened here is parented under the
+    caller's execute_tool span via the ambient OTel context (no explicit
+    propagation), and the child run's invoke_agent span in turn nests under
+    this one — delegated children join the parent's trace.
 
     Returns a JSON string suitable for use as a tool result message.
     """
+    goal = str(args.get("goal", "") or "").strip()
     depth = _depth_of_run(core, run_id)
     if depth >= 1:
         logger.warning("delegate_task called at depth >= 1; refusing")
         return json.dumps({"error": DEPTH_REFUSED_MESSAGE})
 
-    goal = str(args.get("goal", "") or "").strip()
     if not goal:
         return json.dumps({"error": "delegate_task: 'goal' is required and must be non-empty"})
 
@@ -131,6 +174,7 @@ async def run_delegate_task(
         parent_run_id=run_id,
         goal=goal,
     )
+    get_current_span().set_attribute(semconv.CHILD_RUN_ID, run.id)
     logger.info(
         "delegate_task spawned child run_id=%s parent_run_id=%s scope=%s",
         run.id,
