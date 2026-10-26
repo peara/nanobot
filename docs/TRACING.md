@@ -42,7 +42,7 @@ root `chat` spans with no run_id, unreachable via `just trace` (which queries
 by run) — their I/O duty stays with `nanobot.evaluator.io` logging, and the
 spans are queryable via SQL on the `spans` table if ever needed.
 
-**Anomaly alerting decision (owner, 2026-10-23):** anomalies are *persisted
+**Anomaly alerting decision** anomalies are *persisted
 and surfaced*, not push-alerted — `finish_reason=length` and empty replies
 land as span attributes (plus the pre-existing `llm.py` WARNING logs) and are
 summarized by `just trace` on demand. Exporter failure remains the only push
