@@ -12,7 +12,7 @@ What makes aggressive trimming safe at all is [ADR-0001](ADR-0001-scratchpad-as-
 
 Do structural surgery on the message list at assembly time — one single assembly path for every LLM call in the run — not windowing, not summarization:
 
-- **`trim_to_last_tool_round`.** Keep everything before the first tool round (system messages, the user's request, early text) plus the last complete tool round (the assistant's tool calls and their results); drop all intermediate rounds. The cut lands on round boundaries by construction, so the payload is always structurally valid, and the surviving prefix is byte-identical round over round — exactly what a prefix cache keys on. The initial call of a run is deliberately untrimmed: the caller's history may hold earlier turns' tool rounds that this run needs. (That history arrives already char-budgeted from persistence; the structural trim is the in-run policy.)
+- **`trim_to_last_tool_round`.** Keep everything before the first tool round (system messages, the user's request, early text) plus the last complete tool round (the assistant's tool calls and their results); drop all intermediate rounds. The cut lands on round boundaries by construction, so the payload is always structurally valid, and the surviving prefix is byte-identical round over round — exactly what a prefix cache keys on. The initial call of a run is deliberately untrimmed: the caller's history may hold earlier turns' tool rounds that this run needs. (That history arrives already bounded at load time — first a message-count limit, then a character budget; the structural trim is the in-run policy.)
 - **Role merging.** Consecutive same-role messages — except system and tool — are merged with blank-line joins. Message construction legitimately produces these (the scratchpad state message and finalize prompts are both user-role), and some OpenAI-compatible backends reject or mishandle consecutive same-role messages.
 - **Static-prefix-first ordering.** All system messages are hoisted to the front in order (empty ones dropped), and the orchestrator's system prompt is split into a static part (identity, rules) ahead of a dynamic part (time, live context). Leading bytes stay byte-identical across rounds and turns; everything volatile — scratchpad state message, finalize prompts — is pushed to the tail, landing last.
 
@@ -38,5 +38,5 @@ Do structural surgery on the message list at assembly time — one single assemb
 ## References
 
 - `trim_to_last_tool_round` born with the extracted AgentRun: commit `606a210`.
-- Role normalization for consecutive same-role messages: commit `45cde52`.
 - Static + dynamic prompt split for cache efficiency: commit `8a34a32`.
+- Current semantics: [docs/MESSAGE_ASSEMBLY.md](../MESSAGE_ASSEMBLY.md).

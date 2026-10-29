@@ -70,6 +70,7 @@ nanobot/
 | Add built-in command | `src/nanobot/core_commands/commands/` | Register in command_manager.py |
 | Modify message flow | `src/nanobot/core.py` | `_process()`, SubagentManager |
 | Modify agent loop | `src/nanobot/agent_run.py` | `AgentRun.run()` - tool calling, finalize exit path |
+| Modify prompt assembly / history trimming | `src/nanobot/agent_run.py` | `trim_to_last_tool_round`, `prepare_messages_for_chat` - see docs/MESSAGE_ASSEMBLY.md |
 | Modify scratchpad finalize | `src/nanobot/agent_run.py` | `_finalize_response_message()` builds no-tools prompt |
 | Orchestration / delegation | `src/nanobot/subagents/delegate_tool.py` | `delegate_task` — control-plane dispatch, depth gating (issue #43) |
 | Tool guards | `src/nanobot/agent_tool_guards.py` | SchemaValidationGuard, WebScriptGuard — pre-call validation, post-result checks |
@@ -246,6 +247,7 @@ Before exploring the codebase, check these docs — they often contain the answe
 | Topic | Doc | Read when |
 |-------|-----|-----------|
 | Scratchpad (working memory, init/append/finalize lifecycle, prompt templates, limits) | `docs/SCRATCHPAD.md` | Modifying agent loop, scratchpad protocol, finalize path, tool call limits |
+| Message assembly (history bounding, trim, role merging, prompt caching layout) | `docs/MESSAGE_ASSEMBLY.md` | Modifying prompt assembly, history limits, trim behavior, debugging what the LLM sees |
 | Skills (trigger modes, matching flow, vector search, score filtering, CRUD, tool gating) | `docs/SKILLS.md` | Adding/modifying skills, skill matching, tool filtering, vector search scoring |
 | Evaluator (3-phase pipeline, quality gate, learning extraction, skill lifecycle) | `docs/EVALUATOR.md` | Modifying evaluator, adding evaluation phases, debugging learning extraction |
 | Scheduler (cron tasks, storage, MCP tools, config) | `docs/SCHEDULER.md` | Adding scheduled features, debugging cron, scheduler CLI commands |
