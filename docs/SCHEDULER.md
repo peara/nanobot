@@ -6,6 +6,10 @@ Recurring task automation using cron expressions.
 
 NanoBot manages scheduled tasks in an SQLite database (`scheduler.db`). A background runner polls every 20 seconds for due tasks and executes their prompts automatically.
 
+## Missed Runs
+
+Occurrences that come due while the bot is down are **skipped, never executed**: on startup, every past-due task is advanced to its next future slot before the first poll. The owner gets a single summary message (one line per task) — no LLM run, and no burst of stale executions. `resume_task` follows the same policy: resuming a long-paused task refreshes its next run to the upcoming occurrence instead of firing the stale one immediately.
+
 ## Storage
 
 Tasks are stored in `scheduled_tasks` table:
@@ -45,7 +49,7 @@ Removes tasks with placeholder chat IDs (`12345`, `<current_chat_id>`, etc.). Us
 | `list_tasks()` | List all tasks |
 | `delete_task(task_id)` | Remove single task |
 | `pause_task(task_id)` | Disable task |
-| `resume_task(task_id)` | Enable task |
+| `resume_task(task_id)` | Enable task; refreshes `next_run_at` to the upcoming occurrence (returned in the reply) |
 | `scheduler_health()` | Overview with due count and next 5 tasks |
 
 ## Cron Syntax Examples
