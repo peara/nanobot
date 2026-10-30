@@ -188,7 +188,7 @@ Two additional invariants protect the loop:
 
 ### Message-history surgery
 
-Long tool loops trim the in-flight message list: messages between the first assistant tool-call and the last one are dropped (`prepare_messages_for_chat` + trim helpers in `agent_run.py`), keeping system + recent context. Consecutive same-role messages are merged (role normalization).
+Every LLM call assembles its prompt through one path: `trim_to_last_tool_round` keeps the prefix before the first tool round (system messages, the user's request, early text) plus the last complete round, dropping the rounds in between; consecutive same-role messages are merged; all system messages are hoisted to the front so the cacheable static prefix leads. See [MESSAGE_ASSEMBLY.md](docs/MESSAGE_ASSEMBLY.md).
 
 ### Cancellation
 
@@ -289,6 +289,7 @@ The remainder of issue #35 (subagent timeout, `just subagent` CLI) stays open in
 - [ROADMAP.md](ROADMAP.md) — Phases, milestones, and open design choices.
 - [docs/decisions/README.md](docs/decisions/README.md) — Architecture Decision Records: the why behind shipped design decisions, with alternatives and consequences.
 - [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md) — Scratchpad lifecycle, modes, protocol enforcement, and limits.
+- [docs/MESSAGE_ASSEMBLY.md](docs/MESSAGE_ASSEMBLY.md) — How every prompt is assembled: history bounding, trim, role merging, and the cache layout.
 - [docs/SKILLS.md](docs/SKILLS.md) — Skill schema, trigger modes, matching, and CRUD tools.
 - [docs/EVALUATOR.md](docs/EVALUATOR.md) — Three-phase evaluation pipeline and fault tolerance.
 - [docs/CHANNELS.md](docs/CHANNELS.md) — Channel interface and how to add a new one.
