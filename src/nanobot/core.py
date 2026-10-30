@@ -236,20 +236,26 @@ class BotCore:
         interval. Runs before scheduler.start() so the first poll can never
         see a past-due task. The skip records are built here and nowhere else;
         this is the single insertion point for #52's catch-up bookkeeping.
+
+        Failures are never silent: a task that cannot be skipped stays due
+        and is reported to the owner through the same notice path.
         """
         startup = utc_now()
         try:
             due = self.scheduler_store.due_tasks(now=startup)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Failed to fetch past-due tasks for startup skip pre-pass")
+            self._notify_missed_runs([], scan_failed=True)
             return
         skipped: list[MissedRunSkip] = []
+        failed_ids: list[int] = []
         for task in due:
             task_id = int(task["id"])
             try:
                 new_next = self.scheduler_store.skip_to_next(task_id, task["cron_expr"], startup)
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Failed to skip missed run of task id=%s; it will fire as before", task_id)
+                failed_ids.append(task_id)
                 continue
             if new_next is None:
                 continue
@@ -268,20 +274,36 @@ class BotCore:
                     next_run_at=new_next,
                 )
             )
-        if not skipped:
+        if not skipped and not failed_ids:
             return
-        logger.warning("Skipped %d missed run(s) on startup", len(skipped))
-        self._notify_missed_runs(skipped)
+        if skipped:
+            logger.warning("Skipped %d missed run(s) on startup", len(skipped))
+        if failed_ids:
+            logger.error("Failed to skip %d missed run(s) on startup", len(failed_ids))
+        self._notify_missed_runs(skipped, failed_task_ids=failed_ids)
 
-    def _notify_missed_runs(self, skipped: list[MissedRunSkip]) -> None:
+    def _notify_missed_runs(
+        self,
+        skipped: list[MissedRunSkip],
+        *,
+        failed_task_ids: list[int] | None = None,
+        scan_failed: bool = False,
+    ) -> None:
         """Notify the owner once with a single summary message; log-only when undeliverable.
 
         One notice per pre-pass (never one per task), plain channel send — no
-        LLM run. Delivery is fire-and-forget so it can never crash or delay
-        boot. The pre-pass advances next_run_at before this runs, so a second
-        core.start() (e.g. /reload) re-notifies only for newly missed runs.
+        LLM run. Delivery is fire-and-forget and formatting is guarded, so a
+        failure here can never crash or delay boot. The pre-pass advances
+        next_run_at before this runs, so a second core.start() (e.g. /reload)
+        re-notifies only for newly missed runs.
         """
-        text = self._format_missed_run_notice(skipped)
+        try:
+            text = self._format_missed_run_notice(
+                skipped, failed_task_ids=failed_task_ids, scan_failed=scan_failed
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to format missed-run notice (skipped=%d)", len(skipped))
+            return
         if not self.config.owner_chat_id or "telegram" not in self.channels:
             logger.warning("Missed-run notice not deliverable (no owner chat or no telegram channel): %s", text)
             return
@@ -298,40 +320,68 @@ class BotCore:
 
         Channels start after core.start() (main.py), so the first attempt can
         hit an unstarted channel. Bounded retry: an undeliverable notice is
-        logged and dropped — it must never crash or delay boot.
+        logged and dropped — it must never crash or delay boot. The traceback
+        is logged once on the first failure (later attempts log warning-only,
+        with the error inline), and the final attempt gives up without
+        sleeping first.
         """
         for attempt in range(1, MISSED_RUN_NOTICE_MAX_ATTEMPTS + 1):
             try:
                 await self._send(scope, text)
                 logger.info("Missed-run notice delivered scope=%s", scope)
                 return
-            except Exception:  # pylint: disable=broad-except
+            except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
-                    "Missed-run notice delivery failed (attempt %d/%d) scope=%s",
+                    "Missed-run notice delivery failed (attempt %d/%d) scope=%s error=%s",
                     attempt,
                     MISSED_RUN_NOTICE_MAX_ATTEMPTS,
                     scope,
-                    exc_info=True,
+                    exc,
+                    exc_info=(attempt == 1),
                 )
-                await asyncio.sleep(MISSED_RUN_NOTICE_RETRY_DELAY_SECONDS)
+                if attempt < MISSED_RUN_NOTICE_MAX_ATTEMPTS:
+                    await asyncio.sleep(MISSED_RUN_NOTICE_RETRY_DELAY_SECONDS)
         logger.error(
             "Missed-run notice undeliverable after %d attempts; giving up scope=%s",
             MISSED_RUN_NOTICE_MAX_ATTEMPTS,
             scope,
         )
 
-    def _format_missed_run_notice(self, skipped: list[MissedRunSkip]) -> str:
-        """One summary line plus at most one line per task (id, overdue since, next run)."""
-        task_count = len({skip.task_id for skip in skipped})
-        lines = [
-            f"Bot was down; skipped {len(skipped)} missed run(s) across {task_count} task(s). "
-            "Next runs are at their regular slots."
-        ]
-        for skip in skipped:
-            was_due = _format_local_time(skip.was_due_at, self.config.working_timezone)
-            next_run = _format_local_time(skip.next_run_at, self.config.working_timezone)
+    def _format_missed_run_notice(
+        self,
+        skipped: list[MissedRunSkip],
+        *,
+        failed_task_ids: list[int] | None = None,
+        scan_failed: bool = False,
+    ) -> str:
+        """One summary line plus at most one line per task; failures get their own line.
+
+        Skip failures ride in the same single notice (AGENTS.md: no silent
+        failure) — the owner is told which tasks could not be skipped and may
+        run stale.
+        """
+        lines: list[str] = []
+        if skipped:
+            task_count = len({skip.task_id for skip in skipped})
             lines.append(
-                f"- task {skip.task_id} (cron {skip.cron_expr}): overdue since {was_due}, next run {next_run}"
+                f"Bot was down; skipped {len(skipped)} missed run(s) across {task_count} task(s). "
+                "Next runs are at their regular slots."
+            )
+            for skip in skipped:
+                was_due = _format_local_time(skip.was_due_at, self.config.working_timezone)
+                next_run = _format_local_time(skip.next_run_at, self.config.working_timezone)
+                lines.append(
+                    f"- task {skip.task_id} (cron {skip.cron_expr}): overdue since {was_due}, next run {next_run}"
+                )
+        if scan_failed:
+            lines.append(
+                "Startup check for missed scheduled runs failed; any runs that came due "
+                "while the bot was down may execute."
+            )
+        elif failed_task_ids:
+            ids = ", ".join(str(task_id) for task_id in failed_task_ids)
+            lines.append(
+                f"Startup skip failed for {len(failed_task_ids)} task(s) (ids {ids}); they may run stale."
             )
         return "\n".join(lines)
 

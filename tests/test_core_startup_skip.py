@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from nanobot.config import AppConfig, ModelConfig
 from nanobot.core import BotCore
@@ -196,3 +198,90 @@ async def test_pre_pass_notifies_once_across_reload_style_restarts() -> None:
     assert len(channel.sent) == 1
     task = bot.scheduler_store.list_tasks()[0]
     assert datetime.fromisoformat(task["next_run_at"]) > datetime.now(timezone.utc)
+
+
+async def test_startup_notice_reports_tasks_that_failed_to_skip() -> None:
+    channel = _FakeChannel()
+    channel.started = True
+    bot = _make_bot(channel=channel)
+    good_id = _add_stale_task(bot, "good prompt")
+    bad_id = _add_stale_task(bot, "bad prompt")
+    original_skip = bot.scheduler_store.skip_to_next
+
+    def _skip_but_fail_one(task_id: int, cron_expr: str, now: Any = None) -> Any:
+        if task_id == bad_id:
+            raise sqlite3.OperationalError("database is locked")
+        return original_skip(task_id, cron_expr, now)
+
+    with patch.object(bot.scheduler_store, "skip_to_next", side_effect=_skip_but_fail_one):
+        bot._skip_missed_scheduled_runs()  # must not raise
+
+    await asyncio.sleep(0.05)
+    assert len(channel.sent) == 1  # one notice covering both outcomes
+    text = channel.sent[0][1]
+    assert "1 missed run(s) across 1 task(s)" in text
+    assert f"Startup skip failed for 1 task(s) (ids {bad_id})" in text
+    assert "they may run stale" in text
+    tasks = {t["id"]: t for t in bot.scheduler_store.list_tasks()}
+    assert datetime.fromisoformat(tasks[good_id]["next_run_at"]) > datetime.now(timezone.utc)
+    # the failed task stays due — it will fire as before, and the owner was told
+    assert datetime.fromisoformat(tasks[bad_id]["next_run_at"]) < datetime.now(timezone.utc)
+
+
+async def test_startup_notice_reports_scan_failure() -> None:
+    channel = _FakeChannel()
+    channel.started = True
+    bot = _make_bot(channel=channel)
+    _add_stale_task(bot, "stale prompt")
+
+    with patch.object(bot.scheduler_store, "due_tasks", side_effect=sqlite3.OperationalError("db locked")):
+        bot._skip_missed_scheduled_runs()  # must not raise
+
+    await asyncio.sleep(0.05)
+    assert len(channel.sent) == 1
+    text = channel.sent[0][1]
+    assert "Startup check for missed scheduled runs failed" in text
+    task = bot.scheduler_store.list_tasks()[0]
+    # nothing was skipped or advanced; the stale task is untouched and will fire
+    assert datetime.fromisoformat(task["next_run_at"]) < datetime.now(timezone.utc)
+
+
+async def test_startup_notice_formatting_failure_does_not_crash_boot() -> None:
+    channel = _FakeChannel()
+    channel.started = True
+    bot = _make_bot(channel=channel)
+    _add_stale_task(bot, "stale prompt")
+
+    with patch.object(bot.config, "working_timezone", None):  # ZoneInfo(None) raises TypeError
+        bot._skip_missed_scheduled_runs()  # must not raise despite the broken timezone
+
+    await asyncio.sleep(0.05)
+    assert channel.sent == []  # notice dropped, boot fine
+    task = bot.scheduler_store.list_tasks()[0]
+    # the skip itself succeeded — only the notice formatting was guarded
+    assert datetime.fromisoformat(task["next_run_at"]) > datetime.now(timezone.utc)
+
+
+async def test_notice_retry_logs_traceback_once_and_skips_final_sleep(caplog) -> None:
+    channel = _FakeChannel()  # never starts
+    bot = _make_bot(channel=channel)
+    _add_stale_task(bot, "stale prompt")
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay: float, *args: object, **kwargs: object) -> None:
+        await real_sleep(0.01)  # a real tick, so the delivery task keeps running
+
+    mock_sleep = AsyncMock(side_effect=_fast_sleep)
+    with (
+        patch("nanobot.core.MISSED_RUN_NOTICE_MAX_ATTEMPTS", 3),
+        patch("nanobot.core.asyncio.sleep", mock_sleep),
+        caplog.at_level(logging.WARNING, logger="nanobot.core"),
+    ):
+        bot._skip_missed_scheduled_runs()
+        await real_sleep(0.2)  # all attempts run at 0.01s per retry
+
+    assert channel.send_calls == 3
+    assert mock_sleep.await_count == 2  # no sleep after the final attempt
+    failed_records = [r for r in caplog.records if "delivery failed" in r.getMessage()]
+    assert len(failed_records) == 3
+    assert sum(1 for r in failed_records if r.exc_info) == 1  # traceback once, then warning-only
