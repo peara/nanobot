@@ -73,10 +73,11 @@ def pause_task(task_id: int) -> dict[str, Any]:
 
 @mcp.tool()
 def resume_task(task_id: int) -> dict[str, Any]:
-    """Enable a bot-managed scheduled task."""
+    """Enable a paused scheduled task. Its next run is refreshed to the upcoming
+    occurrence — the returned next_run_at says when it will fire."""
     store = _scheduler_store()
-    ok = store.set_enabled(task_id, enabled=True)
-    return {"resumed": ok, "task_id": task_id}
+    next_run_at = store.resume(task_id)
+    return {"resumed": next_run_at is not None, "task_id": task_id, "next_run_at": next_run_at}
 
 
 @mcp.tool()

@@ -4,9 +4,10 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from nanobot.agent_run import AgentRun
 from nanobot.cancel_token import CancellationToken, LlmCallCancelledError
@@ -32,7 +33,7 @@ from nanobot.notebook import NotebookStore, register_notebook_tools
 from nanobot.plans import PlanStore, register_plan_tools
 from nanobot.prompts import PromptStore
 from nanobot.scheduler_runner import SchedulerRunner
-from nanobot.scheduler_store import SchedulerStore
+from nanobot.scheduler_store import SchedulerStore, parse_utc, utc_now
 from nanobot.skills import RatioFilter, SkillStore, SkillVectorStore, register_skill_tools
 from nanobot.subagents import SubagentManager
 from nanobot.subagents.manager import SubagentRunResult
@@ -81,6 +82,17 @@ class ActiveRequest:
     current_step: str
 
 
+@dataclass(frozen=True)
+class MissedRunSkip:
+    """One occurrence burst skipped by the startup pre-pass (issue #50)."""
+
+    task_id: int
+    chat_id: str
+    cron_expr: str
+    was_due_at: str  # ISO UTC — the missed occurrence's scheduled time
+    next_run_at: str  # ISO UTC — the future slot the task was advanced to
+
+
 SCRATCHPAD_STRICT_CORRECTION = (
     "Protocol violation: you stopped with a text answer right after a scratchpad init, "
     "but you did no work. Resume now with your tools, or call session__scratchpad_write "
@@ -89,6 +101,25 @@ SCRATCHPAD_STRICT_CORRECTION = (
 MAX_SCRATCHPAD_PROTOCOL_RETRIES = 2
 SCRATCHPAD_PROTOCOL_ABORT_REPLY = "I got stuck enforcing scratchpad updates in this turn. Please try again."
 EMPTY_REPLY_FALLBACK = "I'm sorry, I hit an empty model response. Please try again."
+
+# Missed-run notice delivery (issue #50): channels start after core.start()
+# (main.py), so early attempts can hit an unstarted channel. Delivery retries
+# in the background, bounded — a lost notice must never crash or delay boot,
+# and it is a plain channel send that never consumes an LLM run.
+MISSED_RUN_NOTICE_MAX_ATTEMPTS = 30
+MISSED_RUN_NOTICE_RETRY_DELAY_SECONDS = 10.0
+
+
+def _format_local_time(iso_utc: str, timezone_name: str) -> str:
+    """Render an ISO-UTC timestamp in the working timezone for user-facing text."""
+    parsed = parse_utc(iso_utc)
+    if parsed is None:
+        return iso_utc
+    try:
+        zone: tzinfo = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        zone = timezone.utc
+    return parsed.astimezone(zone).strftime("%Y-%m-%d %H:%M %Z")
 
 
 class BotCore:
@@ -176,6 +207,7 @@ class BotCore:
         )
         await self._mcp_source.start()
         self.tools.add_source(self._mcp_source)
+        self._skip_missed_scheduled_runs()
         await self.scheduler.start()
         self._queue_task = asyncio.create_task(self._process_queue_loop())
 
@@ -194,6 +226,164 @@ class BotCore:
         await self.scheduler.stop()
         await self._mcp_source.stop()
         shutdown_tracing()
+
+    def _skip_missed_scheduled_runs(self) -> None:
+        """Startup pre-pass: skip occurrences that came due while the bot was down.
+
+        Unconditional policy (issue #50): every enabled task past due at
+        scheduler start is advanced to its next future slot instead of
+        executing. Coalesced — one burst per task, never one run per missed
+        interval. Runs before scheduler.start() so the first poll can never
+        see a past-due task. The skip records are built here and nowhere else;
+        this is the single insertion point for #52's catch-up bookkeeping.
+
+        Failures are never silent: a task that cannot be skipped stays due
+        and is reported to the owner through the same notice path.
+        """
+        startup = utc_now()
+        try:
+            due = self.scheduler_store.due_tasks(now=startup)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to fetch past-due tasks for startup skip pre-pass")
+            self._notify_missed_runs([], scan_failed=True)
+            return
+        skipped: list[MissedRunSkip] = []
+        failed_ids: list[int] = []
+        for task in due:
+            task_id = int(task["id"])
+            try:
+                new_next = self.scheduler_store.skip_to_next(task_id, task["cron_expr"], startup)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to skip missed run of task id=%s; it will fire as before", task_id)
+                failed_ids.append(task_id)
+                continue
+            if new_next is None:
+                continue
+            logger.warning(
+                "Skipped missed run of task id=%s (was due %s, advanced to %s)",
+                task_id,
+                task["next_run_at"],
+                new_next,
+            )
+            skipped.append(
+                MissedRunSkip(
+                    task_id=task_id,
+                    chat_id=str(task["chat_id"]),
+                    cron_expr=str(task["cron_expr"]),
+                    was_due_at=str(task["next_run_at"]),
+                    next_run_at=new_next,
+                )
+            )
+        if not skipped and not failed_ids:
+            return
+        if skipped:
+            logger.warning("Skipped %d missed run(s) on startup", len(skipped))
+        if failed_ids:
+            logger.error("Failed to skip %d missed run(s) on startup", len(failed_ids))
+        self._notify_missed_runs(skipped, failed_task_ids=failed_ids)
+
+    def _notify_missed_runs(
+        self,
+        skipped: list[MissedRunSkip],
+        *,
+        failed_task_ids: list[int] | None = None,
+        scan_failed: bool = False,
+    ) -> None:
+        """Notify the owner once with a single summary message; log-only when undeliverable.
+
+        One notice per pre-pass (never one per task), plain channel send — no
+        LLM run. Delivery is fire-and-forget and formatting is guarded, so a
+        failure here can never crash or delay boot. The pre-pass advances
+        next_run_at before this runs, so a second core.start() (e.g. /reload)
+        re-notifies only for newly missed runs.
+        """
+        try:
+            text = self._format_missed_run_notice(
+                skipped, failed_task_ids=failed_task_ids, scan_failed=scan_failed
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Failed to format missed-run notice (skipped=%d)", len(skipped))
+            return
+        if not self.config.owner_chat_id or "telegram" not in self.channels:
+            logger.warning("Missed-run notice not deliverable (no owner chat or no telegram channel): %s", text)
+            return
+        scope = f"telegram:{self.config.owner_chat_id}"
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("No running event loop; missed-run notice not delivered: %s", text)
+            return
+        loop.create_task(self._deliver_missed_run_notice(scope, text))
+
+    async def _deliver_missed_run_notice(self, scope: str, text: str) -> None:
+        """Deliver the missed-run notice, retrying while channels come up.
+
+        Channels start after core.start() (main.py), so the first attempt can
+        hit an unstarted channel. Bounded retry: an undeliverable notice is
+        logged and dropped — it must never crash or delay boot. The traceback
+        is logged once on the first failure (later attempts log warning-only,
+        with the error inline), and the final attempt gives up without
+        sleeping first.
+        """
+        for attempt in range(1, MISSED_RUN_NOTICE_MAX_ATTEMPTS + 1):
+            try:
+                await self._send(scope, text)
+                logger.info("Missed-run notice delivered scope=%s", scope)
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "Missed-run notice delivery failed (attempt %d/%d) scope=%s error=%s",
+                    attempt,
+                    MISSED_RUN_NOTICE_MAX_ATTEMPTS,
+                    scope,
+                    exc,
+                    exc_info=(attempt == 1),
+                )
+                if attempt < MISSED_RUN_NOTICE_MAX_ATTEMPTS:
+                    await asyncio.sleep(MISSED_RUN_NOTICE_RETRY_DELAY_SECONDS)
+        logger.error(
+            "Missed-run notice undeliverable after %d attempts; giving up scope=%s",
+            MISSED_RUN_NOTICE_MAX_ATTEMPTS,
+            scope,
+        )
+
+    def _format_missed_run_notice(
+        self,
+        skipped: list[MissedRunSkip],
+        *,
+        failed_task_ids: list[int] | None = None,
+        scan_failed: bool = False,
+    ) -> str:
+        """One summary line plus at most one line per task; failures get their own line.
+
+        Skip failures ride in the same single notice (AGENTS.md: no silent
+        failure) — the owner is told which tasks could not be skipped and may
+        run stale.
+        """
+        lines: list[str] = []
+        if skipped:
+            task_count = len({skip.task_id for skip in skipped})
+            lines.append(
+                f"Bot was down; skipped {len(skipped)} missed run(s) across {task_count} task(s). "
+                "Next runs are at their regular slots."
+            )
+            for skip in skipped:
+                was_due = _format_local_time(skip.was_due_at, self.config.working_timezone)
+                next_run = _format_local_time(skip.next_run_at, self.config.working_timezone)
+                lines.append(
+                    f"- task {skip.task_id} (cron {skip.cron_expr}): overdue since {was_due}, next run {next_run}"
+                )
+        if scan_failed:
+            lines.append(
+                "Startup check for missed scheduled runs failed; any runs that came due "
+                "while the bot was down may execute."
+            )
+        elif failed_task_ids:
+            ids = ", ".join(str(task_id) for task_id in failed_task_ids)
+            lines.append(
+                f"Startup skip failed for {len(failed_task_ids)} task(s) (ids {ids}); they may run stale."
+            )
+        return "\n".join(lines)
 
     def _alert_tracing_export_failure(self, description: str) -> None:
         """Exporter-failure alerting: telemetry must not fail silently.

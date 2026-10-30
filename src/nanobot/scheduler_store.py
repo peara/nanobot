@@ -157,3 +157,42 @@ class SchedulerStore:
                 """,
                 (iso(when), iso(next_run), task_id),
             )
+
+    def skip_to_next(self, task_id: int, cron_expr: str, now: datetime | None = None) -> str | None:
+        """Advance a task's next_run_at to the next future slot without executing it.
+
+        Missed-run policy (issue #50): unlike mark_ran, this never touches
+        last_run_at — a skipped occurrence did not happen. Returns the new
+        next_run_at (ISO UTC), or None if the task does not exist.
+        """
+        base = now or utc_now()
+        next_run = self._next_run(cron_expr, base)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?",
+                (iso(next_run), task_id),
+            )
+            if cur.rowcount == 0:
+                return None
+        return iso(next_run)
+
+    def resume(self, task_id: int, now: datetime | None = None) -> str | None:
+        """Re-enable a paused task with next_run_at refreshed to the next future slot.
+
+        A task paused across one or more of its occurrences must not fire the
+        stale slot on the next poll (issue #50). enabled and next_run_at are
+        updated in a single statement so the runner never observes a
+        re-enabled task with a stale slot. Returns the new next_run_at
+        (ISO UTC), or None if the task does not exist.
+        """
+        base = now or utc_now()
+        with self._connect() as conn:
+            row = conn.execute("SELECT cron_expr FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                return None
+            next_run = self._next_run(row[0], base)
+            conn.execute(
+                "UPDATE scheduled_tasks SET enabled = 1, next_run_at = ? WHERE id = ?",
+                (iso(next_run), task_id),
+            )
+        return iso(next_run)
